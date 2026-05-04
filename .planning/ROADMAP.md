@@ -38,7 +38,7 @@ Plans:
 - [x] 01-00-PLAN.md — Wave 0: Test infrastructure and stub test files for all Phase 1 requirements (mocha + @vscode/test-cli)
 - [x] 01-01-PLAN.md — Extension scaffold, package.json, build config, message protocol types, session model contracts
 - [ ] 01-02-PLAN.md — WebSocket host (SessionHost, AuthHandler, BandwidthMonitor) and client (SessionClient, ConnectionState, heartbeat/reconnect)
-- [ ] 01-03-PLAN.md — Session history persistence, secret storage, mDNS discovery, network utilities
+- [x] 01-03-PLAN.md — Session history persistence, secret storage, mDNS discovery, network utilities
 - [ ] 01-04-PLAN.md — Host setup wizard: 3-step custom webview with auto-detection, invite code, and "share with team" screen
 - [ ] 01-05-PLAN.md — Join panel with session history quick-reconnect and mDNS browse
 - [ ] 01-05b-PLAN.md — Sidebar with member list and admin controls, status bar connection indicator
@@ -134,7 +134,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Extension Foundation + LAN Networking | 2/8 | In Progress | - |
+| 1. Extension Foundation + LAN Networking | 3/8 | In Progress | - |
 | 2. Split-Pane UI + File System Layer | 0/TBD | Not started | - |
 | 3. Push, Sync + Branch Management | 0/TBD | Not started | - |
 | 4. Presence, Chat + File-Level Conflict Notifications | 0/TBD | Not started | - |

@@ -12,7 +12,7 @@ VersionCon is built in layers — each phase must be stable before the next adds
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Extension Foundation + LAN Networking** - VS Code extension scaffold, WebSocket transport, host/join flow, connection status
+- [x] **Phase 1: Extension Foundation + LAN Networking** - VS Code extension scaffold, WebSocket transport, host/join flow, connection status
 - [ ] **Phase 2: Split-Pane UI + File System Layer** - Two-pane webview, drag-and-drop, stateless webview protocol, filesystem-as-truth
 - [ ] **Phase 3: Push, Sync + Branch Management** - Explicit push with diff, push history, revert, branch creation, admin/member permissions
 - [ ] **Phase 4: Presence, Chat + File-Level Conflict Notifications** - Real-time presence, in-app chat, push activity log, soft conflict alerts
@@ -134,7 +134,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Extension Foundation + LAN Networking | 4/8 | In Progress | - |
+| 1. Extension Foundation + LAN Networking | 8/8 | Complete | 2026-05-04 |
 | 2. Split-Pane UI + File System Layer | 0/TBD | Not started | - |
 | 3. Push, Sync + Branch Management | 0/TBD | Not started | - |
 | 4. Presence, Chat + File-Level Conflict Notifications | 0/TBD | Not started | - |

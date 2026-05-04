@@ -26,20 +26,22 @@ Decimal phases appear between their surrounding integers in numeric order.
 ### Phase 1: Extension Foundation + LAN Networking
 **Goal**: Teams can create and join a live coding session on a local network from inside VS Code — no terminal commands, coding within seconds of connecting
 **Depends on**: Nothing (first phase)
-**Requirements**: NET-01, NET-02, NET-03, NET-04, NET-05, NET-06, NET-07, NET-08, SAFE-01, SAFE-02
+**Requirements**: NET-01, NET-02, NET-03, NET-04, NET-05, NET-07, NET-08, SAFE-01, SAFE-02
 **Success Criteria** (what must be TRUE):
   1. A host can launch VS Code, open the extension, run the setup wizard, and have a live LAN session active within 60 seconds — no terminal required
   2. A joining member can select "Join," enter a host IP and credentials, and be inside the shared session within seconds — no terminal required
   3. The connection status indicator is always visible and accurately reflects whether the session is live, syncing, or disconnected
   4. Host IP is prominently displayed in the wizard so joiners can connect via manual IP when mDNS fails (VLAN environments)
   5. Connection automatically recovers after a sleep/wake cycle or brief network interruption via heartbeat-driven reconnect
-**Plans:** 6 plans
+**Plans:** 8 plans
 Plans:
+- [ ] 01-00-PLAN.md — Wave 0: Test infrastructure and stub test files for all Phase 1 requirements (mocha + @vscode/test-cli)
 - [ ] 01-01-PLAN.md — Extension scaffold, package.json, build config, message protocol types, session model contracts
 - [ ] 01-02-PLAN.md — WebSocket host (SessionHost, AuthHandler, BandwidthMonitor) and client (SessionClient, ConnectionState, heartbeat/reconnect)
 - [ ] 01-03-PLAN.md — Session history persistence, secret storage, mDNS discovery, network utilities
 - [ ] 01-04-PLAN.md — Host setup wizard: 3-step custom webview with auto-detection, invite code, and "share with team" screen
-- [ ] 01-05-PLAN.md — Join panel with session history quick-reconnect, sidebar with member list, status bar connection indicator
+- [ ] 01-05-PLAN.md — Join panel with session history quick-reconnect and mDNS browse
+- [ ] 01-05b-PLAN.md — Sidebar with member list and admin controls, status bar connection indicator
 - [ ] 01-06-PLAN.md — Integration wiring: connect all components, event propagation, host shutdown confirmation, end-to-end verification
 
 ### Phase 2: Split-Pane UI + File System Layer
@@ -132,7 +134,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Extension Foundation + LAN Networking | 0/6 | Planned | - |
+| 1. Extension Foundation + LAN Networking | 0/8 | Planned | - |
 | 2. Split-Pane UI + File System Layer | 0/TBD | Not started | - |
 | 3. Push, Sync + Branch Management | 0/TBD | Not started | - |
 | 4. Presence, Chat + File-Level Conflict Notifications | 0/TBD | Not started | - |

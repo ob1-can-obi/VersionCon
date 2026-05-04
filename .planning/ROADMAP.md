@@ -35,7 +35,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. Connection automatically recovers after a sleep/wake cycle or brief network interruption via heartbeat-driven reconnect
 **Plans:** 8 plans
 Plans:
-- [ ] 01-00-PLAN.md — Wave 0: Test infrastructure and stub test files for all Phase 1 requirements (mocha + @vscode/test-cli)
+- [x] 01-00-PLAN.md — Wave 0: Test infrastructure and stub test files for all Phase 1 requirements (mocha + @vscode/test-cli)
 - [ ] 01-01-PLAN.md — Extension scaffold, package.json, build config, message protocol types, session model contracts
 - [ ] 01-02-PLAN.md — WebSocket host (SessionHost, AuthHandler, BandwidthMonitor) and client (SessionClient, ConnectionState, heartbeat/reconnect)
 - [ ] 01-03-PLAN.md — Session history persistence, secret storage, mDNS discovery, network utilities
@@ -134,7 +134,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Extension Foundation + LAN Networking | 0/8 | Planned | - |
+| 1. Extension Foundation + LAN Networking | 1/8 | In Progress | - |
 | 2. Split-Pane UI + File System Layer | 0/TBD | Not started | - |
 | 3. Push, Sync + Branch Management | 0/TBD | Not started | - |
 | 4. Presence, Chat + File-Level Conflict Notifications | 0/TBD | Not started | - |

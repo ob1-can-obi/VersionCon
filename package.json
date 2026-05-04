@@ -1,0 +1,75 @@
+{
+  "name": "versioncon",
+  "displayName": "VersionCon",
+  "description": "Collaborative version control for teams with dependency-aware conflict detection",
+  "version": "0.1.0",
+  "publisher": "versioncon",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "versioncon",
+          "title": "VersionCon",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "versioncon": [
+        {
+          "type": "webview",
+          "id": "versioncon.sidebar",
+          "name": "Session"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "versioncon.hostSession",
+        "title": "VersionCon: Host Session"
+      },
+      {
+        "command": "versioncon.joinSession",
+        "title": "VersionCon: Join Session"
+      },
+      {
+        "command": "versioncon.showSidebar",
+        "title": "VersionCon: Show Sidebar"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "test": "vscode-test",
+    "lint": "tsc --noEmit",
+    "vscode:prepublish": "npm run build"
+  },
+  "dependencies": {
+    "@vscode-elements/elements": "^2.5.1",
+    "bonjour-service": "^1.3.0",
+    "nanoid": "^5.1.11",
+    "web-tree-sitter": "^0.26.8",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^25.6.0",
+    "@types/vscode": "^1.118.0",
+    "@types/ws": "^8.18.1",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.9.1",
+    "esbuild": "^0.28.0",
+    "mocha": "^11.7.5",
+    "typescript": "^6.0.3"
+  }
+}

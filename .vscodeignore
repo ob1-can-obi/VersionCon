@@ -1,0 +1,7 @@
+src/**
+node_modules/**
+.vscode-test/**
+.planning/**
+tsconfig.json
+esbuild.config.mjs
+.vscode-test.mjs

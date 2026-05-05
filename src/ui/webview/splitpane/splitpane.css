@@ -1,0 +1,114 @@
+/* Split-pane layout for VersionCon workspace/branch view */
+
+/* Reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-editor-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+/* Main split container */
+.split-container {
+  display: flex;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* Individual pane */
+.pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Pane divider (visual separator between workspace and branch) */
+.pane-divider {
+  width: 4px;
+  background: var(--vscode-panel-border);
+  cursor: col-resize; /* Future: resizable */
+  flex-shrink: 0;
+}
+
+/* Pane header (Workspace / Branch label area) */
+.pane-header {
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--vscode-sideBarSectionHeader-background);
+  border-bottom: 1px solid var(--vscode-panel-border);
+  font-size: 11px;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--vscode-sideBarSectionHeader-foreground);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+/* Pane title text */
+.pane-title {
+  flex: 1;
+}
+
+/* Badge (staged count / read-only indicator) */
+.pane-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.pane-badge:empty {
+  display: none;
+}
+
+.pane-badge.read-only {
+  opacity: 0.7;
+}
+
+/* Pane content area (contains the tree) */
+.pane-content {
+  flex: 1;
+  overflow: auto;
+  padding: 4px;
+}
+
+/* Drag-over visual feedback */
+.pane.drag-over {
+  background: var(--vscode-list-hoverBackground);
+  outline: 2px dashed var(--vscode-focusBorder);
+  outline-offset: -2px;
+}
+
+.pane.drag-over .pane-header {
+  background: var(--vscode-list-activeSelectionBackground);
+}
+
+/* Tree component fills width */
+vscode-tree {
+  width: 100%;
+}
+
+/* Empty state message when no files exist */
+.empty-state {
+  padding: 20px;
+  text-align: center;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}

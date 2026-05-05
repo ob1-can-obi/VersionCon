@@ -55,7 +55,12 @@ Plans:
   3. A user can drag a file from workspace (left) back to branch (right) to stage it for pushing
   4. Drag-and-drop works correctly on VS Code 1.90+ on all three OS targets (the cross-webview regression is resolved)
   5. Refreshing or switching VS Code tabs does not lose workspace or branch state — webview state is always restored from the extension host
-**Plans**: TBD
+**Plans:** 4 plans
+Plans:
+- [ ] 02-01-PLAN.md — Types/interfaces + FileSystemLayer with TDD (copy file, structure-only, path validation, tree building)
+- [ ] 02-02-PLAN.md — SplitPanePanel WebviewPanel class + webview assets (HTML split layout, CSS, JS drag handlers)
+- [ ] 02-03-PLAN.md — Extension wiring: openWorkspace command, FileSystemWatcher with debounce, integration tests
+- [ ] 02-04-PLAN.md — Visual verification checkpoint: human confirms drag-and-drop, state restore, no cross-webview regression
 **UI hint**: yes
 
 ### Phase 3: Push, Sync + Branch Management
@@ -136,7 +141,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Extension Foundation + LAN Networking | 8/9 | In Progress | - |
-| 2. Split-Pane UI + File System Layer | 0/TBD | Not started | - |
+| 2. Split-Pane UI + File System Layer | 0/4 | Not started | - |
 | 3. Push, Sync + Branch Management | 0/TBD | Not started | - |
 | 4. Presence, Chat + File-Level Conflict Notifications | 0/TBD | Not started | - |
 | 5. Dependency-Aware Conflict Detection (AST) | 0/TBD | Not started | - |

@@ -1,10 +1,10 @@
 ---
-status: diagnosed
+status: complete
 phase: 01-extension-foundation-lan-networking
 source: [01-00-SUMMARY.md, 01-01-SUMMARY.md, 01-02-SUMMARY.md, 01-03-SUMMARY.md, 01-07-SUMMARY.md]
 started: 2026-05-04
 updated: 2026-05-05
-round: 2
+round: 3
 ---
 
 ## Current Test
@@ -23,9 +23,7 @@ result: pass
 
 ### 3. Status Bar — Connection Colors
 expected: Status bar shows green/connected when in session, orange/reconnecting during connection drop, gray/disconnected when not in any session. Intentional disconnect should go directly to gray (disconnected), not orange (reconnecting).
-result: issue
-reported: "Disconnect race fixed but two remaining issues: (1) disconnected color is red not gray, (2) connection unstable — keeps cycling reconnecting/connected every ~15s due to heartbeat bug."
-severity: major
+result: pass (round 3 re-test)
 
 ### 4. Sidebar — Member List and Admin Controls
 expected: While in a session, the sidebar shows all connected members with display names. The host sees admin controls (kick member, regenerate invite code). Non-host members see the member list but no admin controls. Host role is visually indicated with a "HOST" badge.
@@ -33,16 +31,14 @@ result: pass
 note: HOST badge visible. Kick button cannot be tested with single device (expected — requires second member).
 
 ### 5. Host Shutdown Confirmation
-expected: When the host ends the session, a confirmation dialog appears warning that all connected members will be disconnected. Confirming shuts down the session; canceling keeps it running.
-result: issue
-reported: "No confirmation dialog appeared. Clicked Disconnect and it immediately disconnected. Host Session panel still shows 'Session Active' with address/invite code but sidebar shows 'Not connected' with 'Connection lost' error — inconsistent state."
-severity: major
+expected: When the host ends the session, a confirmation dialog appears warning that all connected members will be disconnected. Confirming shuts down the session; canceling keeps it running. Wizard panel closes after disconnect.
+result: pass (round 3 re-test — dialog skipped correctly with 0 members, wizard panel closes cleanly)
 
 ## Summary
 
 total: 5
-passed: 3
-issues: 2
+passed: 5
+issues: 0
 pending: 0
 skipped: 0
 blocked: 0

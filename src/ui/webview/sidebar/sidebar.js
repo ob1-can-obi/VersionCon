@@ -47,7 +47,7 @@
             <div class="member-avatar">${initial}</div>
             <div class="member-info">
               <div class="member-name">${escapeHtml(member.displayName)}</div>
-              <div class="member-role">${escapeHtml(member.role)}</div>
+              <div class="member-role">${member.role === 'host' ? '<span class="role-badge host">HOST</span>' : escapeHtml(member.role)}</div>
             </div>
             <span class="online-dot ${onlineCls}"></span>`;
 

@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SessionClient } from '../client/SessionClient.js';
 import { SessionHistory } from '../storage/SessionHistory.js';
+import { SecretStore } from '../storage/SecretStore.js';
 import { DiscoveryManager } from '../network/discovery.js';
 import type { SavedSession } from '../types/session.js';
 import type { DiscoveredSession } from '../network/discovery.js';
@@ -28,6 +29,7 @@ export class JoinPanel {
   private readonly sessionHistory: SessionHistory;
   private readonly onConnectedCallback: (client: SessionClient) => void;
   private readonly discoveryManager: DiscoveryManager;
+  private readonly secretStore: SecretStore;
   private readonly disposables: vscode.Disposable[] = [];
 
   static async createOrShow(
@@ -67,6 +69,7 @@ export class JoinPanel {
     this.sessionHistory = sessionHistory;
     this.onConnectedCallback = onConnected;
     this.discoveryManager = new DiscoveryManager();
+    this.secretStore = new SecretStore(context);
 
     JoinPanel.currentPanel = this;
 
@@ -228,12 +231,16 @@ export class JoinPanel {
 
       if (connected) {
         // Save to history for quick reconnect (NET-04, D-08)
+        const sessionName = client.getSessionInfo()?.name ?? 'Session';
         await this.sessionHistory.addEntry({
           hostIp,
           port,
-          sessionName: client.getSessionInfo()?.name ?? 'Session',
+          sessionName,
           displayName,
         });
+
+        // Store invite code securely for future quick-connect (T-01-11)
+        await this.secretStore.storeInviteCode(sessionName, inviteCode);
 
         this.onConnectedCallback(client);
         this.panel.dispose();
@@ -256,9 +263,19 @@ export class JoinPanel {
     const port = typeof payload.port === 'number' ? payload.port : parseInt(String(payload.port), 10);
     const displayName = typeof payload.displayName === 'string' ? payload.displayName : '';
     const inviteCode = typeof payload.inviteCode === 'string' ? payload.inviteCode.trim() : '';
+    const sessionName = typeof payload.sessionName === 'string' ? payload.sessionName : '';
 
-    if (!inviteCode) {
-      // If no invite code provided, just fill the form fields
+    // If no invite code provided in payload, try SecretStore (T-01-11 compliant)
+    let resolvedInviteCode = inviteCode;
+    if (!resolvedInviteCode && sessionName) {
+      const stored = await this.secretStore.getInviteCode(sessionName);
+      if (stored) {
+        resolvedInviteCode = stored;
+      }
+    }
+
+    if (!resolvedInviteCode) {
+      // If still no invite code, fill the form fields
       this.state.hostIp = hostIp;
       this.state.port = String(port);
       this.state.displayName = displayName;
@@ -267,7 +284,7 @@ export class JoinPanel {
       return;
     }
 
-    await this.handleJoinConnect({ hostIp, port, inviteCode, displayName });
+    await this.handleJoinConnect({ hostIp, port, inviteCode: resolvedInviteCode, displayName });
   }
 
   private handleSelectDiscovered(payload: Record<string, unknown> | undefined): void {

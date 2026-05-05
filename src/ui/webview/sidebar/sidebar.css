@@ -169,3 +169,18 @@ body {
   margin-bottom: 12px;
   font-size: 0.85em;
 }
+
+.role-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.7em;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.role-badge.host {
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}

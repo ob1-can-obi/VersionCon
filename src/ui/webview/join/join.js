@@ -38,7 +38,8 @@
               <button class="btn-small" data-action="quick-connect"
                 data-host="${escapeHtml(session.hostIp)}"
                 data-port="${session.port}"
-                data-name="${escapeHtml(session.displayName)}">Connect</button>
+                data-name="${escapeHtml(session.displayName)}"
+                data-session-name="${escapeHtml(session.sessionName)}">Connect</button>
               <button class="btn-icon" data-action="remove-history"
                 data-host="${escapeHtml(session.hostIp)}"
                 data-port="${session.port}" title="Remove">&times;</button>
@@ -124,8 +125,9 @@
         const hostIp = btn.getAttribute('data-host') || '';
         const port = parseInt(btn.getAttribute('data-port') || '0', 10);
         const displayName = btn.getAttribute('data-name') || '';
+        const sessionName = btn.getAttribute('data-session-name') || '';
         const inviteCode = document.getElementById('invite-code')?.value || '';
-        vscode.postMessage({ type: 'join-quick-connect', payload: { hostIp, port, displayName, inviteCode } });
+        vscode.postMessage({ type: 'join-quick-connect', payload: { hostIp, port, displayName, inviteCode, sessionName } });
       });
     });
 

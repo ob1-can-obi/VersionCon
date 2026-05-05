@@ -171,6 +171,10 @@ export class SessionClient implements SessionEventEmitter {
           return;
         }
 
+        // Intentional disconnect sets this.ws = null before calling ws.close().
+        // If ws is null here, the close was intentional — do not reconnect.
+        if (this.ws === null) return;
+
         // If we were connected, try to reconnect (D-11)
         if (this.connectionState.current === 'connected') {
           this.attemptReconnect();

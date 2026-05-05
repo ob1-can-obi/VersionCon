@@ -68,6 +68,10 @@ export function activate(context: vscode.ExtensionContext): void {
         members: [],
         bandwidthStats: null,
       });
+      // Close the wizard panel if it's still open (prevents stale "Session Active" state)
+      if (WizardPanel.currentPanel) {
+        WizardPanel.currentPanel.onSessionEnded();
+      }
     });
   }
 
@@ -139,15 +143,32 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   // --- Sidebar disconnect handler ---
-  sidebarProvider.onDisconnectRequested(() => {
+  sidebarProvider.onDisconnectRequested(async () => {
+    // If host, show confirmation dialog before disconnecting (D-15)
     if (activeHost) {
+      const members = activeHost.getMembers();
+      const otherMemberCount = members.filter(m => m.role !== 'host').length;
+
+      if (otherMemberCount > 0) {
+        const choice = await vscode.window.showWarningMessage(
+          `Ending this session will disconnect ${otherMemberCount} member${otherMemberCount > 1 ? 's' : ''}. Continue?`,
+          { modal: true },
+          'End Session',
+        );
+        if (choice !== 'End Session') {
+          return; // User canceled — do nothing
+        }
+      }
+
       activeHost.stop();
       activeHost = null;
     }
+
     if (activeClient) {
       activeClient.disconnect();
       activeClient = null;
     }
+
     statusBarManager.setStatus('disconnected');
     sidebarProvider.updateState({
       connectionStatus: 'disconnected',

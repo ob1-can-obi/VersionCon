@@ -520,6 +520,14 @@ export class WizardPanel {
   }
 
   /**
+   * Called when the host session ends (either by user disconnect or session-ended event).
+   * Disposes the panel so it doesn't show stale "Session Active" state.
+   */
+  onSessionEnded(): void {
+    this.panel.dispose();
+  }
+
+  /**
    * Clean up panel resources.
    *
    * NOTE: SessionHost is NOT stopped here -- the session should keep

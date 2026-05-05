@@ -275,6 +275,11 @@ export class SessionClient implements SessionEventEmitter {
         }
         break;
 
+      case 'heartbeat-pong':
+        // Protocol-level pong (defensive — server currently uses native pong frames)
+        this.heartbeat.receivedPong();
+        break;
+
       case 'error':
         // Log and emit -- do not crash
         this.emit('connection-changed', {
@@ -294,14 +299,18 @@ export class SessionClient implements SessionEventEmitter {
   // ---------------------------------------------------------------------------
 
   private startClientHeartbeat(): void {
+    // Listen for native WebSocket pong frames from the server
+    if (this.ws) {
+      this.ws.on('pong', () => {
+        this.heartbeat.receivedPong();
+      });
+    }
+
     this.heartbeat.start(
       () => {
-        // Send a heartbeat-ping to the server
+        // Send a native WebSocket ping to match server's pong handler
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          sendMessage((d) => this.ws!.send(d), {
-            type: 'heartbeat-ping',
-            timestamp: createTimestamp(),
-          });
+          this.ws.ping();
         }
       },
       () => {

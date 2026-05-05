@@ -34,7 +34,7 @@ body {
 
 .status-dot.connected { background: var(--vscode-testing-iconPassed); }
 .status-dot.reconnecting { background: var(--vscode-editorWarning-foreground); }
-.status-dot.disconnected { background: var(--vscode-testing-iconFailed); }
+.status-dot.disconnected { background: var(--vscode-disabledForeground); }
 
 .action-buttons {
   display: flex;

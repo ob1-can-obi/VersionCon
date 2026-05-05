@@ -7,7 +7,7 @@ import type { ConnectionStatus } from '../types/session.js';
  * Always visible (per NET-05). Displays three states per D-10:
  * - Connected: green circle, session name tooltip
  * - Reconnecting: yellow spinning sync icon
- * - Disconnected: red outline circle
+ * - Disconnected: gray outline circle
  *
  * Clicking the status bar item reveals the sidebar (versioncon.showSidebar).
  */
@@ -46,7 +46,7 @@ export class StatusBarManager implements vscode.Disposable {
 
       case 'disconnected':
         this.item.text = '$(circle-outline) VersionCon';
-        this.item.color = new vscode.ThemeColor('testing.iconFailed');
+        this.item.color = new vscode.ThemeColor('disabledForeground');
         this.item.tooltip = 'Not connected';
         break;
     }

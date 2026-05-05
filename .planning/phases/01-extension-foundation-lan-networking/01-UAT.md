@@ -1,9 +1,10 @@
 ---
 status: diagnosed
 phase: 01-extension-foundation-lan-networking
-source: [01-00-SUMMARY.md, 01-01-SUMMARY.md, 01-02-SUMMARY.md, 01-03-SUMMARY.md]
+source: [01-00-SUMMARY.md, 01-01-SUMMARY.md, 01-02-SUMMARY.md, 01-03-SUMMARY.md, 01-07-SUMMARY.md]
 started: 2026-05-04
-updated: 2026-05-04
+updated: 2026-05-05
+round: 2
 ---
 
 ## Current Test
@@ -23,57 +24,78 @@ result: pass
 ### 3. Status Bar — Connection Colors
 expected: Status bar shows green/connected when in session, orange/reconnecting during connection drop, gray/disconnected when not in any session. Intentional disconnect should go directly to gray (disconnected), not orange (reconnecting).
 result: issue
-reported: "I clicked on the connected status and got a disconnect option. I clicked that and it turned orange. It should have gone to gray (disconnected) instead of orange (reconnecting)."
+reported: "Disconnect race fixed but two remaining issues: (1) disconnected color is red not gray, (2) connection unstable — keeps cycling reconnecting/connected every ~15s due to heartbeat bug."
 severity: major
 
 ### 4. Sidebar — Member List and Admin Controls
-expected: While in a session, the sidebar shows all connected members with display names. The host sees admin controls (kick member, regenerate invite code). Non-host members see the member list but no admin controls. Host role is visually indicated.
-result: issue
-reported: "Can't understand who the admin is in the sidebar. Also tried to reconnect via recent session — entered invite code but got stuck in connecting state, then got 'Authentication failed. Check your invite code.' error."
-severity: major
+expected: While in a session, the sidebar shows all connected members with display names. The host sees admin controls (kick member, regenerate invite code). Non-host members see the member list but no admin controls. Host role is visually indicated with a "HOST" badge.
+result: pass
+note: HOST badge visible. Kick button cannot be tested with single device (expected — requires second member).
 
 ### 5. Host Shutdown Confirmation
 expected: When the host ends the session, a confirmation dialog appears warning that all connected members will be disconnected. Confirming shuts down the session; canceling keeps it running.
-result: blocked
-blocked_by: prior-phase
-reason: "Cannot test — disconnected from session and unable to reconnect due to authentication failure. Blocked by issues in Tests 3 and 4."
+result: issue
+reported: "No confirmation dialog appeared. Clicked Disconnect and it immediately disconnected. Host Session panel still shows 'Session Active' with address/invite code but sidebar shows 'Not connected' with 'Connection lost' error — inconsistent state."
+severity: major
 
 ## Summary
 
 total: 5
-passed: 2
+passed: 3
 issues: 2
 pending: 0
 skipped: 0
-blocked: 1
+blocked: 0
 
 ## Gaps
 
-- truth: "Intentional disconnect should transition status bar to gray (disconnected), not orange (reconnecting)"
+- truth: "Disconnected state should show gray color, not red"
   status: failed
-  reason: "User reported: clicked disconnect and status turned orange (reconnecting) instead of gray (disconnected)"
+  reason: "User confirmed: disconnected dot is red (testing.iconFailed) instead of gray"
+  severity: cosmetic
+  test: 3
+  root_cause: "StatusBarManager.ts uses ThemeColor('testing.iconFailed') for disconnected state — should use 'disabledForeground' for gray. Sidebar CSS uses same wrong color."
+  artifacts:
+    - path: "src/ui/StatusBarManager.ts"
+      issue: "Line 49: disconnected color uses testing.iconFailed (red) instead of disabledForeground (gray)"
+    - path: "src/ui/webview/sidebar/sidebar.css"
+      issue: "Line 37: .status-dot.disconnected uses testing-iconFailed (red) instead of gray"
+  missing:
+    - "Change disconnected ThemeColor to 'disabledForeground' in StatusBarManager.ts"
+    - "Change sidebar CSS disconnected dot to use disabledForeground"
+
+- truth: "Connection should remain stable without false reconnects"
+  status: failed
+  reason: "Connection cycles between reconnecting and connected every ~15 seconds"
   severity: major
   test: 3
-  root_cause: "WebSocket close handler in SessionClient.ts does not check this.ws === null before calling attemptReconnect(). The design sets ws=null before ws.close() but the close handler only checks connectionState, not the null guard. The close event fires async and triggers attemptReconnect() which sets state to 'reconnecting' (orange) before disconnectInternal() emits 'disconnected'."
+  root_cause: "SessionClient.handleMessage has no case for 'heartbeat-pong' — server pong responses fall through to default (silently ignored). HeartbeatManager.receivedPong() is never called, so the 5s pong timeout fires after every ping, triggering onDead() → ws.close() → reconnect cycle."
   artifacts:
     - path: "src/client/SessionClient.ts"
-      issue: "Close handler (line ~164-178) missing this.ws === null check"
+      issue: "handleMessage switch missing 'heartbeat-pong' case — receivedPong() never called"
   missing:
-    - "Add if (this.ws === null) return; at top of close handler to respect intentional disconnect"
+    - "Add 'heartbeat-pong' case in handleMessage that calls this.heartbeat.receivedPong()"
 
-- truth: "Sidebar should clearly indicate host/admin role and reconnecting to a session via recent history should work"
+- truth: "Host disconnect should show confirmation dialog before shutting down"
   status: failed
-  reason: "User reported: no visual host indicator in member list; reconnect via recent session fails with 'Authentication failed' after prior disconnect"
+  reason: "User reported: no confirmation dialog appeared, clicked Disconnect and it immediately disconnected"
   severity: major
-  test: 4
-  root_cause: "Two issues: (1) SavedSession type omits invite codes by security design (T-01-11), and JoinPanel never uses SecretStore.getInviteCode() to pre-fill. Quick-connect in join.js reads from empty #invite-code input field, sending empty code to host which rejects it. (2) No visual host/admin role badge in sidebar member list UI."
+  test: 5
+  root_cause: "SidebarProvider.handleMessage 'disconnect' case (line 127-129) calls disconnectHandler directly without checking role. When role is 'host', should show vscode.window.showWarningMessage confirmation first."
   artifacts:
-    - path: "src/ui/JoinPanel.ts"
-      issue: "Missing SecretStore integration for invite code retrieval on reconnect"
-    - path: "src/ui/webview/join/join.js"
-      issue: "Quick-connect handler reads invite code from manual input field instead of saved data"
     - path: "src/ui/SidebarProvider.ts"
-      issue: "No visual host/admin role badge in member list rendering"
+      issue: "Line 127-129: disconnect handler has no host confirmation dialog"
   missing:
-    - "JoinPanel should use SecretStore.getInviteCode(sessionName) to pre-fill invite code for recent sessions"
-    - "Add host/admin badge or visual indicator in sidebar member list"
+    - "Add host role check in disconnect handler — if host, show showWarningMessage('Ending session will disconnect all members. Continue?') before calling disconnectHandler"
+
+- truth: "Host session panel should close or update when host disconnects"
+  status: failed
+  reason: "After host disconnect, Host Session panel still shows 'Session Active' with address/invite code while sidebar shows 'Not connected'"
+  severity: major
+  test: 5
+  root_cause: "Host panel is not listening for session end events. When host disconnects, the panel's state is never updated to reflect the session has ended."
+  artifacts:
+    - path: "src/ui/HostSessionPanel.ts"
+      issue: "No listener for session-ended or disconnect — panel state becomes stale"
+  missing:
+    - "HostSessionPanel should listen for session end and either close or update to show session ended state"

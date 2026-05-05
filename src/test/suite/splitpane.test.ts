@@ -77,7 +77,6 @@ suite('SplitPanePanel Integration', () => {
     const nestedDir = path.join(branchDir, 'lib', 'core');
     await fs.mkdir(nestedDir, { recursive: true });
     await fs.writeFile(path.join(nestedDir, 'engine.ts'), 'export class Engine {}');
-    await fs.writeFile(path.join(path.join(branchDir, 'lib')), '');
 
     // copyStructureOnly should create dirs but not copy files
     await fsLayer.copyStructureOnly('lib');

@@ -43,6 +43,10 @@
       {
         "command": "versioncon.showSidebar",
         "title": "VersionCon: Show Sidebar"
+      },
+      {
+        "command": "versioncon.openWorkspace",
+        "title": "VersionCon: Open Workspace"
       }
     ]
   },

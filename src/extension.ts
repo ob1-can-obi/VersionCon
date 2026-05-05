@@ -7,6 +7,7 @@ import { SessionHistory } from './storage/SessionHistory.js';
 import { SessionHost } from './host/SessionHost.js';
 import { SessionClient } from './client/SessionClient.js';
 import type { ConnectionStatus } from './types/session.js';
+import { SplitPanePanel } from './ui/SplitPanePanel.js';
 
 // Module-level state for deactivation access
 let activeHost: SessionHost | null = null;
@@ -185,6 +186,41 @@ export function activate(context: vscode.ExtensionContext): void {
       activeHost.kickMember(memberId, 'Kicked by host');
     }
   });
+
+  // --- Split Pane Workspace command (Phase 2) ---
+  context.subscriptions.push(
+    vscode.commands.registerCommand('versioncon.openWorkspace', () => {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder) {
+        vscode.window.showErrorMessage('VersionCon: Open a folder first to use the workspace view.');
+        return;
+      }
+      SplitPanePanel.createOrShow(context, workspaceFolder);
+    }),
+  );
+
+  // --- FileSystemWatcher for workspace tree auto-refresh (Phase 2) ---
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (workspaceFolder) {
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(workspaceFolder, '**/*')
+    );
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedRefresh = () => {
+      if (debounceTimer) { clearTimeout(debounceTimer); }
+      debounceTimer = setTimeout(() => {
+        if (SplitPanePanel.currentPanel) {
+          SplitPanePanel.currentPanel.onExternalChange();
+        }
+      }, 50); // 50ms debounce per RESEARCH.md recommendation
+    };
+
+    watcher.onDidCreate(debouncedRefresh);
+    watcher.onDidChange(debouncedRefresh);
+    watcher.onDidDelete(debouncedRefresh);
+    context.subscriptions.push(watcher);
+  }
 }
 
 export async function deactivate(): Promise<void> {

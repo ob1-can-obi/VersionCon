@@ -1,9 +1,9 @@
 ---
 status: partial
 phase: 03-push-sync-branch-management
-source: [03-VERIFICATION.md]
+source: [03-VERIFICATION.md, 03-06-PLAN.md]
 started: 2026-05-06T21:18:00Z
-updated: 2026-05-06T21:18:00Z
+updated: 2026-05-06T23:50:00Z
 ---
 
 ## Current Test
@@ -16,8 +16,22 @@ updated: 2026-05-06T21:18:00Z
 expected: Drag a workspace file into the staged pane. Right-click the staged file and choose "VersionCon: Preview Diff" (or trigger via the context menu in the workspace tree). VS Code opens a side-by-side diff editor showing branch version on the left and workspace version on the right.
 result: [pending]
 
-### 2. PUSH-09 — Mark Synced v1 semantics
-expected: With the workspace marked out-of-sync (e.g. after receiving a remote push), run the `versioncon.markSynced` command. The status-bar sync warning clears, but no workspace files are modified or pulled. Confirm this v1 sync-state-only behavior is acceptable for shipping; file-pull will land in a later phase.
+### 2. PUSH-09 / PUSH-10 / PUSH-11 — Modal block + real Sync + per-file conflict prompt
+expected: Have member A push a change to a file (e.g. `src/foo.ts`) on the active branch. On member B (out-of-sync), attempt each of the following — every attempt must surface a modal whose only button is **Sync**, and dismissing the modal (Esc / X) must cancel the action without proceeding:
+
+1. Right-click a workspace file and choose "Stage for Push" — modal blocks the stage. Click Sync; confirm sync runs and the file then stages successfully on a second attempt.
+2. Right-click a staged file and choose "Unstage" — modal blocks. Same flow.
+3. Start any debug session (F5) — modal blocks AND clicking Sync stops the debug session before pulling.
+4. Run any task — modal blocks. Clicking Sync starts the pull (the running task may continue; v1 limit).
+
+Then trigger a real conflict: edit `src/foo.ts` locally so it differs from the branch version. Run **VersionCon: Sync**. Confirm:
+
+5. The conflict modal appears for `src/foo.ts` with three buttons: **Keep mine**, **Take branch**, **Show diff**.
+6. Clicking **Show diff** opens a side-by-side diff editor (left = branch, right = workspace) and re-prompts after the diff is open.
+7. Clicking **Take branch** overwrites the workspace file with the branch version.
+8. Clicking **Keep mine** leaves the workspace file unchanged AND the status-bar warning stays on (the file remains out-of-sync until the user reconciles).
+
+Note: this entry SUPERSEDES the v1 "Mark Synced" UAT — `versioncon.markSynced` no longer exists; the only sync command is `versioncon.sync`.
 result: [pending]
 
 ### 3. SC 2 — Push confirmation shows per-file list (post-fix)

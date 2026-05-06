@@ -407,6 +407,17 @@ export class SessionClient implements SessionEventEmitter {
     return this.sessionInfo;
   }
 
+  /**
+   * Send a protocol message to the host. No-op when the WebSocket is closed
+   * or not yet open; callers should listen for connection-changed before
+   * relying on delivery.
+   */
+  sendMessage(msg: ProtocolMessage): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      sendMessage((d) => this.ws!.send(d), msg);
+    }
+  }
+
   /** Clean up all resources. */
   dispose(): void {
     this.disconnect();

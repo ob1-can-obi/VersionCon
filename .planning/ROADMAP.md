@@ -77,8 +77,8 @@ Plans:
 Plans:
 - [x] 03-01-PLAN.md — Wave 0/1: Create SyncTracker service + test scaffolds (syncTracker, permissionEnforcement, pushIntegration)
 - [x] 03-02-PLAN.md — Wave 1: Wire permission gates into push/createBranch commands, expand admin permission UI, enhance types/protocol
-- [ ] 03-03-PLAN.md — Wave 2: computeAffectedMembers in PushService, partial-revert broadcast fix, host-side relay permission validation
-- [ ] 03-04-PLAN.md — Wave 2: Wire SyncTracker into extension lifecycle, debug/task sync warnings, markSynced command (v1 sync-state-only; file-pull deferred)
+- [x] 03-03-PLAN.md — Wave 2: computeAffectedMembers in PushService, partial-revert broadcast fix, host-side relay permission validation
+- [x] 03-04-PLAN.md — Wave 2: Wire SyncTracker into extension lifecycle, debug/task sync warnings, markSynced command (v1 sync-state-only; file-pull deferred)
 - [ ] 03-05-PLAN.md — Wave 3: BranchListProvider all-branches view (BRANCH-03), quickMergeFiles command (BRANCH-07), structuredMergeBranch walkthrough (BRANCH-08)
 
 ### Phase 4: Presence, Chat + File-Level Conflict Notifications

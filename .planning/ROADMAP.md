@@ -73,7 +73,13 @@ Plans:
   3. A user can open push history, find any past push, and revert the entire push or select individual files to revert — team receives a notification when a revert happens
   4. An admin can create branches, lock branches, grant or revoke per-person push rights, and restrict members to specific branches — all at runtime without restarting
   5. The extension warns a user who tries to run/test code when their workspace is out of sync with the latest branch state
-**Plans**: TBD
+**Plans:** 5 plans
+Plans:
+- [x] 03-01-PLAN.md — Wave 0/1: Create SyncTracker service + test scaffolds (syncTracker, permissionEnforcement, pushIntegration)
+- [x] 03-02-PLAN.md — Wave 1: Wire permission gates into push/createBranch commands, expand admin permission UI, enhance types/protocol
+- [ ] 03-03-PLAN.md — Wave 2: computeAffectedMembers in PushService, partial-revert broadcast fix, host-side relay permission validation
+- [ ] 03-04-PLAN.md — Wave 2: Wire SyncTracker into extension lifecycle, debug/task sync warnings, markSynced command (v1 sync-state-only; file-pull deferred)
+- [ ] 03-05-PLAN.md — Wave 3: BranchListProvider all-branches view (BRANCH-03), quickMergeFiles command (BRANCH-07), structuredMergeBranch walkthrough (BRANCH-08)
 
 ### Phase 4: Presence, Chat + File-Level Conflict Notifications
 **Goal**: Team members can see who is online and what they are working on, communicate via in-app chat, and receive soft non-blocking alerts when a teammate's push touches files they have open
@@ -142,7 +148,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 |-------|----------------|--------|-----------|
 | 1. Extension Foundation + LAN Networking | 8/9 | In Progress | - |
 | 2. Split-Pane UI + File System Layer | 0/4 | Not started | - |
-| 3. Push, Sync + Branch Management | 0/TBD | Not started | - |
+| 3. Push, Sync + Branch Management | 0/5 | Not started | - |
 | 4. Presence, Chat + File-Level Conflict Notifications | 0/TBD | Not started | - |
 | 5. Dependency-Aware Conflict Detection (AST) | 0/TBD | Not started | - |
 | 6. Inline Code Review | 0/TBD | Not started | - |

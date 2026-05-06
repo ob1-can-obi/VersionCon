@@ -602,6 +602,18 @@ export function activate(context: vscode.ExtensionContext): void {
           try {
             await pushService.revertFiles(pushId, selected.map(s => s.label));
             branchProvider.refresh();
+
+            // PUSH-08, SAFE-04: broadcast partial revert so the team gets the
+            // same notification path as a full revert. The protocol-level
+            // PushReverted carries the full list of originally-pushed files;
+            // the message body of the notification only differs by intent.
+            if (activeHost) {
+              const fullRecord = pushHistory.getRecord(pushId);
+              if (fullRecord) {
+                activeHost.broadcastRevert(fullRecord);
+              }
+            }
+
             void vscode.window.showInformationMessage(`Reverted ${selected.length} file(s).`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : 'Revert failed';

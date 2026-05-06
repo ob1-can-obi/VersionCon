@@ -116,6 +116,10 @@
         "title": "VersionCon: Manage Branch Permissions"
       },
       {
+        "command": "versioncon.markSynced",
+        "title": "VersionCon: Mark Synced"
+      },
+      {
         "command": "versioncon.previewBranchFile",
         "title": "Preview Branch File"
       },

@@ -18,6 +18,7 @@ import { BranchManager } from './filesystem/BranchManager.js';
 import { BranchPermissions } from './filesystem/BranchPermissions.js';
 import { PushHistory } from './filesystem/PushHistory.js';
 import { PushService } from './filesystem/PushService.js';
+import { SyncTracker } from './filesystem/SyncTracker.js';
 import { createTimestamp } from './network/protocol.js';
 
 // Module-level state for deactivation access
@@ -25,6 +26,9 @@ let activeHost: SessionHost | null = null;
 let activeClient: SessionClient | null = null;
 let sidebarProvider: SidebarProvider;
 let statusBarManager: StatusBarManager;
+// PUSH-09: in-memory sync tracker. Updated on local/remote pushes and on
+// sync-response (reconnect). Reset on disconnect.
+const syncTracker = new SyncTracker();
 // Track the host's member ID for permission checks. Updated by wireHostEvents
 // when a session starts. Defaults to 'local-user' (matches the placeholder
 // currentMemberId) so the local single-user case always passes host-only checks.
@@ -151,10 +155,18 @@ export function activate(context: vscode.ExtensionContext): void {
       if (data.status === 'disconnected' && data.error) {
         vscode.window.showWarningMessage(`VersionCon: ${data.error}`);
       }
+      // PUSH-09: reset sync tracker on disconnect so the next session starts
+      // from a clean state. On reconnect, sync-response reseeds latestPushId.
+      if (data.status === 'disconnected') {
+        syncTracker.reset();
+      }
     });
 
     // Phase 3: Handle push/branch notifications from other members
     client.on('push-received', (data) => {
+      // PUSH-09: track remote push -- workspace is now potentially out of sync
+      syncTracker.onRemotePush(data.pushId);
+
       // PUSH-03: surface file overlap to the receiving member so they know
       // immediately which of their tracked files were touched.
       let overlapping: string[] = [];
@@ -175,9 +187,23 @@ export function activate(context: vscode.ExtensionContext): void {
     });
 
     client.on('push-reverted', (data) => {
+      // PUSH-09: a revert changes branch state -- treat as a remote push so
+      // the user is prompted to acknowledge.
+      syncTracker.onRemotePush(data.pushId);
       void vscode.window.showInformationMessage(
         `${data.memberDisplayName} reverted a push on branch "${data.branch}"`,
       );
+    });
+
+    // PUSH-09: seed sync tracker from sync-response on reconnect. The host
+    // emits sync-response carrying the latest known pushId; if a push has
+    // happened while disconnected, the client treats it as a remote push and
+    // is therefore out of sync. SessionClient does not currently emit this
+    // event today; the listener is harmless if never fired.
+    client.on('sync-response', (data) => {
+      if (data.latestPushId) {
+        syncTracker.onRemotePush(data.latestPushId);
+      }
     });
 
     client.on('branch-created', (data) => {
@@ -491,6 +517,10 @@ export function activate(context: vscode.ExtensionContext): void {
               id: currentMemberId,
               displayName: currentDisplayName,
             });
+
+            // PUSH-09: mark the local push in the sync tracker (the local
+            // user is by definition synced after their own push).
+            syncTracker.onLocalPush(record.id);
 
             // Clear staged state
             workspaceState.clearStaged();
@@ -961,6 +991,61 @@ export function activate(context: vscode.ExtensionContext): void {
       context.subscriptions.push(
         vscode.commands.registerCommand('versioncon.refreshWorkspaceTree', () => {
           workspaceProvider!.refresh();
+        }),
+      );
+
+      // --- PUSH-09: Mark Synced command ---
+      // v1: sync-state-only operation. Clears the SyncTracker out-of-sync
+      // flag and refreshes the branch tree so the user sees the latest
+      // branch contents in the BranchTreeProvider. Workspace files are NOT
+      // modified. Full file pull (copying branch files into the workspace)
+      // is deferred to a later phase -- workspace reconciliation semantics
+      // need their own design.
+      context.subscriptions.push(
+        vscode.commands.registerCommand('versioncon.markSynced', () => {
+          branchProvider.refresh();
+          syncTracker.onSync();
+          statusBarManager.setSyncWarning(false);
+          void vscode.window.showInformationMessage(
+            'Marked as synced with latest branch state. (Workspace files unchanged -- drag from branch to workspace to pull file contents.)',
+          );
+        }),
+      );
+
+      // --- PUSH-09: Sync-before-run enforcement ---
+      // WARNING only, never blocking (per D-12/SAFE-02). When the user starts
+      // a debug session or task while out of sync, prompt them to mark as
+      // synced or ignore. The warning is informational; the run proceeds
+      // regardless of choice.
+      context.subscriptions.push(
+        vscode.debug.onDidStartDebugSession(() => {
+          if (!syncTracker.isInSync()) {
+            void vscode.window.showWarningMessage(
+              'Your workspace may be out of sync with the latest branch state. Drag from branch to workspace to pull file contents, or mark as synced if you have already reconciled.',
+              'Mark Synced',
+              'Ignore',
+            ).then(choice => {
+              if (choice === 'Mark Synced') {
+                void vscode.commands.executeCommand('versioncon.markSynced');
+              }
+            });
+          }
+        }),
+      );
+
+      context.subscriptions.push(
+        vscode.tasks.onDidStartTask(() => {
+          if (!syncTracker.isInSync()) {
+            void vscode.window.showWarningMessage(
+              'Your workspace may be out of sync with the latest branch state. Drag from branch to workspace to pull file contents, or mark as synced if you have already reconciled.',
+              'Mark Synced',
+              'Ignore',
+            ).then(choice => {
+              if (choice === 'Mark Synced') {
+                void vscode.commands.executeCommand('versioncon.markSynced');
+              }
+            });
+          }
         }),
       );
 

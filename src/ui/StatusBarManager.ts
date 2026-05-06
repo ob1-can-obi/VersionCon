@@ -13,6 +13,8 @@ import type { ConnectionStatus } from '../types/session.js';
  */
 export class StatusBarManager implements vscode.Disposable {
   private readonly item: vscode.StatusBarItem;
+  private currentStatus: ConnectionStatus = 'disconnected';
+  private currentSessionName: string | undefined;
 
   constructor() {
     this.item = vscode.window.createStatusBarItem(
@@ -29,6 +31,8 @@ export class StatusBarManager implements vscode.Disposable {
    * @param sessionName - Optional session name shown in tooltip when connected
    */
   setStatus(status: ConnectionStatus, sessionName?: string): void {
+    this.currentStatus = status;
+    this.currentSessionName = sessionName;
     switch (status) {
       case 'connected':
         this.item.text = '$(circle-filled) VersionCon';
@@ -56,14 +60,18 @@ export class StatusBarManager implements vscode.Disposable {
 
   /**
    * Show or hide a sync warning indicator (PUSH-09).
-   * Appends a warning icon when workspace may be out of sync.
+   * When show=true, replaces the status bar text/color with a warning.
+   * When show=false, re-applies the current connection status so the
+   * warning text disappears immediately (used after a successful Sync).
    */
   setSyncWarning(show: boolean): void {
     if (show) {
       this.item.text = '$(warning) VersionCon — may be out of sync';
       this.item.color = new vscode.ThemeColor('editorWarning.foreground');
+      this.item.tooltip = 'Workspace may be out of sync. Run VersionCon: Sync to pull.';
+      return;
     }
-    // Reset is handled by the next setStatus call
+    this.setStatus(this.currentStatus, this.currentSessionName);
   }
 
   dispose(): void {

@@ -25,3 +25,12 @@ export interface PushSummary {
   totalAdded: number;
   totalRemoved: number;
 }
+
+/** Enhanced push summary with affected team member info (PUSH-03). */
+export interface EnhancedPushSummary extends PushSummary {
+  affectedMembers: Array<{
+    memberId: string;
+    displayName: string;
+    overlappingFiles: string[];
+  }>;
+}

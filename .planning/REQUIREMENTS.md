@@ -38,7 +38,9 @@
 - [ ] **PUSH-06**: Undo a push by reverting the entire push (all files rolled back, team notified)
 - [ ] **PUSH-07**: Undo a push at file level — pick which files to revert, keep others
 - [ ] **PUSH-08**: Team receives notification when a push is undone
-- [ ] **PUSH-09**: Must be in sync with latest branch state before running/testing code (sync-before-run enforcement)
+- [ ] **PUSH-09**: Must be in sync with latest branch state — out-of-sync workspaces are blocked from running code, debugging, AND staging/unstaging files; UI surfaces the block as a modal that points the user to the Sync command, not a dismissable toast
+- [ ] **PUSH-10**: Out-of-sync state is resolved by a real Sync command that pulls the latest branch versions of each affected file into the workspace; Mark Synced (acknowledge-only, no file pull) is removed from v1 — the only path back to in-sync is pulling the actual code
+- [ ] **PUSH-11**: When a Sync would overwrite local edits to a file, the user is presented with a per-file conflict prompt (Keep mine / Take branch / Show diff) before any file is touched; "Keep mine" preserves the local edit but leaves the user out-of-sync for that file until resolved
 
 ### Branch Management
 
@@ -152,6 +154,8 @@
 | PUSH-07 | Phase 3 | Pending |
 | PUSH-08 | Phase 3 | Pending |
 | PUSH-09 | Phase 3 | Pending |
+| PUSH-10 | Phase 3 | Pending |
+| PUSH-11 | Phase 3 | Pending |
 | BRANCH-01 | Phase 3 | Pending |
 | BRANCH-02 | Phase 3 | Pending |
 | BRANCH-03 | Phase 3 | Pending |

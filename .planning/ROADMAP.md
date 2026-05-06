@@ -66,20 +66,22 @@ Plans:
 ### Phase 3: Push, Sync + Branch Management
 **Goal**: Users can explicitly push their changes to the shared branch, view full push history, revert any push, and admins can manage branches and permissions
 **Depends on**: Phase 2
-**Requirements**: PUSH-01, PUSH-02, PUSH-03, PUSH-04, PUSH-05, PUSH-06, PUSH-07, PUSH-08, PUSH-09, BRANCH-01, BRANCH-02, BRANCH-03, BRANCH-04, BRANCH-05, BRANCH-06, BRANCH-07, BRANCH-08, BRANCH-09, SAFE-03, SAFE-04
+**Requirements**: PUSH-01, PUSH-02, PUSH-03, PUSH-04, PUSH-05, PUSH-06, PUSH-07, PUSH-08, PUSH-09, PUSH-10, PUSH-11, BRANCH-01, BRANCH-02, BRANCH-03, BRANCH-04, BRANCH-05, BRANCH-06, BRANCH-07, BRANCH-08, BRANCH-09, SAFE-03, SAFE-04
 **Success Criteria** (what must be TRUE):
   1. A user who drags files to the branch pane sees no change to shared code until they explicitly hit "Push" with a message — the branch is read-only until that moment
   2. Before pushing, the user sees a smart summary: list of changed files, line-by-line diff, and who on the team might be affected
   3. A user can open push history, find any past push, and revert the entire push or select individual files to revert — team receives a notification when a revert happens
   4. An admin can create branches, lock branches, grant or revoke per-person push rights, and restrict members to specific branches — all at runtime without restarting
-  5. The extension warns a user who tries to run/test code when their workspace is out of sync with the latest branch state
-**Plans:** 5 plans
+  5. When the workspace is out of sync with the latest branch state, the extension blocks staging, unstaging, debug, and run actions with a modal that points the user to the Sync command — there is no dismiss-only escape hatch
+  6. Sync is a real file pull: branch files are copied into the workspace, with a per-file conflict prompt (Keep mine / Take branch / Show diff) whenever local edits collide with the incoming version
+**Plans:** 5 plans complete, 1 gap-closure pending
 Plans:
 - [x] 03-01-PLAN.md — Wave 0/1: Create SyncTracker service + test scaffolds (syncTracker, permissionEnforcement, pushIntegration)
 - [x] 03-02-PLAN.md — Wave 1: Wire permission gates into push/createBranch commands, expand admin permission UI, enhance types/protocol
 - [x] 03-03-PLAN.md — Wave 2: computeAffectedMembers in PushService, partial-revert broadcast fix, host-side relay permission validation
 - [x] 03-04-PLAN.md — Wave 2: Wire SyncTracker into extension lifecycle, debug/task sync warnings, markSynced command (v1 sync-state-only; file-pull deferred)
-- [ ] 03-05-PLAN.md — Wave 3: BranchListProvider all-branches view (BRANCH-03), quickMergeFiles command (BRANCH-07), structuredMergeBranch walkthrough (BRANCH-08)
+- [x] 03-05-PLAN.md — Wave 3: BranchListProvider all-branches view (BRANCH-03), quickMergeFiles command (BRANCH-07), structuredMergeBranch walkthrough (BRANCH-08)
+- [ ] 03-06-PLAN.md — Gap closure: block stage/unstage/debug/run on out-of-sync (modal, not toast); replace markSynced acknowledge with real pull-on-demand command (PUSH-10) and per-file conflict prompts (PUSH-11)
 
 ### Phase 4: Presence, Chat + File-Level Conflict Notifications
 **Goal**: Team members can see who is online and what they are working on, communicate via in-app chat, and receive soft non-blocking alerts when a teammate's push touches files they have open

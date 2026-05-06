@@ -36,6 +36,10 @@
         {
           "id": "versioncon.workspaceTree",
           "name": "My Workspace"
+        },
+        {
+          "id": "versioncon.branchList",
+          "name": "All Branches"
         }
       ]
     },
@@ -110,6 +114,14 @@
       {
         "command": "versioncon.mergeBranch",
         "title": "VersionCon: Merge Branch"
+      },
+      {
+        "command": "versioncon.quickMergeFiles",
+        "title": "VersionCon: Quick Merge Files Across Branches"
+      },
+      {
+        "command": "versioncon.structuredMergeBranch",
+        "title": "VersionCon: Merge Branch (Structured Walkthrough)"
       },
       {
         "command": "versioncon.manageBranchPermissions",

@@ -454,16 +454,39 @@ export function activate(context: vscode.ExtensionContext): void {
       );
 
       // Stage a file for push (replaces returnToBranch)
+      // PUSH-09: hard block — out-of-sync workspaces cannot stage. The only
+      // path forward is Sync; dismiss/Esc cancels the action.
       context.subscriptions.push(
-        vscode.commands.registerCommand('versioncon.stageForPush', (entry: { relativePath: string }) => {
+        vscode.commands.registerCommand('versioncon.stageForPush', async (entry: { relativePath: string }) => {
+          if (!syncTracker.isInSync()) {
+            const choice = await vscode.window.showInformationMessage(
+              'Your workspace is out of sync with the latest branch state.',
+              { modal: true, detail: 'You must Sync before staging. Click Sync to pull the latest branch versions, or close this dialog to cancel.' },
+              'Sync',
+            );
+            if (choice !== 'Sync') return;
+            await vscode.commands.executeCommand('versioncon.sync');
+            if (!syncTracker.isInSync()) return; // user kept some local edits; do not proceed
+          }
           workspaceState.stageFile(entry.relativePath);
           workspaceProvider!.stageFile(entry.relativePath);
         }),
       );
 
       // Unstage a file
+      // PUSH-09: hard block — out-of-sync workspaces cannot unstage either.
       context.subscriptions.push(
-        vscode.commands.registerCommand('versioncon.unstageFile', (entry: { relativePath: string }) => {
+        vscode.commands.registerCommand('versioncon.unstageFile', async (entry: { relativePath: string }) => {
+          if (!syncTracker.isInSync()) {
+            const choice = await vscode.window.showInformationMessage(
+              'Your workspace is out of sync with the latest branch state.',
+              { modal: true, detail: 'You must Sync before unstaging. Click Sync to pull the latest branch versions, or close this dialog to cancel.' },
+              'Sync',
+            );
+            if (choice !== 'Sync') return;
+            await vscode.commands.executeCommand('versioncon.sync');
+            if (!syncTracker.isInSync()) return;
+          }
           workspaceState.unstageFile(entry.relativePath);
           workspaceProvider!.unstageFile(entry.relativePath);
         }),
@@ -1375,40 +1398,43 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
       );
 
-      // --- PUSH-09: Sync-before-run enforcement ---
-      // WARNING only, never blocking (per D-12/SAFE-02). When the user starts
-      // a debug session or task while out of sync, prompt them to mark as
-      // synced or ignore. The warning is informational; the run proceeds
-      // regardless of choice.
+      // --- PUSH-09: Modal block on debug start ---
+      // The listener fires AFTER VS Code starts the session; if the user
+      // picks Sync we stop the session and run sync. Otherwise the modal
+      // interrupts but the session continues — VS Code API has no veto.
       context.subscriptions.push(
-        vscode.debug.onDidStartDebugSession(() => {
-          if (!syncTracker.isInSync()) {
-            void vscode.window.showWarningMessage(
-              'Your workspace may be out of sync with the latest branch state. Drag from branch to workspace to pull file contents, or mark as synced if you have already reconciled.',
-              'Mark Synced',
-              'Ignore',
-            ).then(choice => {
-              if (choice === 'Mark Synced') {
-                void vscode.commands.executeCommand('versioncon.markSynced');
-              }
-            });
-          }
+        vscode.debug.onDidStartDebugSession((session) => {
+          if (syncTracker.isInSync()) return;
+          void (async () => {
+            const choice = await vscode.window.showInformationMessage(
+              'Your workspace is out of sync with the latest branch state.',
+              { modal: true, detail: 'You must Sync before debugging. Click Sync to stop the current debug session and pull the latest branch versions.' },
+              'Sync',
+            );
+            if (choice !== 'Sync') return;
+            await vscode.debug.stopDebugging(session);
+            await vscode.commands.executeCommand('versioncon.sync');
+          })();
         }),
       );
 
+      // --- PUSH-09: Modal block on task start ---
+      // v1 limit — VS Code does not expose a generic stop-task API, so the
+      // task continues running while the modal is open. The block still
+      // interrupts the user visibly; if they pick Sync they should also kill
+      // the running task themselves.
       context.subscriptions.push(
         vscode.tasks.onDidStartTask(() => {
-          if (!syncTracker.isInSync()) {
-            void vscode.window.showWarningMessage(
-              'Your workspace may be out of sync with the latest branch state. Drag from branch to workspace to pull file contents, or mark as synced if you have already reconciled.',
-              'Mark Synced',
-              'Ignore',
-            ).then(choice => {
-              if (choice === 'Mark Synced') {
-                void vscode.commands.executeCommand('versioncon.markSynced');
-              }
-            });
-          }
+          if (syncTracker.isInSync()) return;
+          void (async () => {
+            const choice = await vscode.window.showInformationMessage(
+              'Your workspace is out of sync with the latest branch state.',
+              { modal: true, detail: 'You must Sync before running tasks. Click Sync to pull the latest branch versions. (You may need to stop the running task manually.)' },
+              'Sync',
+            );
+            if (choice !== 'Sync') return;
+            await vscode.commands.executeCommand('versioncon.sync');
+          })();
         }),
       );
 

@@ -24,6 +24,10 @@ let activeHost: SessionHost | null = null;
 let activeClient: SessionClient | null = null;
 let sidebarProvider: SidebarProvider;
 let statusBarManager: StatusBarManager;
+// Track the host's member ID for permission checks. Updated by wireHostEvents
+// when a session starts. Defaults to 'local-user' (matches the placeholder
+// currentMemberId) so the local single-user case always passes host-only checks.
+let hostMemberId = 'local-user';
 
 export function activate(context: vscode.ExtensionContext): void {
   // --- Core services ---
@@ -40,6 +44,11 @@ export function activate(context: vscode.ExtensionContext): void {
   // --- Helper: wire host events to UI ---
   function wireHostEvents(host: SessionHost, sessionName: string): void {
     activeHost = host;
+    // Host is always the first member -- track the host's local member ID for
+    // permission checks (canPushToBranch, canCreateBranch host-bypass).
+    // The host's local commands run with currentMemberId = 'local-user', which
+    // matches the default hostMemberId, so host actions always pass.
+    hostMemberId = 'local-user';
     statusBarManager.setStatus('connected', sessionName);
     sidebarProvider.updateState({
       connectionStatus: 'connected',
@@ -357,6 +366,23 @@ export function activate(context: vscode.ExtensionContext): void {
           }
 
           const stagedPaths = staged.map(s => s.path);
+
+          // Permission check: locked branch (BRANCH-04)
+          const branch = branchProvider.getActiveBranchName();
+          const branchInfo = branchManager.getBranch(branch);
+          if (branchInfo?.locked) {
+            const canPush = branchInfo.lockedPushers?.includes(currentMemberId) ?? false;
+            if (!canPush && currentMemberId !== hostMemberId) {
+              void vscode.window.showErrorMessage(`Branch "${branch}" is locked. You do not have push access.`);
+              return;
+            }
+          }
+          // Permission check: branch restrictions (BRANCH-05)
+          if (!permissions.canPushToBranch(currentMemberId, branch)) {
+            void vscode.window.showErrorMessage(`You do not have permission to push to branch "${branch}".`);
+            return;
+          }
+
           const summary = await pushService.generateSummary(stagedPaths);
 
           // Show summary and ask for commit message
@@ -499,6 +525,12 @@ export function activate(context: vscode.ExtensionContext): void {
       // Create branch
       context.subscriptions.push(
         vscode.commands.registerCommand('versioncon.createBranch', async () => {
+          // Permission check: branch creation (BRANCH-02)
+          if (!permissions.canCreateBranch(currentMemberId)) {
+            void vscode.window.showErrorMessage('You do not have permission to create branches. Ask the admin to grant access.');
+            return;
+          }
+
           const name = await vscode.window.showInputBox({
             prompt: 'Enter new branch name',
             placeHolder: 'feature-xyz',
@@ -646,57 +678,153 @@ export function activate(context: vscode.ExtensionContext): void {
             { label: 'Set merge policy', description: 'Who can merge to main' },
             { label: 'Lock a branch', description: 'Restrict push access' },
             { label: 'Unlock a branch', description: 'Remove push restrictions' },
+            { label: 'Grant branch creation', description: 'Allow a member to create branches' },
+            { label: 'Revoke branch creation', description: 'Remove branch creation permission' },
+            { label: 'Restrict branch access', description: 'Limit who can push to a branch' },
+            { label: 'Clear branch restrictions', description: 'Remove push restrictions from a branch' },
           ], { placeHolder: 'Branch permission management' });
 
           if (!action) return;
 
-          if (action.label === 'Set merge policy') {
-            const policy = await vscode.window.showQuickPick([
-              { label: 'open', description: 'Anyone can merge' },
-              { label: 'limited', description: 'Only approved members' },
-              { label: 'restricted', description: 'Host only' },
-            ], { placeHolder: 'Select merge policy' });
+          try {
+            if (action.label === 'Set merge policy') {
+              const policy = await vscode.window.showQuickPick([
+                { label: 'open', description: 'Anyone can merge' },
+                { label: 'limited', description: 'Only approved members' },
+                { label: 'restricted', description: 'Host only' },
+              ], { placeHolder: 'Select merge policy' });
 
-            if (policy) {
-              await permissions.setMergePolicy(policy.label as 'open' | 'limited' | 'restricted');
-              void vscode.window.showInformationMessage(`Merge policy set to: ${policy.label}`);
-            }
-          } else if (action.label === 'Lock a branch') {
-            const branches = branchManager.listBranches().filter(b => !b.locked);
-            if (branches.length === 0) {
-              void vscode.window.showInformationMessage('All branches are already locked.');
-              return;
-            }
-            const selected = await vscode.window.showQuickPick(
-              branches.map(b => ({ label: b.name })),
-              { placeHolder: 'Select branch to lock' },
-            );
-            if (selected) {
-              await branchManager.lockBranch(selected.label);
-              void vscode.window.showInformationMessage(`Branch "${selected.label}" locked.`);
-
-              if (activeHost) {
-                activeHost.broadcastBranchLocked(selected.label, true);
+              if (policy) {
+                await permissions.setMergePolicy(policy.label as 'open' | 'limited' | 'restricted');
+                void vscode.window.showInformationMessage(`Merge policy set to: ${policy.label}`);
               }
-            }
-          } else if (action.label === 'Unlock a branch') {
-            const branches = branchManager.listBranches().filter(b => b.locked);
-            if (branches.length === 0) {
-              void vscode.window.showInformationMessage('No branches are locked.');
-              return;
-            }
-            const selected = await vscode.window.showQuickPick(
-              branches.map(b => ({ label: b.name })),
-              { placeHolder: 'Select branch to unlock' },
-            );
-            if (selected) {
-              await branchManager.unlockBranch(selected.label);
-              void vscode.window.showInformationMessage(`Branch "${selected.label}" unlocked.`);
-
-              if (activeHost) {
-                activeHost.broadcastBranchLocked(selected.label, false);
+            } else if (action.label === 'Lock a branch') {
+              const branches = branchManager.listBranches().filter(b => !b.locked);
+              if (branches.length === 0) {
+                void vscode.window.showInformationMessage('All branches are already locked.');
+                return;
               }
+              const selected = await vscode.window.showQuickPick(
+                branches.map(b => ({ label: b.name })),
+                { placeHolder: 'Select branch to lock' },
+              );
+              if (selected) {
+                await branchManager.lockBranch(selected.label);
+                void vscode.window.showInformationMessage(`Branch "${selected.label}" locked.`);
+
+                if (activeHost) {
+                  activeHost.broadcastBranchLocked(selected.label, true);
+                }
+              }
+            } else if (action.label === 'Unlock a branch') {
+              const branches = branchManager.listBranches().filter(b => b.locked);
+              if (branches.length === 0) {
+                void vscode.window.showInformationMessage('No branches are locked.');
+                return;
+              }
+              const selected = await vscode.window.showQuickPick(
+                branches.map(b => ({ label: b.name })),
+                { placeHolder: 'Select branch to unlock' },
+              );
+              if (selected) {
+                await branchManager.unlockBranch(selected.label);
+                void vscode.window.showInformationMessage(`Branch "${selected.label}" unlocked.`);
+
+                if (activeHost) {
+                  activeHost.broadcastBranchLocked(selected.label, false);
+                }
+              }
+            } else if (action.label === 'Grant branch creation') {
+              // BRANCH-01: Admin grants branch creation to a member
+              const members = activeHost?.getMembers().filter(m => m.role !== 'host') ?? [];
+              let memberId: string | undefined;
+              if (members.length > 0) {
+                const picked = await vscode.window.showQuickPick(
+                  members.map(m => ({ label: m.displayName, description: m.id, memberId: m.id })),
+                  { placeHolder: 'Select member to grant branch creation' },
+                );
+                memberId = picked?.memberId;
+              } else {
+                memberId = await vscode.window.showInputBox({
+                  prompt: 'Enter member ID to grant branch creation',
+                  placeHolder: 'member-id',
+                  validateInput: (v) => v.trim() ? null : 'Member ID required',
+                });
+              }
+              if (!memberId) return;
+              await permissions.grantBranchCreation(memberId);
+              void vscode.window.showInformationMessage(`Granted branch creation to "${memberId}".`);
+            } else if (action.label === 'Revoke branch creation') {
+              // BRANCH-01: Admin revokes branch creation from a member
+              const granted = permissions.getData().canCreateBranch;
+              if (granted.length === 0) {
+                void vscode.window.showInformationMessage('No members have branch creation granted.');
+                return;
+              }
+              const selected = await vscode.window.showQuickPick(
+                granted.map(id => ({ label: id })),
+                { placeHolder: 'Select member to revoke branch creation' },
+              );
+              if (!selected) return;
+              await permissions.revokeBranchCreation(selected.label);
+              void vscode.window.showInformationMessage(`Revoked branch creation from "${selected.label}".`);
+            } else if (action.label === 'Restrict branch access') {
+              // BRANCH-05: Admin restricts a branch to specific members
+              const branches = branchManager.listBranches();
+              if (branches.length === 0) {
+                void vscode.window.showInformationMessage('No branches available.');
+                return;
+              }
+              const branchPick = await vscode.window.showQuickPick(
+                branches.map(b => ({ label: b.name })),
+                { placeHolder: 'Select branch to restrict' },
+              );
+              if (!branchPick) return;
+
+              // Multi-select members from session, fallback to InputBox
+              const members = activeHost?.getMembers().filter(m => m.role !== 'host') ?? [];
+              let allowedMembers: string[];
+              if (members.length > 0) {
+                const picked = await vscode.window.showQuickPick(
+                  members.map(m => ({ label: m.displayName, description: m.id, memberId: m.id })),
+                  { placeHolder: 'Select allowed members (multi-select)', canPickMany: true },
+                );
+                if (!picked || picked.length === 0) return;
+                allowedMembers = picked.map(p => p.memberId);
+              } else {
+                const csv = await vscode.window.showInputBox({
+                  prompt: `Comma-separated member IDs allowed to push to "${branchPick.label}"`,
+                  placeHolder: 'member-1, member-2',
+                  validateInput: (v) => v.trim() ? null : 'At least one member ID required',
+                });
+                if (!csv) return;
+                allowedMembers = csv.split(',').map(s => s.trim()).filter(Boolean);
+                if (allowedMembers.length === 0) return;
+              }
+              await permissions.restrictBranch(branchPick.label, allowedMembers);
+              void vscode.window.showInformationMessage(
+                `Branch "${branchPick.label}" restricted to ${allowedMembers.length} member(s).`,
+              );
+            } else if (action.label === 'Clear branch restrictions') {
+              const restrictions = permissions.getData().branchRestrictions;
+              const restrictedNames = Object.keys(restrictions);
+              if (restrictedNames.length === 0) {
+                void vscode.window.showInformationMessage('No branches have push restrictions.');
+                return;
+              }
+              const selected = await vscode.window.showQuickPick(
+                restrictedNames.map(n => ({ label: n, description: `${restrictions[n].length} allowed member(s)` })),
+                { placeHolder: 'Select branch to clear restrictions for' },
+              );
+              if (!selected) return;
+              await permissions.clearRestrictions(selected.label);
+              void vscode.window.showInformationMessage(
+                `Cleared push restrictions on "${selected.label}".`,
+              );
             }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Operation failed';
+            void vscode.window.showErrorMessage(`VersionCon: ${msg}`);
           }
         }),
       );

@@ -12,6 +12,7 @@ import { SessionClient } from './client/SessionClient.js';
 import type { ConnectionStatus } from './types/session.js';
 import { FileSystemLayer } from './filesystem/FileSystemLayer.js';
 import { BranchTreeProvider } from './ui/BranchTreeProvider.js';
+import { BranchListProvider } from './ui/BranchListProvider.js';
 import { WorkspaceTreeProvider } from './ui/WorkspaceTreeProvider.js';
 import { WorkspaceState } from './filesystem/WorkspaceState.js';
 import { BranchManager } from './filesystem/BranchManager.js';
@@ -24,6 +25,11 @@ import { createTimestamp } from './network/protocol.js';
 // Module-level state for deactivation access
 let activeHost: SessionHost | null = null;
 let activeClient: SessionClient | null = null;
+// Phase 3 (BRANCH-03): module-level reference so the client `branch-created`
+// handler (declared in wireClientEvents, outer-scope) can refresh the all-
+// branches tree even though the provider itself is constructed inside the
+// async IIFE that owns workspace state.
+let activeBranchListProvider: BranchListProvider | null = null;
 let sidebarProvider: SidebarProvider;
 let statusBarManager: StatusBarManager;
 // PUSH-09: in-memory sync tracker. Updated on local/remote pushes and on
@@ -207,12 +213,20 @@ export function activate(context: vscode.ExtensionContext): void {
     });
 
     client.on('branch-created', (data) => {
+      // BRANCH-03: refresh the all-branches view when a remote member creates a branch
+      if (activeBranchListProvider) {
+        activeBranchListProvider.refresh();
+      }
       void vscode.window.showInformationMessage(
-        `New branch created: "${data.branch.name}"`,
+        `New branch created: "${data.branch.name}" by ${data.branch.createdBy}`,
       );
     });
 
     client.on('branch-locked', (data) => {
+      // BRANCH-03: refresh the all-branches view when a remote member locks/unlocks a branch
+      if (activeBranchListProvider) {
+        activeBranchListProvider.refresh();
+      }
       void vscode.window.showInformationMessage(
         `Branch "${data.branchName}" was ${data.locked ? 'locked' : 'unlocked'}`,
       );
@@ -338,12 +352,18 @@ export function activate(context: vscode.ExtensionContext): void {
       branchProvider.setBranchDir(activeBranchDir);
       branchProvider.setActiveBranchName(activeBranchName);
 
+      // BRANCH-03: all-branches tree (separate from active-branch file tree)
+      const branchListProvider = new BranchListProvider(branchManager);
+      branchListProvider.setActiveBranchName(activeBranchName);
+      activeBranchListProvider = branchListProvider;
+
       workspaceProvider = new WorkspaceTreeProvider(fsLayer);
 
       // Register tree data providers
       context.subscriptions.push(
         vscode.window.registerTreeDataProvider('versioncon.branchTree', branchProvider),
         vscode.window.registerTreeDataProvider('versioncon.workspaceTree', workspaceProvider),
+        vscode.window.registerTreeDataProvider('versioncon.branchList', branchListProvider),
       );
 
       // Phase 3 (PUSH-03): emit tracked-paths-update on workspace tracking
@@ -671,6 +691,8 @@ export function activate(context: vscode.ExtensionContext): void {
           try {
             const activeBranch = await branchManager.getActiveBranch();
             const info = await branchManager.createBranch(name, activeBranch, currentMemberId);
+            // BRANCH-03: refresh all-branches view on local create
+            branchListProvider.refresh();
             void vscode.window.showInformationMessage(`Branch "${name}" created from "${activeBranch}".`);
 
             if (activeHost) {
@@ -706,6 +728,8 @@ export function activate(context: vscode.ExtensionContext): void {
           branchProvider.setBranchDir(newDir);
           branchProvider.setActiveBranchName(selected.label);
           branchProvider.refresh();
+          // BRANCH-03: update active marker in all-branches view
+          branchListProvider.setActiveBranchName(selected.label);
           void vscode.window.showInformationMessage(`Switched to branch "${selected.label}".`);
         }),
       );
@@ -738,6 +762,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
           try {
             await branchManager.deleteBranch(selected.label);
+            // BRANCH-03: refresh all-branches view on delete
+            branchListProvider.refresh();
             void vscode.window.showInformationMessage(`Branch "${selected.label}" deleted.`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : 'Failed to delete branch';
@@ -840,6 +866,8 @@ export function activate(context: vscode.ExtensionContext): void {
               );
               if (selected) {
                 await branchManager.lockBranch(selected.label);
+                // BRANCH-03: refresh all-branches view on lock
+                branchListProvider.refresh();
                 void vscode.window.showInformationMessage(`Branch "${selected.label}" locked.`);
 
                 if (activeHost) {
@@ -858,6 +886,8 @@ export function activate(context: vscode.ExtensionContext): void {
               );
               if (selected) {
                 await branchManager.unlockBranch(selected.label);
+                // BRANCH-03: refresh all-branches view on unlock
+                branchListProvider.refresh();
                 void vscode.window.showInformationMessage(`Branch "${selected.label}" unlocked.`);
 
                 if (activeHost) {

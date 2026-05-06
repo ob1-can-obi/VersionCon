@@ -36,6 +36,10 @@
         {
           "id": "versioncon.workspaceTree",
           "name": "My Workspace"
+        },
+        {
+          "id": "versioncon.branchList",
+          "name": "All Branches"
         }
       ]
     },

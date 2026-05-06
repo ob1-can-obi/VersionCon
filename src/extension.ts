@@ -827,6 +827,222 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
       );
 
+      // Quick merge: copy specific files from one branch to another (BRANCH-07)
+      context.subscriptions.push(
+        vscode.commands.registerCommand('versioncon.quickMergeFiles', async () => {
+          const branches = branchManager.listBranches();
+          if (branches.length < 2) {
+            void vscode.window.showInformationMessage('Need at least two branches to merge files.');
+            return;
+          }
+
+          // 1. Pick source branch
+          const sourceItem = await vscode.window.showQuickPick(
+            branches.map(b => ({ label: b.name })),
+            { placeHolder: 'Source branch (copy files FROM)' },
+          );
+          if (!sourceItem) return;
+
+          // 2. Pick target branch (cannot equal source)
+          const targetItem = await vscode.window.showQuickPick(
+            branches.filter(b => b.name !== sourceItem.label).map(b => ({ label: b.name })),
+            { placeHolder: 'Target branch (copy files TO)' },
+          );
+          if (!targetItem) return;
+
+          // 3. Permission check — same as full merge: if target is main, require canMergeToMain
+          if (targetItem.label === 'main' && !permissions.canMergeToMain(currentMemberId)) {
+            void vscode.window.showErrorMessage('You do not have permission to merge into main.');
+            return;
+          }
+          // 3b. Lock check — refuse if target branch is locked and user is not in lockedPushers
+          const targetInfo = branchManager.getBranch(targetItem.label);
+          if (targetInfo?.locked) {
+            const allowed = targetInfo.lockedPushers?.includes(currentMemberId) ?? false;
+            if (!allowed && currentMemberId !== hostMemberId) {
+              void vscode.window.showErrorMessage(`Branch "${targetItem.label}" is locked. You cannot merge into it.`);
+              return;
+            }
+          }
+
+          // 4. Enumerate source files and let the user multi-select
+          const sourceDir = path.join(versionconDir, 'branches', sourceItem.label);
+          const filePaths = await fsLayer.collectFilePaths(sourceDir, '');
+          if (filePaths.length === 0) {
+            void vscode.window.showInformationMessage(`Source branch "${sourceItem.label}" has no files.`);
+            return;
+          }
+
+          const picks = await vscode.window.showQuickPick(
+            filePaths.map(p => ({ label: p, picked: false })),
+            {
+              placeHolder: `Select files to copy from "${sourceItem.label}" to "${targetItem.label}"`,
+              canPickMany: true,
+            },
+          );
+          if (!picks || picks.length === 0) return;
+
+          // 5. Confirm
+          const confirm = await vscode.window.showWarningMessage(
+            `Copy ${picks.length} file(s) from "${sourceItem.label}" to "${targetItem.label}"? Existing files in target will be overwritten.`,
+            { modal: true },
+            'Copy',
+          );
+          if (confirm !== 'Copy') return;
+
+          // 6. Execute
+          try {
+            const targetDir = path.join(versionconDir, 'branches', targetItem.label);
+            for (const pick of picks) {
+              const src = path.join(sourceDir, pick.label);
+              const dest = path.join(targetDir, pick.label);
+              await fsPromises.mkdir(path.dirname(dest), { recursive: true });
+              await fsPromises.copyFile(src, dest);
+            }
+            branchProvider.refresh();
+            if (activeBranchListProvider) activeBranchListProvider.refresh();
+            void vscode.window.showInformationMessage(
+              `Quick-merged ${picks.length} file(s) from "${sourceItem.label}" into "${targetItem.label}".`,
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Quick merge failed';
+            void vscode.window.showErrorMessage(`VersionCon: ${msg}`);
+          }
+        }),
+      );
+
+      // Structured merge: full-branch merge with per-file diff walkthrough (BRANCH-08)
+      context.subscriptions.push(
+        vscode.commands.registerCommand('versioncon.structuredMergeBranch', async () => {
+          const branches = branchManager.listBranches();
+          if (branches.length < 2) {
+            void vscode.window.showInformationMessage('Need at least two branches to merge.');
+            return;
+          }
+
+          const sourceItem = await vscode.window.showQuickPick(
+            branches.map(b => ({ label: b.name })),
+            { placeHolder: 'Source branch (merge FROM)' },
+          );
+          if (!sourceItem) return;
+
+          const targetItem = await vscode.window.showQuickPick(
+            branches.filter(b => b.name !== sourceItem.label).map(b => ({ label: b.name })),
+            { placeHolder: 'Target branch (merge INTO)' },
+          );
+          if (!targetItem) return;
+
+          // Permission + lock checks (same as quick merge)
+          if (targetItem.label === 'main' && !permissions.canMergeToMain(currentMemberId)) {
+            void vscode.window.showErrorMessage('You do not have permission to merge into main.');
+            return;
+          }
+          const targetInfo = branchManager.getBranch(targetItem.label);
+          if (targetInfo?.locked) {
+            const allowed = targetInfo.lockedPushers?.includes(currentMemberId) ?? false;
+            if (!allowed && currentMemberId !== hostMemberId) {
+              void vscode.window.showErrorMessage(`Branch "${targetItem.label}" is locked. You cannot merge into it.`);
+              return;
+            }
+          }
+
+          const sourceDir = path.join(versionconDir, 'branches', sourceItem.label);
+          const targetDir = path.join(versionconDir, 'branches', targetItem.label);
+          const sourcePaths = await fsLayer.collectFilePaths(sourceDir, '');
+          const targetPaths = new Set(await fsLayer.collectFilePaths(targetDir, ''));
+
+          // Build per-file walkthrough with stats: 'added' (only in source) or 'modified' (in both)
+          type Walk = { path: string; status: 'added' | 'modified'; addedLines: number; removedLines: number };
+          const walk: Walk[] = [];
+          for (const p of sourcePaths) {
+            const srcContent = await fsPromises
+              .readFile(path.join(sourceDir, p), 'utf-8')
+              .catch(() => '');
+            if (targetPaths.has(p)) {
+              const tgtContent = await fsPromises
+                .readFile(path.join(targetDir, p), 'utf-8')
+                .catch(() => '');
+              if (srcContent === tgtContent) continue; // identical, skip
+              const srcLines = srcContent.split('\n').length;
+              const tgtLines = tgtContent.split('\n').length;
+              walk.push({
+                path: p,
+                status: 'modified',
+                addedLines: Math.max(0, srcLines - tgtLines),
+                removedLines: Math.max(0, tgtLines - srcLines),
+              });
+            } else {
+              walk.push({
+                path: p,
+                status: 'added',
+                addedLines: srcContent.split('\n').length,
+                removedLines: 0,
+              });
+            }
+          }
+
+          if (walk.length === 0) {
+            void vscode.window.showInformationMessage(
+              `No differences between "${sourceItem.label}" and "${targetItem.label}". Nothing to merge.`,
+            );
+            return;
+          }
+
+          // Show structured walkthrough as a multi-select QuickPick. Each item's
+          // detail string contains the diff stats. The user can preview any file
+          // by selecting it. Confirm-to-merge is a final modal.
+          const items = walk.map(w => ({
+            label: `${w.status === 'added' ? '+' : '~'} ${w.path}`,
+            description: `+${w.addedLines} -${w.removedLines}`,
+            detail: w.status === 'added' ? 'NEW in source' : 'MODIFIED in source',
+            path: w.path,
+          }));
+
+          const reviewed = await vscode.window.showQuickPick(items, {
+            placeHolder: `Merge preview: ${walk.length} file(s) will change. Select files to preview diff (multi-select), or press Esc to skip preview.`,
+            canPickMany: true,
+          });
+
+          // Open vscode.diff for each selected file BEFORE confirming the merge.
+          if (reviewed && reviewed.length > 0) {
+            for (const r of reviewed) {
+              const srcUri = vscode.Uri.file(path.join(sourceDir, r.path));
+              const tgtUri = vscode.Uri.file(path.join(targetDir, r.path));
+              await vscode.commands.executeCommand(
+                'vscode.diff',
+                tgtUri, srcUri,
+                `${r.path} (${targetItem.label} ↔ ${sourceItem.label})`,
+              );
+            }
+          }
+
+          // Final confirmation modal
+          const confirm = await vscode.window.showWarningMessage(
+            `Merge "${sourceItem.label}" into "${targetItem.label}"? ${walk.length} file(s) will be overwritten.`,
+            { modal: true },
+            'Merge',
+          );
+          if (confirm !== 'Merge') return;
+
+          try {
+            for (const w of walk) {
+              const src = path.join(sourceDir, w.path);
+              const dest = path.join(targetDir, w.path);
+              await fsPromises.mkdir(path.dirname(dest), { recursive: true });
+              await fsPromises.copyFile(src, dest);
+            }
+            branchProvider.refresh();
+            if (activeBranchListProvider) activeBranchListProvider.refresh();
+            void vscode.window.showInformationMessage(
+              `Merged "${sourceItem.label}" into "${targetItem.label}" (${walk.length} files changed).`,
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Structured merge failed';
+            void vscode.window.showErrorMessage(`VersionCon: ${msg}`);
+          }
+        }),
+      );
+
       // Manage branch permissions (host-only)
       context.subscriptions.push(
         vscode.commands.registerCommand('versioncon.manageBranchPermissions', async () => {

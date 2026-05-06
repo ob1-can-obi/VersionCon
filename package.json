@@ -116,6 +116,14 @@
         "title": "VersionCon: Merge Branch"
       },
       {
+        "command": "versioncon.quickMergeFiles",
+        "title": "VersionCon: Quick Merge Files Across Branches"
+      },
+      {
+        "command": "versioncon.structuredMergeBranch",
+        "title": "VersionCon: Merge Branch (Structured Walkthrough)"
+      },
+      {
         "command": "versioncon.manageBranchPermissions",
         "title": "VersionCon: Manage Branch Permissions"
       },

@@ -23,7 +23,8 @@ export type MessageType =
   | 'branch-locked'
   | 'permission-changed'
   | 'sync-request'
-  | 'sync-response';
+  | 'sync-response'
+  | 'tracked-paths-update';
 
 // --- Base ---
 interface BaseMessage {
@@ -156,6 +157,19 @@ export interface SyncResponse extends BaseMessage {
   type: 'sync-response';
   branch: string;
   files: PushFileEntry[];
+  latestPushId: string | null;
+}
+
+/**
+ * Member broadcasts the relative paths they are currently tracking in their
+ * workspace. Sent on workspace-tracking-changed events. The host accumulates
+ * these into a MemberTrackingMap used by PushService.computeAffectedMembers
+ * (PUSH-03).
+ */
+export interface TrackedPathsUpdate extends BaseMessage {
+  type: 'tracked-paths-update';
+  memberId: string;
+  paths: string[];
 }
 
 // --- Discriminated union ---
@@ -179,7 +193,8 @@ export type ProtocolMessage =
   | BranchLocked
   | PermissionChanged
   | SyncRequest
-  | SyncResponse;
+  | SyncResponse
+  | TrackedPathsUpdate;
 
 // --- Helpers ---
 const VALID_TYPES: ReadonlySet<string> = new Set<MessageType>([
@@ -189,6 +204,7 @@ const VALID_TYPES: ReadonlySet<string> = new Set<MessageType>([
   'heartbeat-ping', 'heartbeat-pong', 'error',
   'push-notification', 'push-reverted', 'branch-created',
   'branch-locked', 'permission-changed', 'sync-request', 'sync-response',
+  'tracked-paths-update',
 ]);
 
 export function sendMessage(send: (data: string) => void, msg: ProtocolMessage): void {

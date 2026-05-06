@@ -519,13 +519,19 @@ export function activate(context: vscode.ExtensionContext): void {
             }
           }
 
-          // Show summary and ask for commit message
-          const detail = summary.files.map(f =>
+          const fileList = summary.files.map(f =>
             `${f.status === 'added' ? '+' : f.status === 'deleted' ? '-' : '~'} ${f.relativePath} (+${f.addedLines} -${f.removedLines})`
           ).join('\n');
 
+          const confirmation = await vscode.window.showInformationMessage(
+            `Push ${staged.length} file(s) (+${summary.totalAdded} -${summary.totalRemoved} lines)`,
+            { modal: true, detail: `${fileList}${affectedInfo}` },
+            'Push',
+          );
+          if (confirmation !== 'Push') return;
+
           const message = await vscode.window.showInputBox({
-            prompt: `Push ${staged.length} file(s) (+${summary.totalAdded} -${summary.totalRemoved} lines)${affectedInfo}`,
+            prompt: 'Enter push message',
             placeHolder: 'Enter push message...',
             validateInput: (v) => v.trim() ? null : 'Message is required',
           });

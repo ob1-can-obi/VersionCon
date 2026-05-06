@@ -150,6 +150,86 @@ suite('FileSystemLayer', () => {
   });
 });
 
+// FileSystemLayer — new methods for TreeView
+suite('FileSystemLayer — TreeView methods', () => {
+  let tmpDir: string;
+  let branchDir: string;
+  let projectRoot: string;
+  let fsLayer: FileSystemLayer;
+
+  setup(async () => {
+    tmpDir = path.join(os.tmpdir(), `versioncon-fs-tree-test-${Date.now()}`);
+    branchDir = path.join(tmpDir, '.versioncon', 'branch');
+    projectRoot = tmpDir;
+    await fs.mkdir(branchDir, { recursive: true });
+    fsLayer = new FileSystemLayer(projectRoot, branchDir);
+  });
+
+  teardown(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  test('buildFileEntries returns FileEntry hierarchy', async () => {
+    await fs.mkdir(path.join(branchDir, 'src'), { recursive: true });
+    await fs.writeFile(path.join(branchDir, 'src', 'app.ts'), 'const x = 1;');
+    await fs.writeFile(path.join(branchDir, 'README.md'), '# Hello');
+
+    const entries = await fsLayer.buildFileEntries(branchDir, branchDir);
+
+    assert.ok(entries.length >= 2, 'Should have at least 2 entries');
+    const srcEntry = entries.find(e => e.name === 'src');
+    assert.ok(srcEntry, 'Should have src directory');
+    assert.ok(srcEntry!.isDirectory);
+    assert.ok(srcEntry!.children && srcEntry!.children.length > 0);
+
+    const readme = entries.find(e => e.name === 'README.md');
+    assert.ok(readme, 'Should have README.md');
+    assert.ok(!readme!.isDirectory);
+  });
+
+  test('copyFileFromWorkspaceToBranch copies file back', async () => {
+    // Create a file in workspace (projectRoot)
+    await fs.mkdir(path.join(projectRoot, 'src'), { recursive: true });
+    await fs.writeFile(path.join(projectRoot, 'src', 'edited.ts'), 'edited content');
+
+    await fsLayer.copyFileFromWorkspaceToBranch('src/edited.ts');
+
+    const content = await fs.readFile(path.join(branchDir, 'src', 'edited.ts'), 'utf-8');
+    assert.strictEqual(content, 'edited content');
+  });
+
+  test('copyFileFromWorkspaceToBranch throws on path traversal', async () => {
+    await assert.rejects(
+      () => fsLayer.copyFileFromWorkspaceToBranch('../../../etc/passwd'),
+      (err: Error) => {
+        assert.ok(err.message.toLowerCase().includes('traversal'));
+        return true;
+      }
+    );
+  });
+
+  test('collectFilePaths recursively lists all files', async () => {
+    await fs.mkdir(path.join(branchDir, 'src', 'utils'), { recursive: true });
+    await fs.writeFile(path.join(branchDir, 'src', 'app.ts'), '');
+    await fs.writeFile(path.join(branchDir, 'src', 'utils', 'helper.ts'), '');
+
+    const paths = await fsLayer.collectFilePaths(branchDir, 'src');
+
+    assert.ok(paths.length === 2, 'Should find 2 files');
+    assert.ok(paths.some(p => p === path.join('src', 'app.ts')));
+    assert.ok(paths.some(p => p === path.join('src', 'utils', 'helper.ts')));
+  });
+
+  test('validateWorkspacePath throws on traversal', () => {
+    assert.throws(() => fsLayer.validateWorkspacePath('../../../etc/passwd'));
+  });
+
+  test('getBranchDir and getProjectRoot return correct paths', () => {
+    assert.strictEqual(fsLayer.getBranchDir(), branchDir);
+    assert.strictEqual(fsLayer.getProjectRoot(), projectRoot);
+  });
+});
+
 // UI-02: BranchState — read-only branch tree
 suite('BranchState', () => {
   let tmpDir: string;
@@ -186,23 +266,10 @@ suite('BranchState', () => {
 
 // UI-07: WorkspaceState — staged files tracking
 suite('WorkspaceState', () => {
-  let tmpDir: string;
-  let branchDir: string;
-  let projectRoot: string;
-  let fsLayer: FileSystemLayer;
   let workspaceState: WorkspaceState;
 
-  setup(async () => {
-    tmpDir = path.join(os.tmpdir(), `versioncon-workspace-test-${Date.now()}`);
-    branchDir = path.join(tmpDir, '.versioncon', 'branch');
-    projectRoot = tmpDir;
-    await fs.mkdir(branchDir, { recursive: true });
-    fsLayer = new FileSystemLayer(projectRoot, branchDir);
-    workspaceState = new WorkspaceState(fsLayer, projectRoot);
-  });
-
-  teardown(async () => {
-    await fs.rm(tmpDir, { recursive: true, force: true });
+  setup(() => {
+    workspaceState = new WorkspaceState();
   });
 
   test('stageFile adds file path to staged list', () => {

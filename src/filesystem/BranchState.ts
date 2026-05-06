@@ -21,7 +21,7 @@ export class BranchState {
    * Call this after any known mutation to branch files.
    */
   async refresh(): Promise<void> {
-    this.tree = await this.fsLayer.buildTreeData(this.branchDir);
+    this.tree = await this.fsLayer.buildTreeData(this.branchDir, this.branchDir);
   }
 
   /**

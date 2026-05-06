@@ -1,3 +1,11 @@
+// FileEntry for native VS Code TreeView data providers
+export interface FileEntry {
+  name: string;
+  relativePath: string;
+  isDirectory: boolean;
+  children?: FileEntry[];
+}
+
 // TreeNode matches @vscode-elements/elements tree data structure
 export interface TreeNode {
   label: string;

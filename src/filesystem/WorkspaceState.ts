@@ -1,47 +1,21 @@
-import type { TreeNode, StagedFile } from '../types/filesystem.js';
-import type { FileSystemLayer } from './FileSystemLayer.js';
+import type { StagedFile } from '../types/filesystem.js';
 
 /**
- * Manages workspace tree state and the list of files staged for push.
+ * Manages the list of files staged for push.
  *
- * The workspace is the user's project root -- they edit files here freely.
- * When a user drags a file from workspace to the branch pane, it is
- * "staged" in memory (an in-memory StagedFile[] array). Phase 3 consumes
- * this list via getStagedFiles() for the actual push flow.
+ * Tree rendering has moved to WorkspaceTreeProvider.
+ * This class retains only the staging API for Phase 3 push flow.
  */
 export class WorkspaceState {
-  private tree: TreeNode[] = [];
   private staged: StagedFile[] = [];
 
-  constructor(
-    private readonly fsLayer: FileSystemLayer,
-    private readonly workspaceDir: string,
-  ) {}
-
   /**
-   * Rebuild the workspace tree from disk.
-   * Staged files are preserved across refresh (they live in memory,
-   * not on disk) -- this matches the "tab switch" survival requirement.
-   */
-  async refresh(): Promise<void> {
-    this.tree = await this.fsLayer.buildTreeData(this.workspaceDir);
-  }
-
-  /**
-   * Return the cached workspace tree. Returns empty array if
-   * refresh() has not been called yet.
-   */
-  getTree(): TreeNode[] {
-    return this.tree;
-  }
-
-  /**
-   * Stage a file for push. Deduplicates by path -- if the file is
+   * Stage a file for push. Deduplicates by path — if the file is
    * already staged, the call is a no-op.
    */
   stageFile(relativePath: string): void {
     if (this.staged.some(s => s.path === relativePath)) {
-      return; // already staged
+      return;
     }
     this.staged.push({
       path: relativePath,

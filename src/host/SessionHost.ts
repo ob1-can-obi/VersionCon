@@ -16,6 +16,8 @@ import type {
   SessionEvent,
   SessionEventMap,
 } from '../types/events.js';
+import type { PushRecord } from '../types/push.js';
+import type { BranchInfo } from '../types/branch.js';
 
 /** Internal tracking for each connected member's WebSocket and status. */
 interface ConnectedMember {
@@ -230,8 +232,12 @@ export class SessionHost implements SessionEventEmitter {
           if (cm) {
             cm.isAlive = true;
           }
+        } else if (msg.type === 'push-notification' || msg.type === 'push-reverted' ||
+                   msg.type === 'branch-created' || msg.type === 'branch-locked' ||
+                   msg.type === 'permission-changed') {
+          // Relay push/branch messages to all other members
+          this.broadcast(msg, memberId);
         }
-        // Future message types will be routed here
       } catch {
         // Handler errors must not crash the host (T-01-05)
       }
@@ -445,6 +451,56 @@ export class SessionHost implements SessionEventEmitter {
     });
     this.emit('invite-code-regenerated', { newCode });
     return newCode;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 3: Push + Branch broadcasts
+  // ---------------------------------------------------------------------------
+
+  /** Broadcast a push notification to all members. */
+  broadcastPush(record: PushRecord): void {
+    this.broadcast({
+      type: 'push-notification',
+      pushId: record.id,
+      memberId: record.memberId,
+      memberDisplayName: record.memberDisplayName,
+      message: record.message,
+      branch: record.branch,
+      files: record.files,
+      timestamp: createTimestamp(),
+    });
+  }
+
+  /** Broadcast a push revert notification to all members. */
+  broadcastRevert(record: PushRecord): void {
+    this.broadcast({
+      type: 'push-reverted',
+      pushId: record.id,
+      memberId: record.memberId,
+      memberDisplayName: record.memberDisplayName,
+      branch: record.branch,
+      files: record.files.map(f => f.relativePath),
+      timestamp: createTimestamp(),
+    });
+  }
+
+  /** Broadcast a new branch creation. */
+  broadcastBranchCreated(branch: BranchInfo): void {
+    this.broadcast({
+      type: 'branch-created',
+      branch,
+      timestamp: createTimestamp(),
+    });
+  }
+
+  /** Broadcast a branch lock/unlock. */
+  broadcastBranchLocked(branchName: string, locked: boolean): void {
+    this.broadcast({
+      type: 'branch-locked',
+      branchName,
+      locked,
+      timestamp: createTimestamp(),
+    });
   }
 
   // ---------------------------------------------------------------------------

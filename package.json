@@ -28,6 +28,14 @@
           "type": "webview",
           "id": "versioncon.sidebar",
           "name": "Session"
+        },
+        {
+          "id": "versioncon.branchTree",
+          "name": "Branch Files"
+        },
+        {
+          "id": "versioncon.workspaceTree",
+          "name": "My Workspace"
         }
       ]
     },
@@ -45,8 +53,152 @@
         "title": "VersionCon: Show Sidebar"
       },
       {
-        "command": "versioncon.openWorkspace",
-        "title": "VersionCon: Open Workspace"
+        "command": "versioncon.addToWorkspace",
+        "title": "Add to Workspace",
+        "icon": "$(arrow-right)"
+      },
+      {
+        "command": "versioncon.addFolderToWorkspace",
+        "title": "Add Folder to Workspace",
+        "icon": "$(arrow-right)"
+      },
+      {
+        "command": "versioncon.stageForPush",
+        "title": "Stage for Push",
+        "icon": "$(arrow-left)"
+      },
+      {
+        "command": "versioncon.unstageFile",
+        "title": "Unstage",
+        "icon": "$(close)"
+      },
+      {
+        "command": "versioncon.push",
+        "title": "Push to Branch",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "versioncon.previewDiff",
+        "title": "Preview Diff",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "versioncon.showPushHistory",
+        "title": "Push History",
+        "icon": "$(history)"
+      },
+      {
+        "command": "versioncon.revertPush",
+        "title": "Revert Push"
+      },
+      {
+        "command": "versioncon.revertPushFiles",
+        "title": "Revert Files from Push"
+      },
+      {
+        "command": "versioncon.createBranch",
+        "title": "VersionCon: Create Branch"
+      },
+      {
+        "command": "versioncon.switchBranch",
+        "title": "VersionCon: Switch Branch"
+      },
+      {
+        "command": "versioncon.deleteBranch",
+        "title": "VersionCon: Delete Branch"
+      },
+      {
+        "command": "versioncon.mergeBranch",
+        "title": "VersionCon: Merge Branch"
+      },
+      {
+        "command": "versioncon.manageBranchPermissions",
+        "title": "VersionCon: Manage Branch Permissions"
+      },
+      {
+        "command": "versioncon.previewBranchFile",
+        "title": "Preview Branch File"
+      },
+      {
+        "command": "versioncon.addNewFileToWorkspace",
+        "title": "New File",
+        "icon": "$(add)"
+      },
+      {
+        "command": "versioncon.refreshBranchTree",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "versioncon.refreshWorkspaceTree",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "versioncon.addToWorkspace",
+          "when": "view == versioncon.branchTree && viewItem == branchFile",
+          "group": "inline"
+        },
+        {
+          "command": "versioncon.addFolderToWorkspace",
+          "when": "view == versioncon.branchTree && viewItem == branchFolder",
+          "group": "inline"
+        },
+        {
+          "command": "versioncon.stageForPush",
+          "when": "view == versioncon.workspaceTree && viewItem == workspaceFile",
+          "group": "inline"
+        },
+        {
+          "command": "versioncon.unstageFile",
+          "when": "view == versioncon.workspaceTree && viewItem == workspaceFileStaged",
+          "group": "inline"
+        },
+        {
+          "command": "versioncon.previewDiff",
+          "when": "view == versioncon.workspaceTree && viewItem == workspaceFileStaged",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "versioncon.refreshBranchTree",
+          "when": "view == versioncon.branchTree",
+          "group": "navigation"
+        },
+        {
+          "command": "versioncon.push",
+          "when": "view == versioncon.workspaceTree",
+          "group": "navigation@1"
+        },
+        {
+          "command": "versioncon.showPushHistory",
+          "when": "view == versioncon.workspaceTree",
+          "group": "navigation@2"
+        },
+        {
+          "command": "versioncon.addNewFileToWorkspace",
+          "when": "view == versioncon.workspaceTree",
+          "group": "navigation@3"
+        },
+        {
+          "command": "versioncon.refreshWorkspaceTree",
+          "when": "view == versioncon.workspaceTree",
+          "group": "navigation@4"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "versioncon.branchTree",
+        "contents": "No branch files found.\nOpen a folder with a .versioncon/ directory to see branch files."
+      },
+      {
+        "view": "versioncon.workspaceTree",
+        "contents": "No files in workspace yet.\nClick the arrow (→) on a branch file to add it here.\nStage files with (←), then push with the upload button.\n\nTip: Drag this panel to the secondary sidebar for a split view."
       }
     ]
   },

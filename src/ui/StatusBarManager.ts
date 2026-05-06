@@ -54,6 +54,18 @@ export class StatusBarManager implements vscode.Disposable {
     this.item.command = 'versioncon.showSidebar';
   }
 
+  /**
+   * Show or hide a sync warning indicator (PUSH-09).
+   * Appends a warning icon when workspace may be out of sync.
+   */
+  setSyncWarning(show: boolean): void {
+    if (show) {
+      this.item.text = '$(warning) VersionCon — may be out of sync';
+      this.item.color = new vscode.ThemeColor('editorWarning.foreground');
+    }
+    // Reset is handled by the next setStatus call
+  }
+
   dispose(): void {
     this.item.dispose();
   }

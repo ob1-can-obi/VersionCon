@@ -1,4 +1,6 @@
 import { Member, SessionConfig } from '../types/session.js';
+import type { PushFileEntry } from '../types/push.js';
+import type { BranchInfo } from '../types/branch.js';
 
 // --- Message type discriminator ---
 export type MessageType =
@@ -14,7 +16,14 @@ export type MessageType =
   | 'invite-regenerated'
   | 'heartbeat-ping'
   | 'heartbeat-pong'
-  | 'error';
+  | 'error'
+  | 'push-notification'
+  | 'push-reverted'
+  | 'branch-created'
+  | 'branch-locked'
+  | 'permission-changed'
+  | 'sync-request'
+  | 'sync-response';
 
 // --- Base ---
 interface BaseMessage {
@@ -99,6 +108,56 @@ export interface ErrorMessage extends BaseMessage {
   message: string;
 }
 
+// --- Phase 3: Push + Branch messages ---
+
+export interface PushNotification extends BaseMessage {
+  type: 'push-notification';
+  pushId: string;
+  memberId: string;
+  memberDisplayName: string;
+  message: string;
+  branch: string;
+  files: PushFileEntry[];
+}
+
+export interface PushReverted extends BaseMessage {
+  type: 'push-reverted';
+  pushId: string;
+  memberId: string;
+  memberDisplayName: string;
+  branch: string;
+  files: string[];
+}
+
+export interface BranchCreated extends BaseMessage {
+  type: 'branch-created';
+  branch: BranchInfo;
+}
+
+export interface BranchLocked extends BaseMessage {
+  type: 'branch-locked';
+  branchName: string;
+  locked: boolean;
+}
+
+export interface PermissionChanged extends BaseMessage {
+  type: 'permission-changed';
+  branchName: string;
+  memberId: string;
+  action: 'granted' | 'revoked';
+}
+
+export interface SyncRequest extends BaseMessage {
+  type: 'sync-request';
+  branch: string;
+}
+
+export interface SyncResponse extends BaseMessage {
+  type: 'sync-response';
+  branch: string;
+  files: PushFileEntry[];
+}
+
 // --- Discriminated union ---
 export type ProtocolMessage =
   | AuthRequest
@@ -113,7 +172,14 @@ export type ProtocolMessage =
   | InviteRegenerated
   | HeartbeatPing
   | HeartbeatPong
-  | ErrorMessage;
+  | ErrorMessage
+  | PushNotification
+  | PushReverted
+  | BranchCreated
+  | BranchLocked
+  | PermissionChanged
+  | SyncRequest
+  | SyncResponse;
 
 // --- Helpers ---
 const VALID_TYPES: ReadonlySet<string> = new Set<MessageType>([
@@ -121,6 +187,8 @@ const VALID_TYPES: ReadonlySet<string> = new Set<MessageType>([
   'member-kicked', 'member-list', 'state-sync', 'kick-member',
   'regenerate-invite', 'invite-regenerated',
   'heartbeat-ping', 'heartbeat-pong', 'error',
+  'push-notification', 'push-reverted', 'branch-created',
+  'branch-locked', 'permission-changed', 'sync-request', 'sync-response',
 ]);
 
 export function sendMessage(send: (data: string) => void, msg: ProtocolMessage): void {

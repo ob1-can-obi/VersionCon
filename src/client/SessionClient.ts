@@ -288,6 +288,43 @@ export class SessionClient implements SessionEventEmitter {
         });
         break;
 
+      case 'push-notification':
+        this.emit('push-received', {
+          pushId: msg.pushId,
+          memberId: msg.memberId,
+          memberDisplayName: msg.memberDisplayName,
+          message: msg.message,
+          branch: msg.branch,
+          files: msg.files,
+        });
+        break;
+
+      case 'push-reverted':
+        this.emit('push-reverted', {
+          pushId: msg.pushId,
+          memberId: msg.memberId,
+          memberDisplayName: msg.memberDisplayName,
+          branch: msg.branch,
+          files: msg.files,
+        });
+        break;
+
+      case 'branch-created':
+        this.emit('branch-created', { branch: msg.branch });
+        break;
+
+      case 'branch-locked':
+        this.emit('branch-locked', { branchName: msg.branchName, locked: msg.locked });
+        break;
+
+      case 'permission-changed':
+        this.emit('permission-changed', {
+          branchName: msg.branchName,
+          memberId: msg.memberId,
+          action: msg.action,
+        });
+        break;
+
       default:
         // Unknown message types are silently ignored
         break;

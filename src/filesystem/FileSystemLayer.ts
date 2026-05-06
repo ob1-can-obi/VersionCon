@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import type { TreeNode } from '../types/filesystem.js';
+import type { TreeNode, FileEntry } from '../types/filesystem.js';
 
 /**
  * Core file operations for the split-pane drag-and-drop system.
@@ -12,16 +12,22 @@ import type { TreeNode } from '../types/filesystem.js';
  * performing any filesystem I/O (mitigates T-02-01, T-02-02).
  */
 export class FileSystemLayer {
-  private readonly normalizedBranchDir: string;
+  private normalizedBranchDir: string;
   private readonly normalizedProjectRoot: string;
 
   constructor(
     private readonly projectRoot: string,
-    private readonly branchDir: string,
+    private branchDir: string,
   ) {
     // Normalize once at construction for consistent comparisons
     this.normalizedBranchDir = path.resolve(branchDir) + path.sep;
     this.normalizedProjectRoot = path.resolve(projectRoot) + path.sep;
+  }
+
+  /** Update the branch directory (for multi-branch switching). */
+  setBranchDir(newBranchDir: string): void {
+    this.branchDir = newBranchDir;
+    this.normalizedBranchDir = path.resolve(newBranchDir) + path.sep;
   }
 
   /**
@@ -73,9 +79,17 @@ export class FileSystemLayer {
    * Icons are assigned based on file extension (codicon names).
    *
    * @param rootDir - absolute path to scan
+   * @param relativeRoot - base path for computing relative values (defaults to projectRoot).
+   *                       BranchState passes branchDir so drag payloads are relative to branch.
+   * @param excludeDirs - directory names to skip (e.g. ['.versioncon'] for workspace scans)
    * @returns TreeNode[] suitable for @vscode-elements/elements <vscode-tree>
    */
-  async buildTreeData(rootDir: string): Promise<TreeNode[]> {
+  async buildTreeData(
+    rootDir: string,
+    relativeRoot?: string,
+    excludeDirs?: string[],
+  ): Promise<TreeNode[]> {
+    const baseRoot = relativeRoot ?? this.projectRoot;
     const entries = await fs.readdir(rootDir, { withFileTypes: true });
 
     // Directories first, then files; alphabetical within each group
@@ -88,11 +102,16 @@ export class FileSystemLayer {
     const nodes: TreeNode[] = [];
 
     for (const entry of sorted) {
+      // Skip excluded directories (e.g. .versioncon in workspace scans)
+      if (entry.isDirectory() && excludeDirs?.includes(entry.name)) {
+        continue;
+      }
+
       const fullPath = path.join(rootDir, entry.name);
-      const relativePath = path.relative(this.projectRoot, fullPath);
+      const relativePath = path.relative(baseRoot, fullPath);
 
       if (entry.isDirectory()) {
-        const subItems = await this.buildTreeData(fullPath);
+        const subItems = await this.buildTreeData(fullPath, baseRoot, excludeDirs);
         nodes.push({
           label: entry.name,
           value: relativePath,
@@ -109,6 +128,109 @@ export class FileSystemLayer {
     }
 
     return nodes;
+  }
+
+  /**
+   * Build a FileEntry[] hierarchy from a directory on disk.
+   * Directories sort before files; within each group, entries sort alphabetically.
+   *
+   * @param rootDir - absolute path to scan
+   * @param relativeRoot - base path for computing relative paths
+   * @param excludeDirs - directory names to skip
+   */
+  async buildFileEntries(
+    rootDir: string,
+    relativeRoot?: string,
+    excludeDirs?: string[],
+  ): Promise<FileEntry[]> {
+    const baseRoot = relativeRoot ?? this.projectRoot;
+    const entries = await fs.readdir(rootDir, { withFileTypes: true });
+
+    const sorted = entries.sort((a, b) => {
+      if (a.isDirectory() && !b.isDirectory()) { return -1; }
+      if (!a.isDirectory() && b.isDirectory()) { return 1; }
+      return a.name.localeCompare(b.name);
+    });
+
+    const result: FileEntry[] = [];
+
+    for (const entry of sorted) {
+      if (entry.isDirectory() && excludeDirs?.includes(entry.name)) {
+        continue;
+      }
+
+      const fullPath = path.join(rootDir, entry.name);
+      const relativePath = path.relative(baseRoot, fullPath);
+
+      if (entry.isDirectory()) {
+        const children = await this.buildFileEntries(fullPath, baseRoot, excludeDirs);
+        result.push({ name: entry.name, relativePath, isDirectory: true, children });
+      } else {
+        result.push({ name: entry.name, relativePath, isDirectory: false });
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Copy a single file from workspace back into the branch directory.
+   * Inverse of copyFileToWorkspace.
+   */
+  async copyFileFromWorkspaceToBranch(relativePath: string): Promise<void> {
+    this.validateWorkspacePath(relativePath);
+
+    const srcPath = path.resolve(this.projectRoot, relativePath);
+    const destPath = path.join(this.branchDir, relativePath);
+
+    await fs.mkdir(path.dirname(destPath), { recursive: true });
+    await fs.copyFile(srcPath, destPath);
+  }
+
+  /**
+   * Recursively collect all file relative paths under a directory.
+   */
+  async collectFilePaths(rootDir: string, relativeDirPath: string): Promise<string[]> {
+    const absDir = path.join(rootDir, relativeDirPath);
+    const entries = await fs.readdir(absDir, { withFileTypes: true });
+    const result: string[] = [];
+
+    for (const entry of entries) {
+      const relPath = path.join(relativeDirPath, entry.name);
+      if (entry.isDirectory()) {
+        const subPaths = await this.collectFilePaths(rootDir, relPath);
+        result.push(...subPaths);
+      } else {
+        result.push(relPath);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Validate that a relative path does not escape the workspace (projectRoot).
+   */
+  validateWorkspacePath(relativePath: string): void {
+    const resolved = path.resolve(this.projectRoot, relativePath);
+    const normalizedResolved = path.resolve(resolved) + path.sep;
+
+    if (
+      !normalizedResolved.startsWith(this.normalizedProjectRoot) &&
+      path.resolve(resolved) !== path.resolve(this.projectRoot)
+    ) {
+      throw new Error(`Path traversal detected: "${relativePath}" resolves outside workspace directory`);
+    }
+  }
+
+  /** Expose branchDir for providers */
+  getBranchDir(): string {
+    return this.branchDir;
+  }
+
+  /** Expose projectRoot for providers */
+  getProjectRoot(): string {
+    return this.projectRoot;
   }
 
   // ---- Private helpers ----

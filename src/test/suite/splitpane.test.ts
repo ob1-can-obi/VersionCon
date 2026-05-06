@@ -3,143 +3,186 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import { FileSystemLayer } from '../../filesystem/FileSystemLayer.js';
-import { BranchState } from '../../filesystem/BranchState.js';
+import { BranchTreeProvider } from '../../ui/BranchTreeProvider.js';
+import { WorkspaceTreeProvider } from '../../ui/WorkspaceTreeProvider.js';
 import { WorkspaceState } from '../../filesystem/WorkspaceState.js';
 
-// UI-01, UI-02, UI-03, UI-07: SplitPanePanel integration tests
-suite('SplitPanePanel Integration', () => {
+// BranchTreeProvider tests
+suite('BranchTreeProvider', () => {
   let tmpDir: string;
   let branchDir: string;
-  let workspaceDir: string;
   let fsLayer: FileSystemLayer;
-  let branchState: BranchState;
-  let workspaceState: WorkspaceState;
+  let provider: BranchTreeProvider;
 
   setup(async () => {
-    tmpDir = path.join(os.tmpdir(), `versioncon-splitpane-test-${Date.now()}`);
+    tmpDir = path.join(os.tmpdir(), `versioncon-branch-tree-test-${Date.now()}`);
     branchDir = path.join(tmpDir, '.versioncon', 'branch');
-    workspaceDir = tmpDir;
     await fs.mkdir(branchDir, { recursive: true });
-    fsLayer = new FileSystemLayer(workspaceDir, branchDir);
-    branchState = new BranchState(fsLayer, branchDir);
-    workspaceState = new WorkspaceState(fsLayer, workspaceDir);
+    fsLayer = new FileSystemLayer(tmpDir, branchDir);
+    provider = new BranchTreeProvider(fsLayer);
   });
 
   teardown(async () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
-  // UI-01: Both panes have tree data after refresh
-  test('state snapshot contains both trees after refresh', async () => {
-    // Create files in branch
-    await fs.writeFile(path.join(branchDir, 'server.ts'), 'export {};');
-    // Create files in workspace
-    await fs.writeFile(path.join(workspaceDir, 'local.ts'), 'const x = 1;');
+  test('getChildren returns files from branch directory', async () => {
+    await fs.writeFile(path.join(branchDir, 'index.ts'), 'export {};');
+    await fs.mkdir(path.join(branchDir, 'src'), { recursive: true });
+    await fs.writeFile(path.join(branchDir, 'src', 'app.ts'), 'const x = 1;');
 
-    await branchState.refresh();
-    await workspaceState.refresh();
+    const rootChildren = await provider.getChildren();
 
-    const branchTree = branchState.getTree();
-    const workspaceTree = workspaceState.getTree();
+    assert.ok(rootChildren.length >= 2, 'Should have at least 2 entries');
+    const dirEntry = rootChildren.find(e => e.name === 'src');
+    assert.ok(dirEntry, 'Should have src directory');
+    assert.ok(dirEntry!.isDirectory, 'src should be a directory');
 
-    assert.ok(Array.isArray(branchTree), 'Branch tree should be an array');
-    assert.ok(Array.isArray(workspaceTree), 'Workspace tree should be an array');
-    assert.ok(branchTree.length > 0, 'Branch tree should have entries');
-    assert.ok(workspaceTree.length > 0, 'Workspace tree should have entries');
+    const fileEntry = rootChildren.find(e => e.name === 'index.ts');
+    assert.ok(fileEntry, 'Should have index.ts file');
+    assert.ok(!fileEntry!.isDirectory, 'index.ts should be a file');
   });
 
-  // UI-04: Drag-to-workspace copies file and updates workspace tree
-  test('drag-to-workspace copies file and updates workspace tree', async () => {
-    // Create file in branch
-    const srcDir = path.join(branchDir, 'src');
-    await fs.mkdir(srcDir, { recursive: true });
-    await fs.writeFile(path.join(srcDir, 'app.ts'), 'export const app = true;\n');
+  test('getChildren returns correct hierarchy for nested dirs', async () => {
+    await fs.mkdir(path.join(branchDir, 'src', 'utils'), { recursive: true });
+    await fs.writeFile(path.join(branchDir, 'src', 'utils', 'helper.ts'), 'export {};');
 
-    // Simulate drag-to-workspace
-    await fsLayer.copyFileToWorkspace('src/app.ts');
+    const root = await provider.getChildren();
+    const srcDir = root.find(e => e.name === 'src');
+    assert.ok(srcDir, 'Should have src');
 
-    // Refresh workspace state
-    await workspaceState.refresh();
-    const tree = workspaceState.getTree();
+    const srcChildren = await provider.getChildren(srcDir!);
+    const utilsDir = srcChildren.find(e => e.name === 'utils');
+    assert.ok(utilsDir, 'Should have utils');
 
-    // The copied file should appear in workspace tree
-    assert.ok(tree.length > 0, 'Workspace tree should have entries after copy');
-
-    // Verify the file physically exists
-    const destPath = path.join(workspaceDir, 'src', 'app.ts');
-    const stat = await fs.stat(destPath);
-    assert.ok(stat.isFile(), 'Copied file should exist in workspace');
+    const utilsChildren = await provider.getChildren(utilsDir!);
+    const helper = utilsChildren.find(e => e.name === 'helper.ts');
+    assert.ok(helper, 'Should have helper.ts');
+    assert.strictEqual(helper!.relativePath, path.join('src', 'utils', 'helper.ts'));
   });
 
-  // UI-05: Drag-to-workspace with directory creates structure only
-  test('drag-to-workspace with directory creates structure only', async () => {
-    // Create nested dir with files in branch
-    const nestedDir = path.join(branchDir, 'lib', 'core');
-    await fs.mkdir(nestedDir, { recursive: true });
-    await fs.writeFile(path.join(nestedDir, 'engine.ts'), 'export class Engine {}');
+  test('getChildren returns empty array for empty branch', async () => {
+    const children = await provider.getChildren();
+    assert.strictEqual(children.length, 0);
+  });
+});
 
-    // copyStructureOnly should create dirs but not copy files
-    await fsLayer.copyStructureOnly('lib');
+// WorkspaceTreeProvider tests
+suite('WorkspaceTreeProvider', () => {
+  let tmpDir: string;
+  let branchDir: string;
+  let fsLayer: FileSystemLayer;
+  let provider: WorkspaceTreeProvider;
 
-    const libDir = path.join(workspaceDir, 'lib', 'core');
-    const libStat = await fs.stat(libDir);
-    assert.ok(libStat.isDirectory(), 'lib/core/ should exist as directory');
-
-    // Files should NOT be copied
-    await assert.rejects(
-      () => fs.access(path.join(libDir, 'engine.ts')),
-      'engine.ts should NOT exist — structure only'
-    );
+  setup(async () => {
+    tmpDir = path.join(os.tmpdir(), `versioncon-workspace-tree-test-${Date.now()}`);
+    branchDir = path.join(tmpDir, '.versioncon', 'branch');
+    await fs.mkdir(branchDir, { recursive: true });
+    fsLayer = new FileSystemLayer(tmpDir, branchDir);
+    provider = new WorkspaceTreeProvider(fsLayer);
   });
 
-  // UI-07: Drag-to-branch stages file in workspace state
-  test('drag-to-branch stages file in workspace state', async () => {
-    workspaceState.stageFile('src/main.ts');
+  teardown(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  test('starts empty with no tracked files', () => {
+    const children = provider.getChildren();
+    assert.strictEqual(children.length, 0);
+  });
+
+  test('trackFile adds file and builds hierarchy', () => {
+    provider.trackFile('src/utils/helper.ts');
+
+    const root = provider.getChildren();
+    assert.strictEqual(root.length, 1);
+    assert.strictEqual(root[0].name, 'src');
+    assert.ok(root[0].isDirectory);
+
+    const srcChildren = provider.getChildren(root[0]);
+    assert.strictEqual(srcChildren.length, 1);
+    assert.strictEqual(srcChildren[0].name, 'utils');
+
+    const utilsChildren = provider.getChildren(srcChildren[0]);
+    assert.strictEqual(utilsChildren.length, 1);
+    assert.strictEqual(utilsChildren[0].name, 'helper.ts');
+    assert.ok(!utilsChildren[0].isDirectory);
+  });
+
+  test('untrackFile removes file from tree', () => {
+    provider.trackFile('src/app.ts');
+    provider.untrackFile('src/app.ts');
+
+    const root = provider.getChildren();
+    assert.strictEqual(root.length, 0);
+  });
+
+  test('trackFiles adds multiple files with shared hierarchy', () => {
+    provider.trackFiles(['src/a.ts', 'src/b.ts', 'lib/c.ts']);
+
+    const root = provider.getChildren();
+    assert.strictEqual(root.length, 2); // lib, src (sorted)
+
+    const tracked = provider.getTrackedPaths();
+    assert.strictEqual(tracked.length, 3);
+  });
+
+  test('isTracked returns correct state', () => {
+    provider.trackFile('src/app.ts');
+    assert.ok(provider.isTracked('src/app.ts'));
+    assert.ok(!provider.isTracked('src/other.ts'));
+  });
+
+  test('hierarchy sorts directories before files', () => {
+    provider.trackFiles(['readme.md', 'src/app.ts']);
+
+    const root = provider.getChildren();
+    assert.strictEqual(root[0].name, 'src'); // dir first
+    assert.strictEqual(root[1].name, 'readme.md'); // file second
+  });
+});
+
+// WorkspaceState staging tests (preserved from old tests)
+suite('WorkspaceState (staging)', () => {
+  let workspaceState: WorkspaceState;
+
+  setup(() => {
+    workspaceState = new WorkspaceState();
+  });
+
+  test('stageFile adds file path to staged list', () => {
+    workspaceState.stageFile('src/index.ts');
     const staged = workspaceState.getStagedFiles();
-
-    assert.ok(staged.length === 1, 'Should have 1 staged file');
-    assert.strictEqual(staged[0].path, 'src/main.ts', 'Staged file path should match');
-    assert.ok(typeof staged[0].stagedAt === 'number', 'stagedAt should be a timestamp');
+    const paths = staged.map(s => s.path);
+    assert.ok(paths.includes('src/index.ts'));
   });
 
-  // State persistence: staged files survive refresh
-  test('staged files survive state refresh (simulates tab switch)', async () => {
+  test('unstageFile removes file path from staged list', () => {
+    workspaceState.stageFile('src/index.ts');
+    workspaceState.unstageFile('src/index.ts');
+    const staged = workspaceState.getStagedFiles();
+    assert.strictEqual(staged.length, 0);
+  });
+
+  test('getStagedFiles returns all staged paths', () => {
     workspaceState.stageFile('src/a.ts');
     workspaceState.stageFile('src/b.ts');
-
-    // Refresh simulates webview rebuild (tab switch)
-    await workspaceState.refresh();
-
+    workspaceState.stageFile('src/c.ts');
     const staged = workspaceState.getStagedFiles();
-    assert.strictEqual(staged.length, 2, 'Staged files should persist across refresh');
-    const paths = staged.map(s => s.path);
-    assert.ok(paths.includes('src/a.ts'), 'src/a.ts should still be staged');
-    assert.ok(paths.includes('src/b.ts'), 'src/b.ts should still be staged');
+    assert.strictEqual(staged.length, 3);
   });
 
-  // UI-03: External file creation detected after refresh
-  test('external file creation detected in workspace tree after refresh', async () => {
-    // Create file directly in workspace (simulates VS Code native file creation)
-    await fs.writeFile(path.join(workspaceDir, 'newfile.ts'), 'const fresh = true;');
-
-    await workspaceState.refresh();
-    const tree = workspaceState.getTree();
-
-    const newFileNode = tree.find(n => n.label === 'newfile.ts');
-    assert.ok(newFileNode, 'Externally created file should appear in workspace tree after refresh');
+  test('stageFile deduplicates by path', () => {
+    workspaceState.stageFile('src/a.ts');
+    workspaceState.stageFile('src/a.ts');
+    const staged = workspaceState.getStagedFiles();
+    assert.strictEqual(staged.length, 1);
   });
 
-  // UI-02: Branch tree is read-only — BranchState has no mutation methods
-  test('branch tree is read-only — BranchState has no mutation methods', () => {
-    assert.strictEqual(
-      typeof (branchState as any).stageFile,
-      'undefined',
-      'BranchState should not have a stageFile method'
-    );
-    assert.strictEqual(
-      typeof (branchState as any).copyTo,
-      'undefined',
-      'BranchState should not have a copyTo method'
-    );
+  test('clearStaged removes all staged files', () => {
+    workspaceState.stageFile('src/a.ts');
+    workspaceState.stageFile('src/b.ts');
+    workspaceState.clearStaged();
+    assert.strictEqual(workspaceState.getStagedFiles().length, 0);
   });
 });

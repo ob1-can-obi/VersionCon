@@ -17,6 +17,7 @@
 export class SyncTracker {
   private latestBranchPushId: string | null = null;
   private lastSyncedPushId: string | null = null;
+  private outOfSyncPaths: Set<string> = new Set();
 
   /**
    * Record a push that arrived from another member on the branch.
@@ -41,6 +42,7 @@ export class SyncTracker {
    */
   onSync(): void {
     this.lastSyncedPushId = this.latestBranchPushId;
+    this.outOfSyncPaths.clear();
   }
 
   /**
@@ -69,5 +71,38 @@ export class SyncTracker {
   reset(): void {
     this.latestBranchPushId = null;
     this.lastSyncedPushId = null;
+    this.outOfSyncPaths.clear();
+  }
+
+  /**
+   * Record the relative paths touched by a remote push or revert.
+   * Accumulates into the out-of-sync set; duplicates are ignored (Set semantics).
+   * Does NOT change pushId pointers — call onRemotePush(pushId) separately.
+   */
+  recordRemoteFiles(paths: string[]): void {
+    for (const p of paths) {
+      this.outOfSyncPaths.add(p);
+    }
+  }
+
+  /**
+   * Snapshot of the relative paths currently considered out of sync.
+   * Returns a fresh array (callers may mutate it freely).
+   */
+  getOutOfSyncPaths(): string[] {
+    return Array.from(this.outOfSyncPaths);
+  }
+
+  /**
+   * Remove a single path from the out-of-sync set.
+   * Called per-file by versioncon.sync after Take-branch (file pulled) and
+   * also after the identical/no-local cases (nothing to lose).
+   *
+   * NOTE: After Keep-mine on a real conflict, callers do NOT call clearPath
+   * — that path stays in the set so the user can still see something to
+   * resolve later (PUSH-11).
+   */
+  clearPath(path: string): void {
+    this.outOfSyncPaths.delete(path);
   }
 }

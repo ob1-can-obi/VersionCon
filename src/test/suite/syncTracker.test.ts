@@ -51,4 +51,42 @@ suite('SyncTracker', () => {
     tracker.onRemotePush('push-abc');
     assert.strictEqual(tracker.getLatestPushId(), 'push-abc');
   });
+
+  test('recordRemoteFiles accumulates paths into the out-of-sync set (deduped)', () => {
+    tracker.recordRemoteFiles(['src/a.ts', 'src/b.ts']);
+    tracker.recordRemoteFiles(['src/b.ts', 'src/c.ts']);
+    const paths = tracker.getOutOfSyncPaths().sort();
+    assert.deepStrictEqual(paths, ['src/a.ts', 'src/b.ts', 'src/c.ts']);
+  });
+
+  test('getOutOfSyncPaths returns an empty array initially', () => {
+    assert.deepStrictEqual(tracker.getOutOfSyncPaths(), []);
+  });
+
+  test('clearPath removes a single path from the set, leaves others', () => {
+    tracker.recordRemoteFiles(['src/a.ts', 'src/b.ts']);
+    tracker.clearPath('src/a.ts');
+    assert.deepStrictEqual(tracker.getOutOfSyncPaths(), ['src/b.ts']);
+  });
+
+  test('onSync() clears the out-of-sync set as well as the pushId pointers', () => {
+    tracker.onRemotePush('push-1');
+    tracker.recordRemoteFiles(['src/a.ts', 'src/b.ts']);
+    tracker.onSync();
+    assert.strictEqual(tracker.isInSync(), true);
+    assert.deepStrictEqual(tracker.getOutOfSyncPaths(), []);
+  });
+
+  test('reset() clears the out-of-sync set', () => {
+    tracker.recordRemoteFiles(['src/a.ts']);
+    tracker.reset();
+    assert.deepStrictEqual(tracker.getOutOfSyncPaths(), []);
+  });
+
+  test('returned array from getOutOfSyncPaths is a copy — mutating it does not affect the tracker', () => {
+    tracker.recordRemoteFiles(['src/a.ts']);
+    const snap = tracker.getOutOfSyncPaths();
+    snap.push('src/b.ts');
+    assert.deepStrictEqual(tracker.getOutOfSyncPaths(), ['src/a.ts']);
+  });
 });

@@ -17,6 +17,12 @@ export interface SessionEventMap {
   'branch-created': { branch: BranchInfo };
   'branch-locked': { branchName: string; locked: boolean };
   'permission-changed': { branchName: string; memberId: string; action: 'granted' | 'revoked' };
+  // PUSH-09: emitted by SessionClient when a sync-response message arrives
+  // from the host carrying the latest known push id. SessionClient does not
+  // currently emit this event; the listener in extension.ts is forward-
+  // compatible scaffolding for a later plan that wires sync-request/response
+  // end-to-end.
+  'sync-response': { latestPushId: string | null };
 }
 
 // Typed event key

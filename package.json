@@ -128,8 +128,8 @@
         "title": "VersionCon: Manage Branch Permissions"
       },
       {
-        "command": "versioncon.markSynced",
-        "title": "VersionCon: Mark Synced"
+        "command": "versioncon.sync",
+        "title": "VersionCon: Sync"
       },
       {
         "command": "versioncon.previewBranchFile",

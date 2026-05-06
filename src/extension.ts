@@ -172,6 +172,9 @@ export function activate(context: vscode.ExtensionContext): void {
     client.on('push-received', (data) => {
       // PUSH-09: track remote push -- workspace is now potentially out of sync
       syncTracker.onRemotePush(data.pushId);
+      // PUSH-10/11: record per-file out-of-sync paths so versioncon.sync can
+      // pull each one and prompt on conflict.
+      syncTracker.recordRemoteFiles(data.files.map(f => f.relativePath));
 
       // PUSH-03: surface file overlap to the receiving member so they know
       // immediately which of their tracked files were touched.
@@ -196,6 +199,10 @@ export function activate(context: vscode.ExtensionContext): void {
       // PUSH-09: a revert changes branch state -- treat as a remote push so
       // the user is prompted to acknowledge.
       syncTracker.onRemotePush(data.pushId);
+      // PUSH-10/11: revert touches the same set of files; record them so
+      // versioncon.sync can reconcile.
+      syncTracker.recordRemoteFiles(data.files);
+      statusBarManager.setSyncWarning(true);
       void vscode.window.showInformationMessage(
         `${data.memberDisplayName} reverted a push on branch "${data.branch}"`,
       );
@@ -210,6 +217,10 @@ export function activate(context: vscode.ExtensionContext): void {
       if (data.latestPushId) {
         syncTracker.onRemotePush(data.latestPushId);
       }
+      // NOTE: SyncResponse carries files: PushFileEntry[] (currently always
+      // empty from the host; the typed client event omits it). When the host
+      // starts populating files in a later phase, seed via recordRemoteFiles
+      // here.
     });
 
     client.on('branch-created', (data) => {
@@ -1246,21 +1257,121 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
       );
 
-      // --- PUSH-09: Mark Synced command ---
-      // v1: sync-state-only operation. Clears the SyncTracker out-of-sync
-      // flag and refreshes the branch tree so the user sees the latest
-      // branch contents in the BranchTreeProvider. Workspace files are NOT
-      // modified. Full file pull (copying branch files into the workspace)
-      // is deferred to a later phase -- workspace reconciliation semantics
-      // need their own design.
+      // --- PUSH-10/11: Sync command ---
+      // Real file pull. Walks the SyncTracker out-of-sync set, partitions into:
+      //   * deleted-upstream -> branch path no longer exists; drop from set
+      //   * no-local         -> file exists in branch but not in workspace -> silent copy
+      //   * identical        -> branch and workspace bytes match -> silent clear
+      //   * conflict         -> file exists in both, bytes differ -> per-file prompt:
+      //                           Keep mine | Take branch | Show diff
+      // After the loop, if the out-of-sync set is empty, mark fully synced.
+      // If non-empty (the user kept some local edits), keep the warning on.
       context.subscriptions.push(
-        vscode.commands.registerCommand('versioncon.markSynced', () => {
+        vscode.commands.registerCommand('versioncon.sync', async () => {
+          const paths = syncTracker.getOutOfSyncPaths();
+          if (paths.length === 0) {
+            syncTracker.onSync();
+            statusBarManager.setSyncWarning(false);
+            branchProvider.refresh();
+            void vscode.window.showInformationMessage('VersionCon: already in sync.');
+            return;
+          }
+
+          const branchDir = fsLayer.getBranchDir();
+          const projectRoot = fsLayer.getProjectRoot();
+          let pulled = 0;
+          let kept = 0;
+
+          for (const rel of paths) {
+            const branchPath = path.join(branchDir, rel);
+            const workspacePath = path.join(projectRoot, rel);
+
+            const branchExists = fs.existsSync(branchPath);
+            const workspaceExists = fs.existsSync(workspacePath);
+
+            // Case A: file no longer in branch (deleted upstream).
+            // v1: drop from set so the user is not stuck. Workspace
+            // deletion semantics are intentionally deferred.
+            if (!branchExists) {
+              syncTracker.clearPath(rel);
+              continue;
+            }
+
+            // Case B: workspace has no local copy -> silent pull.
+            if (!workspaceExists) {
+              await fsLayer.copyFileToWorkspace(rel);
+              syncTracker.clearPath(rel);
+              pulled++;
+              continue;
+            }
+
+            // Case C: both exist -> compare bytes.
+            const [branchBuf, workspaceBuf] = await Promise.all([
+              fsPromises.readFile(branchPath),
+              fsPromises.readFile(workspacePath),
+            ]);
+            if (branchBuf.equals(workspaceBuf)) {
+              syncTracker.clearPath(rel);
+              continue;
+            }
+
+            // Case D: real conflict -> PUSH-11 per-file prompt.
+            // Loop until the user picks Keep mine or Take branch (Show diff
+            // re-prompts after the diff editor is opened).
+            let resolved = false;
+            while (!resolved) {
+              const choice = await vscode.window.showInformationMessage(
+                `Sync conflict: ${rel}`,
+                {
+                  modal: true,
+                  detail: 'The branch has a different version of this file than your workspace. Choose how to resolve:',
+                },
+                'Keep mine',
+                'Take branch',
+                'Show diff',
+              );
+              if (choice === 'Take branch') {
+                await fsLayer.copyFileToWorkspace(rel);
+                syncTracker.clearPath(rel);
+                pulled++;
+                resolved = true;
+              } else if (choice === 'Keep mine') {
+                // PUSH-11: leave the file as-is in the workspace AND leave it
+                // in the out-of-sync set so the user can come back to it.
+                kept++;
+                resolved = true;
+              } else if (choice === 'Show diff') {
+                const branchUri = vscode.Uri.file(branchPath);
+                const workspaceUri = vscode.Uri.file(workspacePath);
+                await vscode.commands.executeCommand(
+                  'vscode.diff',
+                  branchUri,
+                  workspaceUri,
+                  `${rel} (Branch ↔ Workspace)`,
+                );
+                // Loop back and re-prompt — user must still pick Keep / Take.
+              } else {
+                // Dismissed (Esc / X). PUSH-11: unresolved file stays in
+                // the set; treat dismiss as Keep mine and move on.
+                kept++;
+                resolved = true;
+              }
+            }
+          }
+
+          const remaining = syncTracker.getOutOfSyncPaths().length;
+          if (remaining === 0) {
+            syncTracker.onSync();
+            statusBarManager.setSyncWarning(false);
+            void vscode.window.showInformationMessage(
+              `VersionCon: synced ${pulled} file(s).`,
+            );
+          } else {
+            void vscode.window.showWarningMessage(
+              `VersionCon: synced ${pulled} file(s); kept ${kept} local. ${remaining} file(s) still out of sync.`,
+            );
+          }
           branchProvider.refresh();
-          syncTracker.onSync();
-          statusBarManager.setSyncWarning(false);
-          void vscode.window.showInformationMessage(
-            'Marked as synced with latest branch state. (Workspace files unchanged -- drag from branch to workspace to pull file contents.)',
-          );
         }),
       );
 

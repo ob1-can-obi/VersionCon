@@ -169,4 +169,63 @@ suite('PushService', () => {
     assert.strictEqual(original, 'branch version\n');
     assert.strictEqual(modified, 'workspace version\n');
   });
+
+  // --- PUSH-03: computeAffectedMembers ---
+
+  test('computeAffectedMembers returns empty when no overlap', () => {
+    const affected = pushService.computeAffectedMembers(
+      ['a.ts'],
+      new Map([['m1', ['b.ts']]]),
+      new Map([['m1', 'Alice']]),
+    );
+    assert.strictEqual(affected.length, 0);
+  });
+
+  test('computeAffectedMembers reports overlap with displayName + files', () => {
+    const affected = pushService.computeAffectedMembers(
+      ['a.ts', 'b.ts'],
+      new Map([['m1', ['a.ts', 'c.ts']]]),
+      new Map([['m1', 'Alice']]),
+    );
+    assert.strictEqual(affected.length, 1);
+    assert.strictEqual(affected[0].memberId, 'm1');
+    assert.strictEqual(affected[0].displayName, 'Alice');
+    assert.deepStrictEqual(affected[0].overlappingFiles, ['a.ts']);
+  });
+
+  test('computeAffectedMembers excludes the pusher', () => {
+    const affected = pushService.computeAffectedMembers(
+      ['a.ts'],
+      new Map([['m1', ['a.ts']], ['me', ['a.ts']]]),
+      new Map([['m1', 'Alice'], ['me', 'Me']]),
+      'me',
+    );
+    assert.strictEqual(affected.length, 1);
+    assert.strictEqual(affected[0].memberId, 'm1');
+  });
+
+  test('computeAffectedMembers reports multiple affected members', () => {
+    const affected = pushService.computeAffectedMembers(
+      ['a.ts', 'b.ts'],
+      new Map([
+        ['m1', ['a.ts']],
+        ['m2', ['b.ts', 'c.ts']],
+        ['m3', ['x.ts']],
+      ]),
+      new Map([['m1', 'Alice'], ['m2', 'Bob'], ['m3', 'Carol']]),
+    );
+    assert.strictEqual(affected.length, 2);
+    const ids = affected.map(a => a.memberId).sort();
+    assert.deepStrictEqual(ids, ['m1', 'm2']);
+  });
+
+  test('computeAffectedMembers falls back to "Unknown" displayName when missing', () => {
+    const affected = pushService.computeAffectedMembers(
+      ['a.ts'],
+      new Map([['m1', ['a.ts']]]),
+      new Map(), // no name lookup
+    );
+    assert.strictEqual(affected.length, 1);
+    assert.strictEqual(affected[0].displayName, 'Unknown');
+  });
 });

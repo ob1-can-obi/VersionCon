@@ -18,6 +18,7 @@ import { BranchManager } from './filesystem/BranchManager.js';
 import { BranchPermissions } from './filesystem/BranchPermissions.js';
 import { PushHistory } from './filesystem/PushHistory.js';
 import { PushService } from './filesystem/PushService.js';
+import { createTimestamp } from './network/protocol.js';
 
 // Module-level state for deactivation access
 let activeHost: SessionHost | null = null;
@@ -28,6 +29,11 @@ let statusBarManager: StatusBarManager;
 // when a session starts. Defaults to 'local-user' (matches the placeholder
 // currentMemberId) so the local single-user case always passes host-only checks.
 let hostMemberId = 'local-user';
+// Phase 3: module-level references so wireHostEvents can wire late-arriving
+// services into a freshly-created SessionHost. Set by the async IIFE after
+// permissions/pushHistory are loaded.
+let activePermissions: { canPushToBranch: (memberId: string, branchName: string) => boolean } | null = null;
+let activePushHistory: { getLatestRecord: () => { id: string } | undefined } | null = null;
 
 export function activate(context: vscode.ExtensionContext): void {
   // --- Core services ---
@@ -49,6 +55,15 @@ export function activate(context: vscode.ExtensionContext): void {
     // The host's local commands run with currentMemberId = 'local-user', which
     // matches the default hostMemberId, so host actions always pass.
     hostMemberId = 'local-user';
+    // Phase 3: wire permissions + push history into the host so it can validate
+    // relays and populate sync-response.latestPushId. References may be null if
+    // the workspace IIFE hasn't completed yet -- the IIFE re-wires after load().
+    if (activePermissions) {
+      host.setPermissions(activePermissions);
+    }
+    if (activePushHistory) {
+      host.setPushHistory(activePushHistory);
+    }
     statusBarManager.setStatus('connected', sessionName);
     sidebarProvider.updateState({
       connectionStatus: 'connected',
@@ -140,17 +155,23 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Phase 3: Handle push/branch notifications from other members
     client.on('push-received', (data) => {
-      void vscode.window.showInformationMessage(
-        `${data.memberDisplayName} pushed ${data.files.length} file(s): "${data.message}"`,
-      );
-      // Check sync overlap with workspace
+      // PUSH-03: surface file overlap to the receiving member so they know
+      // immediately which of their tracked files were touched.
+      let overlapping: string[] = [];
+      let overlapMsg = '';
       if (workspaceProvider) {
         const tracked = workspaceProvider.getTrackedPaths();
-        const overlap = data.files.some(f => tracked.includes(f.relativePath));
-        if (overlap) {
+        overlapping = data.files
+          .filter(f => tracked.includes(f.relativePath))
+          .map(f => f.relativePath);
+        if (overlapping.length > 0) {
+          overlapMsg = ` -- affects your files: ${overlapping.join(', ')}`;
           statusBarManager.setSyncWarning(true);
         }
       }
+      void vscode.window.showInformationMessage(
+        `${data.memberDisplayName} pushed ${data.files.length} file(s): "${data.message}"${overlapMsg}`,
+      );
     });
 
     client.on('push-reverted', (data) => {
@@ -277,6 +298,16 @@ export function activate(context: vscode.ExtensionContext): void {
       const permissions = new BranchPermissions(versionconDir, currentMemberId);
       await permissions.load();
 
+      // Phase 3: cache permissions + pushHistory at module scope so a host
+      // session created later (via wireHostEvents) can pick them up. Also wire
+      // the currently-active host (if any) immediately.
+      activePermissions = permissions;
+      activePushHistory = pushHistory;
+      if (activeHost) {
+        activeHost.setPermissions(permissions);
+        activeHost.setPushHistory(pushHistory);
+      }
+
       const branchProvider = new BranchTreeProvider(fsLayer);
       branchProvider.setBranchDir(activeBranchDir);
       branchProvider.setActiveBranchName(activeBranchName);
@@ -288,6 +319,41 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.registerTreeDataProvider('versioncon.branchTree', branchProvider),
         vscode.window.registerTreeDataProvider('versioncon.workspaceTree', workspaceProvider),
       );
+
+      // Phase 3 (PUSH-03): emit tracked-paths-update on workspace tracking
+      // changes. Host path: write directly to memberTrackingMap. Client path:
+      // send tracked-paths-update over WebSocket; the host mirrors it into
+      // its map (after validating memberId from the auth'd connection).
+      context.subscriptions.push(
+        workspaceProvider.onTrackedPathsChanged((paths) => {
+          if (activeHost) {
+            activeHost.setHostTrackedPaths(currentMemberId, paths);
+          }
+          if (activeClient) {
+            activeClient.sendMessage({
+              type: 'tracked-paths-update',
+              memberId: currentMemberId,
+              paths,
+              timestamp: createTimestamp(),
+            });
+          }
+        }),
+      );
+
+      // Seed the initial tracked-paths set so the host knows the member's
+      // starting state without waiting for a tracking change.
+      const initialPaths = workspaceProvider.getTrackedPaths();
+      if (activeHost) {
+        activeHost.setHostTrackedPaths(currentMemberId, initialPaths);
+      }
+      if (activeClient) {
+        activeClient.sendMessage({
+          type: 'tracked-paths-update',
+          memberId: currentMemberId,
+          paths: initialPaths,
+          timestamp: createTimestamp(),
+        });
+      }
 
       // --- Commands ---
 
@@ -385,13 +451,35 @@ export function activate(context: vscode.ExtensionContext): void {
 
           const summary = await pushService.generateSummary(stagedPaths);
 
+          // PUSH-03: file-level affected members from the host's MemberTrackingMap.
+          // We only have the live MemberTrackingMap on the host side, so this
+          // section is a no-op for non-host members (host-pushes-only is the
+          // v1 model; clients will surface their own overlap on push-received).
+          let affectedInfo = '';
+          if (activeHost) {
+            const tracking = activeHost.getMemberTracking();
+            const names = activeHost.getMemberNames();
+            const affected = pushService.computeAffectedMembers(
+              stagedPaths,
+              tracking,
+              names,
+              currentMemberId,
+            );
+            if (affected.length > 0) {
+              affectedInfo = '\n\nMay affect:';
+              for (const a of affected) {
+                affectedInfo += `\n  - ${a.displayName}: ${a.overlappingFiles.join(', ')}`;
+              }
+            }
+          }
+
           // Show summary and ask for commit message
           const detail = summary.files.map(f =>
             `${f.status === 'added' ? '+' : f.status === 'deleted' ? '-' : '~'} ${f.relativePath} (+${f.addedLines} -${f.removedLines})`
           ).join('\n');
 
           const message = await vscode.window.showInputBox({
-            prompt: `Push ${staged.length} file(s) (+${summary.totalAdded} -${summary.totalRemoved} lines)`,
+            prompt: `Push ${staged.length} file(s) (+${summary.totalAdded} -${summary.totalRemoved} lines)${affectedInfo}`,
             placeHolder: 'Enter push message...',
             validateInput: (v) => v.trim() ? null : 'Message is required',
           });
@@ -514,6 +602,18 @@ export function activate(context: vscode.ExtensionContext): void {
           try {
             await pushService.revertFiles(pushId, selected.map(s => s.label));
             branchProvider.refresh();
+
+            // PUSH-08, SAFE-04: broadcast partial revert so the team gets the
+            // same notification path as a full revert. The protocol-level
+            // PushReverted carries the full list of originally-pushed files;
+            // the message body of the notification only differs by intent.
+            if (activeHost) {
+              const fullRecord = pushHistory.getRecord(pushId);
+              if (fullRecord) {
+                activeHost.broadcastRevert(fullRecord);
+              }
+            }
+
             void vscode.window.showInformationMessage(`Reverted ${selected.length} file(s).`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : 'Revert failed';

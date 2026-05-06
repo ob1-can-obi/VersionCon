@@ -48,6 +48,25 @@ export class SessionHost implements SessionEventEmitter {
   private readonly hostDisplayName: string;
   private hostMemberId: string | null = null;
 
+  /**
+   * Map of memberId -> tracked file paths. Populated from tracked-paths-update
+   * messages and host-side setHostTrackedPaths calls. Drives PUSH-03 file-level
+   * affected-member computation.
+   */
+  private memberTracking = new Map<string, string[]>();
+
+  /**
+   * Optional permissions checker for relay validation (T-03-05). When set, the
+   * host validates canPushToBranch before relaying push-notification messages.
+   */
+  private permissions: { canPushToBranch: (memberId: string, branchName: string) => boolean } | null = null;
+
+  /**
+   * Optional push history reference. When set, sync-response includes
+   * latestPushId so reconnecting clients can seed sync state correctly.
+   */
+  private pushHistory: { getLatestRecord: () => { id: string } | undefined } | null = null;
+
   /** Typed event listeners. */
   private readonly listeners: Map<
     SessionEvent,
@@ -232,11 +251,44 @@ export class SessionHost implements SessionEventEmitter {
           if (cm) {
             cm.isAlive = true;
           }
-        } else if (msg.type === 'push-notification' || msg.type === 'push-reverted' ||
+        } else if (msg.type === 'push-notification') {
+          // T-03-05: validate push permission before relaying. The host derives
+          // the sender memberId from the authenticated WebSocket connection
+          // (memberId, captured in the closure), NOT from the message field --
+          // this prevents a malicious client from spoofing another member's id.
+          if (this.permissions && !this.permissions.canPushToBranch(memberId, msg.branch)) {
+            sendMessage((d) => ws.send(d), {
+              type: 'error',
+              code: 'PERMISSION_DENIED',
+              message: 'No push permission for this branch',
+              timestamp: createTimestamp(),
+            });
+            return;
+          }
+          this.broadcast(msg, memberId);
+        } else if (msg.type === 'push-reverted' ||
                    msg.type === 'branch-created' || msg.type === 'branch-locked' ||
                    msg.type === 'permission-changed') {
-          // Relay push/branch messages to all other members
+          // Admin/allowed actions -- relay to all
           this.broadcast(msg, memberId);
+        } else if (msg.type === 'tracked-paths-update') {
+          // PUSH-03: member is reporting their current tracked paths.
+          // T-03-14: trust the authenticated WebSocket memberId, NOT the
+          // message body's memberId field, so a client cannot inject paths
+          // for another member.
+          this.memberTracking.set(memberId, [...msg.paths]);
+          // Metadata only -- do not relay.
+        } else if (msg.type === 'sync-request') {
+          // PUSH-09 reconnect path: respond with empty files (snapshot is
+          // delivered out-of-band) plus the latest push id so the client can
+          // seed its sync tracker.
+          sendMessage((d) => ws.send(d), {
+            type: 'sync-response',
+            branch: msg.branch,
+            files: [],
+            latestPushId: SessionHost.buildLatestPushId(this.pushHistory),
+            timestamp: createTimestamp(),
+          });
         }
       } catch {
         // Handler errors must not crash the host (T-01-05)
@@ -504,6 +556,63 @@ export class SessionHost implements SessionEventEmitter {
   }
 
   // ---------------------------------------------------------------------------
+  // Phase 3: Member tracking + permission relay + sync handlers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Update the host's own tracked paths in the MemberTrackingMap. The host
+   * does not send tracked-paths-update messages to itself, so extension.ts
+   * calls this directly when the host's WorkspaceTreeProvider fires the
+   * onTrackedPathsChanged event.
+   */
+  setHostTrackedPaths(memberId: string, paths: string[]): void {
+    this.memberTracking.set(memberId, [...paths]);
+  }
+
+  /**
+   * Get a snapshot of the current MemberTrackingMap for affected-member
+   * computation (PUSH-03). Returns a copy so callers cannot mutate internal
+   * state.
+   */
+  getMemberTracking(): Map<string, string[]> {
+    return new Map(this.memberTracking);
+  }
+
+  /** Get a memberId -> displayName map for affected-member labels (PUSH-03). */
+  getMemberNames(): Map<string, string> {
+    const names = new Map<string, string>();
+    for (const m of this.getMembers()) {
+      names.set(m.id, m.displayName);
+    }
+    return names;
+  }
+
+  /**
+   * Wire a permissions checker so the host can validate canPushToBranch before
+   * relaying push-notification messages (T-03-05). Without this wiring, the
+   * host relays unconditionally (preserves prior behavior).
+   */
+  setPermissions(permissions: { canPushToBranch: (memberId: string, branchName: string) => boolean }): void {
+    this.permissions = permissions;
+  }
+
+  /**
+   * Wire a PushHistory reference so sync-response includes latestPushId
+   * (PUSH-09 reconnect path). Without this wiring, latestPushId is null.
+   */
+  setPushHistory(history: { getLatestRecord: () => { id: string } | undefined }): void {
+    this.pushHistory = history;
+  }
+
+  /**
+   * Pure-logic helper: derive the latestPushId field for a SyncResponse from
+   * the optional push-history reference. Exposed for unit testing.
+   */
+  static buildLatestPushId(pushHistory: { getLatestRecord: () => { id: string } | undefined } | null): string | null {
+    return pushHistory?.getLatestRecord()?.id ?? null;
+  }
+
+  // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
 
@@ -559,6 +668,7 @@ export class SessionHost implements SessionEventEmitter {
 
     this.members.delete(memberId);
     this.bandwidthMonitor.removeMember(memberId);
+    this.memberTracking.delete(memberId);
 
     // If the host left, clear the host tracking
     if (memberId === this.hostMemberId) {

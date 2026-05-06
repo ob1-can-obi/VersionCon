@@ -192,6 +192,43 @@ export class PushService {
   }
 
   /**
+   * Compute which team members might be affected by a push.
+   *
+   * Uses file-level overlap between staged paths and each member's tracked
+   * files (from WorkspaceTreeProvider.getTrackedPaths(), accumulated in
+   * SessionHost.memberTracking via tracked-paths-update messages). Full
+   * dependency-level impact (function calls, imports) is deferred to Phase 5;
+   * this implements the PUSH-03 file-level layer.
+   *
+   * @param stagedPaths Relative paths being pushed.
+   * @param memberTracking memberId -> tracked relative paths (from SessionHost.getMemberTracking()).
+   * @param memberNames memberId -> display name (from SessionHost.getMemberNames()).
+   * @param excludeMemberId The pusher's memberId -- do not list themselves as affected.
+   * @returns Array of affected members with their overlapping files.
+   */
+  computeAffectedMembers(
+    stagedPaths: string[],
+    memberTracking: Map<string, string[]>,
+    memberNames: Map<string, string>,
+    excludeMemberId?: string,
+  ): Array<{ memberId: string; displayName: string; overlappingFiles: string[] }> {
+    const affected: Array<{ memberId: string; displayName: string; overlappingFiles: string[] }> = [];
+    const stagedSet = new Set(stagedPaths);
+    for (const [memberId, trackedPaths] of memberTracking) {
+      if (memberId === excludeMemberId) continue;
+      const overlap = trackedPaths.filter(p => stagedSet.has(p));
+      if (overlap.length > 0) {
+        affected.push({
+          memberId,
+          displayName: memberNames.get(memberId) ?? 'Unknown',
+          overlappingFiles: overlap,
+        });
+      }
+    }
+    return affected;
+  }
+
+  /**
    * Get original and modified content for a file diff view.
    * Returns content strings suitable for vscode.diff command.
    */

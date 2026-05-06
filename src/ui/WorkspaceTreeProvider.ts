@@ -13,6 +13,15 @@ export class WorkspaceTreeProvider implements vscode.TreeDataProvider<FileEntry>
   private _onDidChangeTreeData = new vscode.EventEmitter<FileEntry | undefined | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
+  /**
+   * Fires whenever the tracked-paths set changes (track/untrack, batch track).
+   * Used by extension.ts to broadcast tracked-paths-update messages so the
+   * SessionHost can keep its MemberTrackingMap fresh for PUSH-03 affected-member
+   * computation.
+   */
+  private _onTrackedPathsChanged = new vscode.EventEmitter<string[]>();
+  readonly onTrackedPathsChanged = this._onTrackedPathsChanged.event;
+
   private trackedPaths = new Set<string>();
   private stagedPaths = new Set<string>();
   private tree: FileEntry[] = [];
@@ -24,6 +33,7 @@ export class WorkspaceTreeProvider implements vscode.TreeDataProvider<FileEntry>
     this.trackedPaths.add(relativePath);
     this.rebuildTree();
     this._onDidChangeTreeData.fire();
+    this._onTrackedPathsChanged.fire(this.getTrackedPaths());
   }
 
   /** Remove a file from the workspace view. */
@@ -32,6 +42,7 @@ export class WorkspaceTreeProvider implements vscode.TreeDataProvider<FileEntry>
     this.stagedPaths.delete(relativePath);
     this.rebuildTree();
     this._onDidChangeTreeData.fire();
+    this._onTrackedPathsChanged.fire(this.getTrackedPaths());
   }
 
   /** Track multiple files at once. */
@@ -41,6 +52,13 @@ export class WorkspaceTreeProvider implements vscode.TreeDataProvider<FileEntry>
     }
     this.rebuildTree();
     this._onDidChangeTreeData.fire();
+    this._onTrackedPathsChanged.fire(this.getTrackedPaths());
+  }
+
+  /** Dispose of internal event emitters. */
+  dispose(): void {
+    this._onDidChangeTreeData.dispose();
+    this._onTrackedPathsChanged.dispose();
   }
 
   /** Check if a path is tracked. */

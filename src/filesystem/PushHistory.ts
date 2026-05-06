@@ -48,6 +48,15 @@ export class PushHistory {
     return this.records.find(r => r.id === pushId);
   }
 
+  /**
+   * Get the most recent push record (regardless of revert state).
+   * Used by SessionHost.sync-request to populate latestPushId so reconnecting
+   * clients can seed their sync state correctly (PUSH-09).
+   */
+  getLatestRecord(): PushRecord | undefined {
+    return this.records.length > 0 ? this.records[this.records.length - 1] : undefined;
+  }
+
   /** Mark a push record as reverted. */
   async markReverted(pushId: string, revertedFiles?: string[]): Promise<void> {
     const record = this.records.find(r => r.id === pushId);

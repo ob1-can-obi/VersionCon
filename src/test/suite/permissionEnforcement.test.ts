@@ -4,6 +4,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import { BranchPermissions } from '../../filesystem/BranchPermissions.js';
 import { BranchManager } from '../../filesystem/BranchManager.js';
+import { SyncTracker } from '../../filesystem/SyncTracker.js';
 
 /**
  * Tests the permission-gated command logic that lives in extension.ts.
@@ -97,5 +98,24 @@ suite('PermissionEnforcement', () => {
 
   test('member can push to unrestricted branch', () => {
     assert.strictEqual(permissions.canPushToBranch(memberId, 'main'), true);
+  });
+
+  // --- PUSH-09 out-of-sync gate (modal block predicate) ---
+
+  test('out-of-sync gate — stage and unstage early-return when SyncTracker reports out of sync', () => {
+    const tracker = new SyncTracker();
+    // Initial state: in sync (no pushes seen).
+    assert.strictEqual(tracker.isInSync(), true, 'fresh tracker should be in sync');
+
+    // Simulate a remote push.
+    tracker.onRemotePush('push-abc');
+    tracker.recordRemoteFiles(['src/foo.ts']);
+    assert.strictEqual(tracker.isInSync(), false, 'after remote push, tracker is out of sync');
+    assert.deepStrictEqual(tracker.getOutOfSyncPaths(), ['src/foo.ts']);
+
+    // After full sync, gate clears.
+    tracker.onSync();
+    assert.strictEqual(tracker.isInSync(), true, 'after onSync, tracker is in sync');
+    assert.deepStrictEqual(tracker.getOutOfSyncPaths(), []);
   });
 });

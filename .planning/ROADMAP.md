@@ -156,3 +156,19 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 6. Inline Code Review | 0/TBD | Not started | - |
 | 7. Cloud Mode + Relay Server | 0/TBD | Not started | - |
 | 8. AI Agent API (MCP Integration) | 0/TBD | Not started | - |
+
+## Backlog
+
+### Phase 999.1: Bonjour service-name collision blocks two extension hosts on same machine (BACKLOG)
+
+**Goal:** [Captured for future planning] — Two extension dev hosts on the same machine cannot co-host LAN sessions because both register the same Bonjour service name. The second `Host Session` attempt throws `Error: Service name is already in use on the network` and the first host's connection drops mid-handshake. Fix by appending a per-instance suffix (PID, random, or workspace path hash) to the Bonjour service name in the discovery layer.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+**Repro:** Launch two extension dev hosts via `code --extensionDevelopmentPath=… /tmp/wsA` and `…/tmp/wsB`. Both click Host Session.
+**Affected code:** Phase 1/2 discovery/networking layer (likely `src/network/` or `src/discovery/`).
+**Surfaced:** 2026-05-07 during Phase 3 (03-06) visual UAT. Blocked the single-machine two-host UAT setup; visual UAT for SC 5 / SC 6 was deferred as a result. This bug will block any future single-machine UAT for LAN-dependent features.
+**Suggested home:** small dedicated phase OR rolled into Phase 4 (presence/chat) as a prerequisite.
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)

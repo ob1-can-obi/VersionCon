@@ -1,9 +1,9 @@
 ---
 phase: 03-push-sync-branch-management
 verified: 2026-05-06T21:30:00Z
-updated: 2026-05-06T22:00:00Z
-status: gaps_found
-score: 4/6 must-haves verified
+updated: 2026-05-07T00:35:00Z
+status: resolved_uat_deferred
+score: 6/6 truths satisfied by code (visual UAT deferred)
 overrides_applied: 0
 gaps:
   - truth: "Before pushing, the user sees a smart summary including a list of changed files"
@@ -16,19 +16,16 @@ gaps:
     missing:
       - "Show the per-file breakdown to the user before they confirm the push — either switch from showInputBox to showQuickPick (which supports `detail` on each item) or include file names in the `prompt` string. The computed `detail` variable already has the right content."
   - truth: "When the workspace is out of sync with the latest branch state, the extension blocks staging, unstaging, debug, and run actions with a modal that points the user to the Sync command — there is no dismiss-only escape hatch (SC 5, ROADMAP after 2026-05-06 update)"
-    status: open
-    reason: "Discovered during human verification of v1 markSynced. The user clarified that PUSH-09's 'sync-before-run enforcement' wording was meant as a hard gate, not a dismissable warning. Current implementation uses non-blocking toasts on debug/task start (extension.ts lines 1267-1283) with 'Mark Synced' / 'Ignore' choices. The 'Ignore' path is the escape hatch the user explicitly rejected. Stage/unstage are not gated at all. v1 markSynced is acknowledge-only (no file pull) which the user also rejected as the only path back to in-sync."
-    artifacts:
-      - path: "src/extension.ts"
-        issue: "Lines 1267-1283: debug/task listeners use vscode.window.showWarningMessage (non-modal toast) with 'Ignore' choice. Stage/unstage commands have no out-of-sync gate at all."
-      - path: "src/extension.ts"
-        issue: "markSynced command (search for 'versioncon.markSynced'): only calls syncTracker.onSync() — no file pull. Toast says 'Workspace files unchanged' — that's the v1 acknowledge-only behavior."
-    missing:
-      - "Replace warning toast with vscode.window.showInformationMessage({ modal: true }) on debug/task; route the user to Sync command, not Ignore"
-      - "Add the same modal block to versioncon.stageForPush and versioncon.unstageFile commands (PUSH-09 expanded scope)"
-      - "Replace markSynced (acknowledge-only) with a real Sync command that pulls branch file versions into the workspace (PUSH-10)"
-      - "Add per-file conflict prompt (Keep mine / Take branch / Show diff) when local edits collide with incoming branch versions (PUSH-11)"
-    routing: "Gap-closure plan 03-06-PLAN.md to be drafted by /gsd-plan-phase 3 --gaps. Requirements PUSH-10 and PUSH-11 added to REQUIREMENTS.md. ROADMAP Phase 3 success criteria 5 reworded; success criterion 6 added for the per-file conflict prompt."
+    status: resolved
+    resolved_in: "Plan 03-06 (commits b917ec3, 8f9ff7a, 2fe4782, 2280a1e, fb8ea11, b45697a, 57a3bc7, c0de19f)"
+    resolved_by_code: "extension.ts: stageForPush + unstageFile + onDidStartDebugSession + onDidStartTask all gate on `!syncTracker.isInSync()` and present `showInformationMessage({ modal: true }, 'Sync')` with a single button. Dismiss/Esc cancels the action (grep -c \"versioncon.markSynced\" returns 0; grep -c \"'Ignore'\" returns 0; grep -c \"{ modal: true\" returns 12)."
+    test_coverage: "129 unit tests passing, 0 failing. Includes new SyncTracker file-set API tests (recordRemoteFiles/getOutOfSyncPaths/clearPath, set semantics, dedupe, snapshot copy), SyncCommand partition tests (no-local / identical / Take branch / Keep mine / mixed run / full drain), and an out-of-sync gate predicate test in permissionEnforcement.test.ts."
+    visual_uat: "deferred — see 03-HUMAN-UAT.md. Single-machine two-host UAT setup is blocked by an unrelated Phase 2 bug (Bonjour 'Service name is already in use on the network'). Visual UAT will happen during natural use."
+  - truth: "Sync is a real file pull: branch files are copied into the workspace, with a per-file conflict prompt (Keep mine / Take branch / Show diff) whenever local edits collide with the incoming version (SC 6, ROADMAP after 2026-05-06 update)"
+    status: resolved
+    resolved_in: "Plan 03-06 (commit 2fe4782)"
+    resolved_by_code: "extension.ts: versioncon.sync command walks syncTracker.getOutOfSyncPaths() and partitions each path into deleted-upstream (drop) / no-local-copy (silent fsLayer.copyFileToWorkspace) / identical-bytes (silent clearPath) / real-conflict (per-file modal). Real conflicts present `showInformationMessage({ modal: true }, 'Keep mine', 'Take branch', 'Show diff')`. Show diff opens vscode.diff and re-prompts. Keep mine leaves the path in the out-of-sync set so the user can come back to it. Status bar warning clears immediately on a clean sync (StatusBarManager.setSyncWarning(false) is no longer a no-op)."
+    test_coverage: "src/test/suite/syncCommand.test.ts: 6 unit tests against real fs in tmpDir, covering all four partition branches plus a mixed run and a full-drain sequence. Plus the 6 new SyncTracker tests verifying the file-set API the command depends on."
 deferred:
   - truth: "Push summary includes dependency impact (which function calls/symbols are affected)"
     addressed_in: "Phase 5"
@@ -46,8 +43,30 @@ human_verification:
 
 **Phase Goal:** Users can explicitly push their changes to the shared branch, view full push history, revert any push, and admins can manage branches and permissions
 **Verified:** 2026-05-06T21:30:00Z
-**Status:** human_needed
-**Re-verification:** No — initial verification
+**Re-verified:** 2026-05-07T00:35:00Z (after Plan 03-06 gap closure)
+**Status:** resolved (visual UAT deferred per 03-HUMAN-UAT.md)
+
+## Re-verification Summary (2026-05-07)
+
+After the gap-closure plan 03-06 shipped (commits b917ec3 → 57a3bc7 + c0de19f), the verification re-runs as **6/6 truths satisfied by code**:
+
+| # | Truth (latest ROADMAP wording) | Status | Resolved By |
+|---|-------------------------------|--------|-------------|
+| 1 | Branch is read-only until Push is explicitly hit | VERIFIED | Plan 03-02 (existing) |
+| 2 | Smart summary with file list + line diff + affected teammates | VERIFIED | da2cb2bf (file list now shown via 2-step modal) |
+| 3 | Push history with full + per-file revert and team notification | VERIFIED | Plan 03-02/03-03 (existing) |
+| 4 | Admin can create / lock / grant / restrict / set merge policy at runtime | VERIFIED | Plan 03-02 (existing) |
+| 5 | Out-of-sync state hard-blocks stage / unstage / debug / run with a modal whose only button is Sync (no dismiss-only escape) | RESOLVED BY CODE (UAT deferred) | Plan 03-06 — modal block on all four touch points; `versioncon.markSynced` and `'Ignore'` fully removed |
+| 6 | Sync is a real file pull with per-file Keep mine / Take branch / Show diff conflict prompt | RESOLVED BY CODE (UAT deferred) | Plan 03-06 — versioncon.sync partitions and pulls; conflict modal with three buttons; Show diff opens vscode.diff and re-prompts |
+
+**Test count: 116 → 129 passing, 0 failing.** Logic for the new behavior is unit-tested end to end (SyncTracker file-set API, SyncCommand 4-way partition, out-of-sync gate predicate). Visual UAT is deferred — see 03-HUMAN-UAT.md and the Bonjour collision known issue documented there.
+
+---
+
+## Original Verification (2026-05-06)
+
+**Status:** human_needed (pre-03-06 snapshot, kept for traceability)
+**Re-verification:** Yes — see Re-verification Summary above
 
 ## Goal Achievement
 

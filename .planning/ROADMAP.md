@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Extension Foundation + LAN Networking** - VS Code extension scaffold, WebSocket transport, host/join flow, connection status
 - [ ] **Phase 2: Split-Pane UI + File System Layer** - Two-pane webview, drag-and-drop, stateless webview protocol, filesystem-as-truth
-- [ ] **Phase 3: Push, Sync + Branch Management** - Explicit push with diff, push history, revert, branch creation, admin/member permissions
+- [x] **Phase 3: Push, Sync + Branch Management** - Explicit push with diff, push history, revert, branch creation, admin/member permissions (6/6 plans done; 6/6 SCs satisfied by code, visual UAT deferred — see 03-VERIFICATION.md and 03-HUMAN-UAT.md)
 - [ ] **Phase 4: Presence, Chat + File-Level Conflict Notifications** - Real-time presence, in-app chat, push activity log, soft conflict alerts
 - [ ] **Phase 5: Dependency-Aware Conflict Detection (AST)** - AST child process, per-language parsers, function-level conflict attribution, smart push summary
 - [ ] **Phase 6: Inline Code Review** - Diff + approve flow, line comments, mandatory review gate, review threads in chat
@@ -74,14 +74,14 @@ Plans:
   4. An admin can create branches, lock branches, grant or revoke per-person push rights, and restrict members to specific branches — all at runtime without restarting
   5. When the workspace is out of sync with the latest branch state, the extension blocks staging, unstaging, debug, and run actions with a modal that points the user to the Sync command — there is no dismiss-only escape hatch
   6. Sync is a real file pull: branch files are copied into the workspace, with a per-file conflict prompt (Keep mine / Take branch / Show diff) whenever local edits collide with the incoming version
-**Plans:** 5 plans complete, 1 gap-closure pending
+**Plans:** 6 plans complete (gap closure 03-06 shipped 2026-05-07; visual UAT deferred per 03-HUMAN-UAT.md)
 Plans:
 - [x] 03-01-PLAN.md — Wave 0/1: Create SyncTracker service + test scaffolds (syncTracker, permissionEnforcement, pushIntegration)
 - [x] 03-02-PLAN.md — Wave 1: Wire permission gates into push/createBranch commands, expand admin permission UI, enhance types/protocol
 - [x] 03-03-PLAN.md — Wave 2: computeAffectedMembers in PushService, partial-revert broadcast fix, host-side relay permission validation
 - [x] 03-04-PLAN.md — Wave 2: Wire SyncTracker into extension lifecycle, debug/task sync warnings, markSynced command (v1 sync-state-only; file-pull deferred)
 - [x] 03-05-PLAN.md — Wave 3: BranchListProvider all-branches view (BRANCH-03), quickMergeFiles command (BRANCH-07), structuredMergeBranch walkthrough (BRANCH-08)
-- [ ] 03-06-PLAN.md — Gap closure: block stage/unstage/debug/run on out-of-sync (modal, not toast); replace markSynced acknowledge with real pull-on-demand command (PUSH-10) and per-file conflict prompts (PUSH-11)
+- [x] 03-06-PLAN.md — Gap closure: block stage/unstage/debug/run on out-of-sync (modal, not toast); replace markSynced acknowledge with real pull-on-demand command (PUSH-10) and per-file conflict prompts (PUSH-11)
 
 ### Phase 4: Presence, Chat + File-Level Conflict Notifications
 **Goal**: Team members can see who is online and what they are working on, communicate via in-app chat, and receive soft non-blocking alerts when a teammate's push touches files they have open
@@ -150,7 +150,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 |-------|----------------|--------|-----------|
 | 1. Extension Foundation + LAN Networking | 8/9 | In Progress | - |
 | 2. Split-Pane UI + File System Layer | 0/4 | Not started | - |
-| 3. Push, Sync + Branch Management | 0/5 | Not started | - |
+| 3. Push, Sync + Branch Management | 6/6 | Complete (UAT deferred) | 2026-05-07 |
 | 4. Presence, Chat + File-Level Conflict Notifications | 0/TBD | Not started | - |
 | 5. Dependency-Aware Conflict Detection (AST) | 0/TBD | Not started | - |
 | 6. Inline Code Review | 0/TBD | Not started | - |

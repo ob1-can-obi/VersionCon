@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: context exhaustion at 75% (2026-05-05)
-last_updated: "2026-05-08T01:51:35Z"
-last_activity: "2026-05-08 -- Plan 04-06 complete: pure-fn computeFileOverlap + getOpenTabPaths + 12 unit tests (152 passing)"
+last_updated: "2026-05-08T01:59:03Z"
+last_activity: "2026-05-08 -- Plan 04-02 complete: ChatLog persistence + 3 truncation modes + 19 unit tests (171 passing)"
 progress:
   total_phases: 9
   completed_phases: 2
   total_plans: 32
-  completed_plans: 19
-  percent: 59
+  completed_plans: 20
+  percent: 63
 ---
 
 # Project State
@@ -26,31 +26,31 @@ See: .planning/PROJECT.md (updated 2026-05-04)
 ## Current Position
 
 Phase: 4 (Presence, Chat + File-Level Conflict Notifications) — EXECUTING
-Plan: 3 of 11
-Status: Executing Phase 4 — Plan 04-06 complete; 04-01 + 04-06 shipped, remaining wave-1/wave-2 plans queued
-Next: Plan 04-02 (ChatLog persistence) — wave 1 contracts in place; 04-06 utility now available for Plan 04-09 consumer.
-Last activity: 2026-05-08 -- Plan 04-06 complete: pure-fn computeFileOverlap + getOpenTabPaths + 12 unit tests (152 passing)
+Plan: 4 of 11
+Status: Executing Phase 4 — Plans 04-01, 04-02, 04-06 complete (3 of 11); remaining wave-2/wave-3 plans queued
+Next: Plan 04-03 (PresenceMap accumulator) — wave-2 in progress; ChatLog now available for Plan 04-04 host relay consumer.
+Last activity: 2026-05-08 -- Plan 04-02 complete: ChatLog persistence + 3 truncation modes + 19 unit tests (171 passing)
 
-Progress: [██████░░░░] 59%
+Progress: [██████░░░░] 63%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 8
+- Total plans completed: 9
 - Average duration: 4.0 min
-- Total execution time: 0.53 hours
+- Total execution time: 0.59 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 6 | 23 min | 3.8 min |
-| 04 | 2 | 9 min | 4.5 min |
+| 04 | 3 | 13 min | 4.3 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 01-03 (5 min), 01-07 (3 min), 01-08 (3 min), 04-01 (6 min), 04-06 (3 min)
+- Last 5 plans: 01-07 (3 min), 01-08 (3 min), 04-01 (6 min), 04-06 (3 min), 04-02 (4 min)
 - Trend: steady
 
 *Updated after each plan completion*
@@ -80,6 +80,11 @@ Recent decisions affecting current work:
 - [Plan 04-06]: pathLib selection inside the function (path.win32 vs path.posix) decouples relative-path correctness from the runtime OS — reproducible win32 tests on macOS CI.
 - [Plan 04-06]: Path normalization splits on both path.sep and backslash so synthetic win32 inputs normalize correctly when the host platform differs (deviation Rule 2 — correctness improvement, no behavior change in production).
 - [Plan 04-06]: TabInputTextDiff in getOpenTabPaths includes BOTH original and modified URIs — user clearly cares about both files visible in the diff view.
+- [Plan 04-02]: ChatLog mirrors PushHistory.ts pattern verbatim — same load/save/append shape, same whole-file rewrite, no .tmp+rename (atomic-rename upgrade deferred jointly with PushHistory).
+- [Plan 04-02]: ChatLog.getRecords() returns chronological (oldest first), opposite of PushHistory — chat displays oldest-at-top, scrolling down to newest.
+- [Plan 04-02]: truncateKeepLast100PlusActivity uses (timestamp, id.localeCompare) sort tiebreaker so equal-ms records produce deterministic output across reloads (V8 sort is unstable for ties without it).
+- [Plan 04-02]: ChatLog.getRecords() returns a defensive copy ([...this.records]) so external mutation cannot corrupt the in-memory cache; worth applying retroactively to PushHistory.
+- [Plan 04-02]: exportToFile honors hiddenBefore with >= boundary semantics so per-user clear-view does not leak hidden context into exports.
 
 ### Pending Todos
 
@@ -102,6 +107,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-08T01:51:35Z
-Stopped at: Completed plan 04-06 (Phase 4 sequential execution in progress)
+Last session: 2026-05-08T01:59:03Z
+Stopped at: Completed plan 04-02 (Phase 4 sequential execution in progress)
 Resume file: None

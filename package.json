@@ -17,7 +17,7 @@
       "activitybar": [
         {
           "id": "versioncon",
-          "title": "VersionCon",
+          "title": "Team Sync",
           "icon": "resources/icon.svg"
         }
       ]

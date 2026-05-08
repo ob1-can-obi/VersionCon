@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: context exhaustion at 75% (2026-05-05)
-last_updated: "2026-05-08T01:59:03Z"
-last_activity: "2026-05-08 -- Plan 04-02 complete: ChatLog persistence + 3 truncation modes + 19 unit tests (171 passing)"
+last_updated: "2026-05-08T02:05:51Z"
+last_activity: "2026-05-08 -- Plan 04-03 complete: PresenceMap accumulator + 8 unit tests (179 passing)"
 progress:
   total_phases: 9
   completed_phases: 2
   total_plans: 32
-  completed_plans: 20
-  percent: 63
+  completed_plans: 21
+  percent: 66
 ---
 
 # Project State
@@ -26,31 +26,31 @@ See: .planning/PROJECT.md (updated 2026-05-04)
 ## Current Position
 
 Phase: 4 (Presence, Chat + File-Level Conflict Notifications) — EXECUTING
-Plan: 4 of 11
-Status: Executing Phase 4 — Plans 04-01, 04-02, 04-06 complete (3 of 11); remaining wave-2/wave-3 plans queued
-Next: Plan 04-03 (PresenceMap accumulator) — wave-2 in progress; ChatLog now available for Plan 04-04 host relay consumer.
-Last activity: 2026-05-08 -- Plan 04-02 complete: ChatLog persistence + 3 truncation modes + 19 unit tests (171 passing)
+Plan: 5 of 11
+Status: Executing Phase 4 — Plans 04-01, 04-02, 04-03, 04-06 complete (4 of 11); remaining wave-2/wave-3 plans queued
+Next: Plan 04-04 (host chat/presence relay) — wave-2 in progress; PresenceMap + ChatLog now both available for SessionHost consumer.
+Last activity: 2026-05-08 -- Plan 04-03 complete: PresenceMap accumulator + 8 unit tests (179 passing)
 
-Progress: [██████░░░░] 63%
+Progress: [███████░░░] 66%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 9
-- Average duration: 4.0 min
-- Total execution time: 0.59 hours
+- Total plans completed: 10
+- Average duration: 3.8 min
+- Total execution time: 0.62 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 6 | 23 min | 3.8 min |
-| 04 | 3 | 13 min | 4.3 min |
+| 04 | 4 | 15 min | 3.8 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 01-07 (3 min), 01-08 (3 min), 04-01 (6 min), 04-06 (3 min), 04-02 (4 min)
+- Last 5 plans: 01-08 (3 min), 04-01 (6 min), 04-06 (3 min), 04-02 (4 min), 04-03 (2 min)
 - Trend: steady
 
 *Updated after each plan completion*
@@ -85,6 +85,9 @@ Recent decisions affecting current work:
 - [Plan 04-02]: truncateKeepLast100PlusActivity uses (timestamp, id.localeCompare) sort tiebreaker so equal-ms records produce deterministic output across reloads (V8 sort is unstable for ties without it).
 - [Plan 04-02]: ChatLog.getRecords() returns a defensive copy ([...this.records]) so external mutation cannot corrupt the in-memory cache; worth applying retroactively to PushHistory.
 - [Plan 04-02]: exportToFile honors hiddenBefore with >= boundary semantics so per-user clear-view does not leak hidden context into exports.
+- [Plan 04-03]: PresenceMap is a class (not a bare Map) so Plan 04-08 (TreeProvider) has something to wrap with refresh() side effects and Plan 04-04 (host) can choose to use it or keep an inline Map — overrides RESEARCH §"PresenceMap location" advice based on Plan 04-08's needs.
+- [Plan 04-03]: getSnapshot() returns Array.from(values()) defensive copy — consistent with SyncTracker.getOutOfSyncPaths() and ChatLog.getRecords() patterns; tested explicitly so the invariant survives refactors.
+- [Plan 04-03]: PresenceMap is policy-agnostic — sanitization of memberId (T-04-03-01) and activeFilePath (T-04-03-03) is the caller's responsibility (Plan 04-04 and Plan 04-06); documented in upsert() JSDoc cross-referencing STRIDE threat IDs.
 
 ### Pending Todos
 
@@ -107,6 +110,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-08T01:59:03Z
-Stopped at: Completed plan 04-02 (Phase 4 sequential execution in progress)
+Last session: 2026-05-08T02:05:51Z
+Stopped at: Completed plan 04-03 (Phase 4 sequential execution in progress)
 Resume file: None

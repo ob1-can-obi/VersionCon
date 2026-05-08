@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: context exhaustion at 75% (2026-05-05)
-last_updated: "2026-05-08T02:26:31Z"
-last_activity: "2026-05-08 -- Plan 04-04 complete: SessionHost chat/presence relay with server-trust + 7 public helpers + 11 integration tests (198 passing)"
+last_updated: "2026-05-08T02:37:07Z"
+last_activity: "2026-05-08 -- Plan 04-07 complete: ActivityLogProvider TreeView with ring buffer + sticky unread + view registration + 27 tests (225 passing)"
 progress:
   total_phases: 9
   completed_phases: 2
   total_plans: 32
-  completed_plans: 23
-  percent: 72
+  completed_plans: 24
+  percent: 75
 ---
 
 # Project State
@@ -26,32 +26,32 @@ See: .planning/PROJECT.md (updated 2026-05-04)
 ## Current Position
 
 Phase: 4 (Presence, Chat + File-Level Conflict Notifications) — EXECUTING
-Plan: 7 of 11
-Status: Executing Phase 4 — Plans 04-01, 04-02, 04-03, 04-04, 04-05, 04-06 complete (6 of 11); wave-3 (UI plans 04-07..04-11) queued
-Next: Plan 04-07 (activity-tree TreeView) — wave-3 starts; ActivityLogProvider with ring buffer + sticky unread + view registration. Host relay is the trusted source of truth — clients now receive typed chat-received / presence-update / chat-history events ready for UI consumption.
-Last activity: 2026-05-08 -- Plan 04-04 complete: SessionHost chat/presence relay with server-trust + 7 public helpers + 11 integration tests (198 passing)
+Plan: 8 of 11
+Status: Executing Phase 4 — Plans 04-01..04-07 complete (7 of 11); wave-3 in flight (04-08 presence-panel next)
+Next: Plan 04-08 (presence-panel TreeView) — sibling view to versioncon.activityLog; mirrors same BranchListProvider/ActivityLogProvider pattern. (you) suffix + branch divergence indicator + view registration.
+Last activity: 2026-05-08 -- Plan 04-07 complete: ActivityLogProvider TreeView with ring buffer + sticky unread + view registration + 27 tests (225 passing)
 
-Progress: [███████░░░] 72%
+Progress: [███████▌░░] 75%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 12
+- Total plans completed: 13
 - Average duration: 4.1 min
-- Total execution time: 0.82 hours
+- Total execution time: 0.89 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 6 | 23 min | 3.8 min |
-| 04 | 6 | 26 min | 4.3 min |
+| 04 | 7 | 30 min | 4.3 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 04-06 (3 min), 04-02 (4 min), 04-03 (2 min), 04-05 (3 min), 04-04 (8 min)
-- Trend: integration-test plan (04-04) ran longer; wire-relay scope larger than wave-1 contract plans
+- Last 5 plans: 04-07 (4 min), 04-06 (3 min), 04-02 (4 min), 04-03 (2 min), 04-05 (3 min)
+- Trend: TreeDataProvider plans run fast when the analog (BranchListProvider) is mirrored verbatim — Plan 04-07 followed the pattern with no rework
 
 *Updated after each plan completion*
 
@@ -97,6 +97,11 @@ Recent decisions affecting current work:
 - [Plan 04-04]: T-04-04-04 (chat-cleared/chat-truncated spoofing) mitigation is structural, not code — the ProtocolMessage union permits both wire types but the onmessage switch has NO inbound branches; spoofed messages from non-host clients silently drop. Verified by integration test that spoofed cleared/truncated never reach other clients AND host doesn't crash.
 - [Plan 04-04]: chat-message broadcast includes sender (no exclude) per RESEARCH Open Q #1 — sender sees own message after host echo. presence-update excludes sender (mirrors member-joined). Both branches mirror tracked-paths-update precedent (T-03-14) for the closure-bound memberId override.
 - [Plan 04-04]: Test harness uses raw ws package, not full SessionClient — routing-level integration tests don't need reconnect/heartbeat machinery. Smaller harness (connectClient + waitFor, ~50 lines) gives precise wire-level send/receive assertions; mirrors Plan 04-05's typed-bracket-cast decision at one level higher.
+- [Plan 04-07]: Sticky unread row exempt from RING_BUFFER_CAP — UI-SPEC §1.2 caps activity entries; the sticky marker is a UX affordance, not a buffer entry. Tested via "sticky unread row preserved during ring buffer trim".
+- [Plan 04-07]: Click command split — provider declares `versioncon.activityLog.openEntry`; Plan 04-09 will register the actual handler that routes by kind (push/revert → smart push summary; branch → switchBranch picker). Keeps per-kind UX routing out of the provider.
+- [Plan 04-07]: ActivityKind compile-time exhaustiveness check (`SystemEventSubKind extends ActivityKind ? true : never`) breaks the build if a new system event kind is added to chat.ts without extending ActivityKind — prevents silent drift between chat-log and activity tree.
+- [Plan 04-07]: getEntries returns a defensive copy `[...this.entries]` — mirrors Plan 04-02 ChatLog.getRecords + Plan 04-03 PresenceMap.getSnapshot patterns; explicit test guards against future regression.
+- [Plan 04-07]: package.json edit minimal/surgical (single view append, two commands, one menu, two viewsWelcome blocks) — Plan 04-08 will append a sibling presence view to the same arrays without conflict.
 
 ### Pending Todos
 
@@ -119,6 +124,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-08T02:26:31Z
-Stopped at: Completed plan 04-04 (Phase 4 sequential execution in progress; wave-2 done)
+Last session: 2026-05-08T02:37:07Z
+Stopped at: Completed plan 04-07 (Phase 4 wave-3 in flight; activity-log TreeView shipped)
 Resume file: None

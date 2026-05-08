@@ -13,6 +13,7 @@ import type {
   SessionEvent,
   SessionEventMap,
 } from '../types/events.js';
+import type { ChatRecord, PresenceInfo } from '../types/chat.js';
 
 /** Session info received from the host after successful authentication. */
 interface SessionInfo {
@@ -324,6 +325,63 @@ export class SessionClient implements SessionEventEmitter {
           action: msg.action,
         });
         break;
+
+      // --- Phase 4: Chat + Presence wire → typed events (Plan 04-05) ---
+      // Mirrors the existing push-notification pattern. Field renames documented
+      // inline (recordId → id for chat-message; timestamp → lastUpdated for
+      // presence-update). memberId/timestamp are host-stamped before broadcast
+      // (T-04-01-01, T-04-01-04 — enforced in Plan 04-04 host relay), so we
+      // forward the server-trusted values without re-validation.
+
+      case 'chat-message': {
+        const record: ChatRecord = {
+          id: msg.recordId,
+          kind: msg.kind,
+          ...(msg.subKind !== undefined ? { subKind: msg.subKind } : {}),
+          memberId: msg.memberId,
+          memberDisplayName: msg.memberDisplayName,
+          body: msg.body,
+          timestamp: msg.timestamp,
+          ...(msg.meta !== undefined ? { meta: msg.meta } : {}),
+        };
+        this.emit('chat-received', record);
+        break;
+      }
+
+      case 'chat-cleared':
+        this.emit('chat-cleared', {
+          hostMemberId: msg.hostMemberId,
+          hostDisplayName: msg.hostDisplayName,
+        });
+        break;
+
+      case 'chat-truncated':
+        this.emit('chat-truncated', {
+          mode: msg.mode,
+          hostMemberId: msg.hostMemberId,
+          hostDisplayName: msg.hostDisplayName,
+        });
+        break;
+
+      case 'chat-history':
+        this.emit('chat-history', {
+          branch: msg.branch,
+          records: msg.records,
+        });
+        break;
+
+      case 'presence-update': {
+        // Wire timestamp → PresenceInfo.lastUpdated (host arrival time).
+        const info: PresenceInfo = {
+          memberId: msg.memberId,
+          displayName: msg.displayName,
+          branch: msg.branch,
+          activeFilePath: msg.activeFilePath,
+          lastUpdated: msg.timestamp,
+        };
+        this.emit('presence-update', info);
+        break;
+      }
 
       default:
         // Unknown message types are silently ignored

@@ -22,6 +22,7 @@ import { BranchPermissions } from './filesystem/BranchPermissions.js';
 import { PushHistory } from './filesystem/PushHistory.js';
 import { PushService } from './filesystem/PushService.js';
 import { SyncTracker } from './filesystem/SyncTracker.js';
+import { ChatLog } from './filesystem/ChatLog.js';
 import { createTimestamp } from './network/protocol.js';
 import { ActivityLogProvider } from './ui/ActivityLogProvider.js';
 import { PresenceTreeProvider } from './ui/PresenceTreeProvider.js';
@@ -89,6 +90,15 @@ let currentConnectionStatus: ConnectionStatus = 'disconnected';
 // Initialized in the IIFE; remains null when no workspace folder is open.
 let workspaceStateRef: WorkspaceState | null = null;
 
+// Phase 4 (Plan 04-11): module-level ChatLog reference for the active branch.
+// Created inside the workspace IIFE on init AND on every switchBranch. Wired
+// into activeHost via setChatLog(chatLog, branchName) so the host's chat-message
+// handler persists arrivals AND so versioncon.manageChat (registered at
+// activate scope) can call destructive truncation methods on the host's local
+// chat log. Null until the IIFE constructs it; remains null when no workspace
+// folder is open.
+let activeChatLog: ChatLog | null = null;
+
 /**
  * Format the CONF-07 toast string per UI-SPEC §6.1 (locked literals):
  *   - 1 file overlap: `{name} pushed 1 file — affects: {fileBasename}: '{msg}'`
@@ -123,6 +133,22 @@ function formatPushToast(name: string, overlapping: string[], message: string): 
 function dispatchChatReceivedLocally(record: ChatRecord): void {
   clientChatRecords.push(record);
   ChatPanel.currentPanel?.postChatMessage(record);
+}
+
+/**
+ * Plan 04-11: Markdown formatter for the member-side chat export path. Mirrors
+ * ChatLog.exportToFile's markdown layout exactly so a host export and a member
+ * export of the same record set produce identical .md output:
+ *  - System events render as a two-line block-quote.
+ *  - User messages render as an H3 heading + body.
+ * Records are joined by `\n\n---\n\n` at the call site.
+ */
+function formatChatRecordAsMarkdown(r: ChatRecord): string {
+  const tsIso = new Date(r.timestamp).toISOString();
+  if (r.kind === 'system') {
+    return `> _${r.memberDisplayName} · ${tsIso}_\n> ${r.body}`;
+  }
+  return `### ${r.memberDisplayName} · ${tsIso}\n\n${r.body}`;
 }
 
 /** Re-evaluate the `versioncon.activityLog.empty` context key after every entry mutation. */
@@ -285,14 +311,235 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // Plan 04-11 owns the manageChat QuickPick implementation. Register a
-  // placeholder command here so the package.json menu binding doesn't fire
-  // an "unknown command" error when invoked from the activity-log title bar.
+  // Phase 4 (Plan 04-11): versioncon.manageChat — five-action QuickPick per
+  // UI-SPEC §6.4 with three host-only destructive actions (delete-all, two
+  // truncate modes), one per-user soft action (Clear my view), and one export.
+  // Host gating per T-04-11-01 / T-04-11-06: items 2-4 still appear for
+  // non-host members (with description "(host only — disabled)") so they
+  // understand the option exists but isn't theirs; selection is rejected
+  // server-side as well — Plan 04-04's onmessage switch has NO inbound
+  // chat-cleared / chat-truncated branch, so a malicious client cannot
+  // synthesize either wire type even by editing this command's source.
   context.subscriptions.push(
-    vscode.commands.registerCommand('versioncon.manageChat', () => {
-      void vscode.window.showInformationMessage(
-        'VersionCon: Manage Chat (coming in Plan 04-11).',
-      );
+    vscode.commands.registerCommand('versioncon.manageChat', async () => {
+      if (!activeClient && !activeHost) {
+        void vscode.window.showWarningMessage(
+          'Not connected. Host or join a session first.',
+        );
+        return;
+      }
+      // v1 has exactly one host per session; activeHost !== null is the
+      // local-host check. T-04-11-01 + T-04-11-06: also enforced server-side
+      // by Plan 04-04 (no inbound handler for chat-cleared/chat-truncated).
+      const isHost = activeHost !== null;
+
+      interface ManageChatItem extends vscode.QuickPickItem { id: string; }
+      const items: ManageChatItem[] = [
+        {
+          id: 'clear-my-view',
+          label: '$(eye-closed) Clear my view',
+          description: 'Hide existing messages from your panel only.',
+        },
+        {
+          id: 'delete-all',
+          label: '$(trash) Delete entire chat',
+          description: isHost
+            ? 'Truncate chat-log.json. Affects everyone.'
+            : '(host only — disabled)',
+        },
+        {
+          id: 'truncate-keep-100',
+          label: '$(history) Truncate: keep last 100 + activity',
+          description: isHost
+            ? 'Removes old user messages, keeps push/revert/branch events.'
+            : '(host only — disabled)',
+        },
+        {
+          id: 'truncate-activity-only',
+          label: '$(filter) Truncate: keep only activity events',
+          description: isHost
+            ? 'Removes ALL user chat messages, keeps push/revert/branch events.'
+            : '(host only — disabled)',
+        },
+        {
+          id: 'export',
+          label: '$(export) Export chat to file',
+          description: 'Save your current view to .json or .md on your machine.',
+        },
+      ];
+
+      const chosen = await vscode.window.showQuickPick(items, {
+        title: 'VersionCon: Manage chat',
+        placeHolder: 'Choose an action…',
+        ignoreFocusOut: true,
+      });
+      if (!chosen) return;
+
+      switch (chosen.id) {
+        case 'clear-my-view': {
+          // UI-SPEC §6.5 literal copy. positive-verb confirm button.
+          const yes = await vscode.window.showWarningMessage(
+            'Clear chat from your view?',
+            {
+              modal: true,
+              detail: 'This hides existing messages from your panel only. Other members are not affected. Future messages will continue to appear.',
+            },
+            'Clear my view',
+          );
+          if (yes !== 'Clear my view') return;
+          if (workspaceStateRef) {
+            await workspaceStateRef.setChatHiddenBefore(Date.now());
+          }
+          // Refresh the panel with the now-filtered cache. setHistory takes a
+          // pre-filtered array; ChatPanel's getRecords ref re-reads
+          // chatHiddenBefore at panel-build time, but live setHistory needs
+          // an explicit filter here.
+          const cutoff = workspaceStateRef?.getChatHiddenBefore() ?? null;
+          const visible = cutoff != null
+            ? clientChatRecords.filter(r => r.timestamp >= cutoff)
+            : clientChatRecords.slice();
+          ChatPanel.currentPanel?.setHistory(visible);
+          return;
+        }
+
+        case 'delete-all': {
+          if (!isHost) {
+            void vscode.window.showInformationMessage(
+              'Only the host can run this action.',
+            );
+            return;
+          }
+          const yes = await vscode.window.showWarningMessage(
+            'Delete entire chat for everyone?',
+            {
+              modal: true,
+              detail: "This permanently removes all chat messages and activity events from chat-log.json. Other members' panels will go blank. This cannot be undone.",
+            },
+            'Delete all',
+          );
+          if (yes !== 'Delete all') return;
+          if (activeChatLog) {
+            await activeChatLog.clearAll();
+          }
+          clientChatRecords.length = 0;
+          activeHost!.broadcastChatCleared(
+            currentSelfMemberId,
+            currentSelfDisplayName,
+          );
+          ChatPanel.currentPanel?.notifyChatCleared(currentSelfDisplayName);
+          ChatPanel.currentPanel?.setHistory([]);
+          return;
+        }
+
+        case 'truncate-keep-100': {
+          if (!isHost) {
+            void vscode.window.showInformationMessage(
+              'Only the host can run this action.',
+            );
+            return;
+          }
+          const yes = await vscode.window.showWarningMessage(
+            'Truncate chat to last 100 messages?',
+            {
+              modal: true,
+              detail: 'Older user messages will be removed for everyone. Push, revert, and branch-create events will be kept.',
+            },
+            'Truncate',
+          );
+          if (yes !== 'Truncate') return;
+          if (activeChatLog) {
+            await activeChatLog.truncateKeepLast100PlusActivity();
+            // Re-seed the host's local cache from the truncated chat-log so
+            // the panel matches what's on disk + what remote clients will see.
+            clientChatRecords.length = 0;
+            for (const r of activeChatLog.getRecords()) {
+              clientChatRecords.push(r);
+            }
+          }
+          activeHost!.broadcastChatTruncated(
+            'keep-100-and-activity',
+            currentSelfMemberId,
+            currentSelfDisplayName,
+          );
+          ChatPanel.currentPanel?.notifyChatTruncated(
+            currentSelfDisplayName,
+            'keep-100-and-activity',
+          );
+          ChatPanel.currentPanel?.setHistory(clientChatRecords.slice());
+          return;
+        }
+
+        case 'truncate-activity-only': {
+          if (!isHost) {
+            void vscode.window.showInformationMessage(
+              'Only the host can run this action.',
+            );
+            return;
+          }
+          const yes = await vscode.window.showWarningMessage(
+            'Remove all user chat messages?',
+            {
+              modal: true,
+              detail: 'Every user message will be removed for everyone. Push, revert, and branch-create events will be kept.',
+            },
+            'Remove messages',
+          );
+          if (yes !== 'Remove messages') return;
+          if (activeChatLog) {
+            await activeChatLog.truncateActivityOnly();
+            clientChatRecords.length = 0;
+            for (const r of activeChatLog.getRecords()) {
+              clientChatRecords.push(r);
+            }
+          }
+          activeHost!.broadcastChatTruncated(
+            'activity-only',
+            currentSelfMemberId,
+            currentSelfDisplayName,
+          );
+          ChatPanel.currentPanel?.notifyChatTruncated(
+            currentSelfDisplayName,
+            'activity-only',
+          );
+          ChatPanel.currentPanel?.setHistory(clientChatRecords.slice());
+          return;
+        }
+
+        case 'export': {
+          const target = await vscode.window.showSaveDialog({
+            title: 'Export chat',
+            filters: { 'JSON': ['json'], 'Markdown': ['md'] },
+            saveLabel: 'Export',
+          });
+          if (!target) return;
+          const ext = path.extname(target.fsPath).toLowerCase();
+          const format: 'json' | 'md' = ext === '.md' ? 'md' : 'json';
+          const hiddenBefore = workspaceStateRef?.getChatHiddenBefore() ?? undefined;
+          if (isHost && activeChatLog) {
+            // Host: write straight from chat-log.json via ChatLog.exportToFile
+            // which honors hiddenBefore (>= boundary semantics from Plan 04-02).
+            await activeChatLog.exportToFile(target.fsPath, format, hiddenBefore);
+          } else {
+            // Member: chat-log.json lives on the host. Write the in-memory
+            // client cache instead, applying the same hiddenBefore filter so
+            // exported content matches what the user sees in their panel.
+            const visible = hiddenBefore != null
+              ? clientChatRecords.filter(r => r.timestamp >= hiddenBefore)
+              : clientChatRecords.slice();
+            const content = format === 'json'
+              ? JSON.stringify(visible, null, 2)
+              : visible.map(r => formatChatRecordAsMarkdown(r)).join('\n\n---\n\n');
+            await vscode.workspace.fs.writeFile(
+              target,
+              Buffer.from(content, 'utf-8'),
+            );
+          }
+          void vscode.window.showInformationMessage(
+            `Exported chat to ${target.fsPath}`,
+          );
+          return;
+        }
+      }
     }),
   );
 
@@ -312,6 +559,13 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     if (activePushHistory) {
       host.setPushHistory(activePushHistory);
+    }
+    // Phase 4 (Plan 04-11): wire the active branch's ChatLog into the host so
+    // chat-message arrivals persist + chat-history replay populates joiners.
+    // The IIFE may run before or after this — in both orders the late-arriving
+    // half re-wires (IIFE checks activeHost; here we check activeChatLog).
+    if (activeChatLog && currentBranchName) {
+      host.setChatLog(activeChatLog, currentBranchName);
     }
     statusBarManager.setStatus('connected', sessionName);
     // Phase 4 (Plan 04-10): reflect host-session connected state into the
@@ -775,6 +1029,18 @@ export function activate(context: vscode.ExtensionContext): void {
       // broadcasts and the divergence indicator stay in sync.
       currentBranchName = activeBranchName;
       presenceTreeProvider?.setCurrentBranch(activeBranchName);
+
+      // Phase 4 (Plan 04-11): construct the active branch's ChatLog and wire
+      // it into the host (if one is active) so arriving chat-message frames
+      // persist and chat-history replay populates joiners. versioncon.manageChat
+      // also reads activeChatLog directly for the host destructive actions
+      // (clearAll / truncate*). load() tolerates a missing file (treated as
+      // empty), so first-launch is safe.
+      activeChatLog = new ChatLog(activeBranchDir);
+      await activeChatLog.load();
+      if (activeHost) {
+        activeHost.setChatLog(activeChatLog, activeBranchName);
+      }
 
       // BRANCH-03: all-branches tree (separate from active-branch file tree)
       const branchListProvider = new BranchListProvider(branchManager);
@@ -1242,6 +1508,14 @@ export function activate(context: vscode.ExtensionContext): void {
           // so the divergence indicator + remote members' panels stay in sync.
           currentBranchName = selected.label;
           presenceTreeProvider?.setCurrentBranch(selected.label);
+          // Phase 4 (Plan 04-11): chat-log is per-branch; rebuild for the new
+          // branch and re-wire into the host so chat-message persistence +
+          // chat-history replay target the right file.
+          activeChatLog = new ChatLog(newDir);
+          await activeChatLog.load();
+          if (activeHost) {
+            activeHost.setChatLog(activeChatLog, selected.label);
+          }
           sendPresenceUpdate(vscode.window.activeTextEditor);
           void vscode.window.showInformationMessage(`Switched to branch "${selected.label}".`);
         }),

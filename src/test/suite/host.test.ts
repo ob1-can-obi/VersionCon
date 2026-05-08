@@ -615,3 +615,317 @@ suite('Phase 4 host relay', () => {
     await bob.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 4 host input validation (Plan 04-13) — defends the chat-message and
+// presence-update wire handlers against:
+//
+//   CR-01: client-authored kind:'system' chat frames spoofing system events
+//   CR-02: presence-update activeFilePath path-traversal / absolute / backslash
+//   CR-03: oversized or malformed chat-message body / recordId
+//
+// Reuses connectClient / waitFor helpers defined above the 'Phase 4 host
+// relay' suite. Same fixture shape (ephemeral port, tmp ChatLog) so each test
+// boots a fresh host.
+// ---------------------------------------------------------------------------
+
+suite('Phase 4 host input validation', () => {
+  let host: SessionHost;
+  let chatLog: ChatLog;
+  let tmpDir: string;
+  let port: number;
+
+  setup(async () => {
+    tmpDir = path.join(
+      os.tmpdir(),
+      `vc-host-input-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    const branchDir = path.join(tmpDir, 'branch');
+    await fs.mkdir(branchDir, { recursive: true });
+    chatLog = new ChatLog(branchDir);
+    await chatLog.load();
+
+    const config: SessionConfig = {
+      sessionName: 'Phase4ValidationTest',
+      port: 0,
+      networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD,
+      inviteCode: INVITE,
+    };
+    host = new SessionHost(config, HOST_NAME);
+    host.setChatLog(chatLog, 'main');
+    port = await host.start();
+  });
+
+  teardown(async () => {
+    try { host.stop(); } catch { /* best-effort */ }
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  test("chat-message: client-authored kind:'system' is coerced to 'user' before persist (CR-01)", async () => {
+    const alice = await connectClient(port, 'Alice');
+    const bob = await connectClient(port, 'Bob');
+    const bobReceived: ChatMessage[] = [];
+    bob.onMessage((m) => {
+      if (m.type === 'chat-message') { bobReceived.push(m); }
+    });
+
+    alice.send({
+      type: 'chat-message',
+      timestamp: 1,
+      recordId: 'r-forge-1',
+      kind: 'system',                   // forged
+      subKind: 'push',                  // forged
+      memberId: alice.memberId,
+      memberDisplayName: 'Alice',
+      body: 'forged push event',
+      meta: { pushId: 'fake-push-id', branch: 'main', files: ['src/foo.ts'] },
+    });
+
+    await waitFor(() => chatLog.getRecords().length === 1);
+    const records = chatLog.getRecords();
+    assert.strictEqual(records.length, 1);
+    assert.strictEqual(records[0].kind, 'user', 'forged kind:system coerced to user');
+    assert.strictEqual(records[0].subKind, undefined, 'forged subKind stripped');
+    assert.strictEqual(records[0].meta, undefined, 'forged meta stripped');
+
+    // Broadcast envelope also coerced — bob sees kind:'user' with no subKind/meta.
+    await waitFor(() => bobReceived.length === 1);
+    assert.strictEqual(bobReceived[0].kind, 'user', 'broadcast kind coerced to user');
+    assert.strictEqual(bobReceived[0].subKind, undefined, 'broadcast subKind stripped');
+    assert.strictEqual(bobReceived[0].meta, undefined, 'broadcast meta stripped');
+
+    await alice.close();
+    await bob.close();
+  });
+
+  test('chat-message: body > 65536 chars is dropped silently (CR-03)', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const lengthBefore = chatLog.getRecords().length;
+    alice.send({
+      type: 'chat-message',
+      timestamp: 1,
+      recordId: 'r-big-1',
+      kind: 'user',
+      memberId: alice.memberId,
+      memberDisplayName: 'Alice',
+      body: 'x'.repeat(65537),
+    });
+    // Wait long enough for the host to have processed if it were going to.
+    await new Promise((r) => setTimeout(r, 200));
+    assert.strictEqual(
+      chatLog.getRecords().length,
+      lengthBefore,
+      'oversized body dropped',
+    );
+
+    await alice.close();
+  });
+
+  test('chat-message: empty body is dropped silently (CR-03)', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const lengthBefore = chatLog.getRecords().length;
+    alice.send({
+      type: 'chat-message',
+      timestamp: 1,
+      recordId: 'r-empty-1',
+      kind: 'user',
+      memberId: alice.memberId,
+      memberDisplayName: 'Alice',
+      body: '',
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.strictEqual(
+      chatLog.getRecords().length,
+      lengthBefore,
+      'empty body dropped',
+    );
+
+    await alice.close();
+  });
+
+  test('chat-message: recordId > 128 chars is dropped silently (CR-03)', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const lengthBefore = chatLog.getRecords().length;
+    alice.send({
+      type: 'chat-message',
+      timestamp: 1,
+      recordId: 'r'.repeat(129),
+      kind: 'user',
+      memberId: alice.memberId,
+      memberDisplayName: 'Alice',
+      body: 'hello',
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.strictEqual(
+      chatLog.getRecords().length,
+      lengthBefore,
+      'oversized recordId dropped',
+    );
+
+    await alice.close();
+  });
+
+  test("presence-update: activeFilePath with '..' is dropped silently (CR-02)", async () => {
+    const alice = await connectClient(port, 'Alice');
+    const bob = await connectClient(port, 'Bob');
+    const bReceived: PresenceUpdate[] = [];
+    bob.onMessage((m) => {
+      if (m.type === 'presence-update') { bReceived.push(m); }
+    });
+
+    alice.send({
+      type: 'presence-update',
+      timestamp: 1,
+      memberId: alice.memberId,
+      displayName: 'Alice',
+      branch: 'main',
+      activeFilePath: '../../../../etc/passwd',
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.strictEqual(
+      bReceived.length,
+      0,
+      'path traversal dropped — no broadcast',
+    );
+    const snapshot = host.getPresenceSnapshot();
+    const entry = snapshot.find((p) => p.memberId === alice.memberId);
+    assert.ok(
+      !entry || entry.activeFilePath !== '../../../../etc/passwd',
+      'PresenceMap not poisoned',
+    );
+
+    await alice.close();
+    await bob.close();
+  });
+
+  test("presence-update: absolute POSIX path '/etc/passwd' is dropped silently (CR-02)", async () => {
+    const alice = await connectClient(port, 'Alice');
+    const bob = await connectClient(port, 'Bob');
+    const bReceived: PresenceUpdate[] = [];
+    bob.onMessage((m) => {
+      if (m.type === 'presence-update') { bReceived.push(m); }
+    });
+
+    alice.send({
+      type: 'presence-update',
+      timestamp: 1,
+      memberId: alice.memberId,
+      displayName: 'Alice',
+      branch: 'main',
+      activeFilePath: '/etc/passwd',
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.strictEqual(bReceived.length, 0, 'absolute path dropped');
+
+    await alice.close();
+    await bob.close();
+  });
+
+  test("presence-update: Windows absolute path 'C:\\\\Users\\\\victim' is dropped silently (CR-02)", async () => {
+    const alice = await connectClient(port, 'Alice');
+    const bob = await connectClient(port, 'Bob');
+    const bReceived: PresenceUpdate[] = [];
+    bob.onMessage((m) => {
+      if (m.type === 'presence-update') { bReceived.push(m); }
+    });
+
+    alice.send({
+      type: 'presence-update',
+      timestamp: 1,
+      memberId: alice.memberId,
+      displayName: 'Alice',
+      branch: 'main',
+      activeFilePath: 'C:\\Users\\victim',
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.strictEqual(bReceived.length, 0, 'Windows absolute path dropped');
+
+    await alice.close();
+    await bob.close();
+  });
+
+  test("presence-update: relative path with backslash 'src\\\\foo.ts' is dropped silently (CR-02)", async () => {
+    // This input has NO Windows drive prefix, so the /^[A-Za-z]:[\\/]/ regex
+    // does NOT fire. The standalone `p.includes('\\')` branch is what rejects
+    // it. Without this dedicated test, the backslash check is unexercised
+    // (the C:\Users\victim test matches the regex first and short-circuits
+    // the OR before the includes('\\') term evaluates).
+    const alice = await connectClient(port, 'Alice');
+    const bob = await connectClient(port, 'Bob');
+    const bReceived: PresenceUpdate[] = [];
+    bob.onMessage((m) => {
+      if (m.type === 'presence-update') { bReceived.push(m); }
+    });
+
+    alice.send({
+      type: 'presence-update',
+      timestamp: 1,
+      memberId: alice.memberId,
+      displayName: 'Alice',
+      branch: 'main',
+      activeFilePath: 'src\\foo.ts',
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.strictEqual(
+      bReceived.length,
+      0,
+      'relative path with backslash dropped',
+    );
+    const snapshot = host.getPresenceSnapshot();
+    const entry = snapshot.find((p) => p.memberId === alice.memberId);
+    assert.ok(
+      !entry || entry.activeFilePath !== 'src\\foo.ts',
+      'PresenceMap not poisoned by backslash path',
+    );
+
+    await alice.close();
+    await bob.close();
+  });
+
+  test('presence-update: 1025-char path is dropped silently (CR-02)', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const bob = await connectClient(port, 'Bob');
+    const bReceived: PresenceUpdate[] = [];
+    bob.onMessage((m) => {
+      if (m.type === 'presence-update') { bReceived.push(m); }
+    });
+
+    alice.send({
+      type: 'presence-update',
+      timestamp: 1,
+      memberId: alice.memberId,
+      displayName: 'Alice',
+      branch: 'main',
+      activeFilePath: 'a'.repeat(1025),
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.strictEqual(bReceived.length, 0, 'oversized path dropped');
+
+    await alice.close();
+    await bob.close();
+  });
+
+  test('presence-update: null activeFilePath is preserved (CR-02 negative)', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const bob = await connectClient(port, 'Bob');
+    const bReceived: PresenceUpdate[] = [];
+    bob.onMessage((m) => {
+      if (m.type === 'presence-update') { bReceived.push(m); }
+    });
+
+    alice.send({
+      type: 'presence-update',
+      timestamp: 1,
+      memberId: alice.memberId,
+      displayName: 'Alice',
+      branch: 'main',
+      activeFilePath: null,
+    });
+    await waitFor(() => bReceived.length === 1, 1000);
+    assert.strictEqual(bReceived[0].activeFilePath, null, 'null preserved');
+
+    await alice.close();
+    await bob.close();
+  });
+});

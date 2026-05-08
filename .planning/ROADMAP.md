@@ -93,7 +93,7 @@ Plans:
   3. Push events, revert events, and branch events are automatically posted to the chat timeline so the activity history is always visible
   4. When a teammate pushes changes to a file the user has open, the user receives a soft non-blocking notification (not a modal) identifying what changed and who pushed it
   5. When a push does not affect the user's workspace at all, the user sees a green "no impact" status and continues working without interruption
-**Plans:** 10/11 plans complete (04-01..04-10 done; 04-11 manage-chat remains)
+**Plans:** 11/11 plans complete (Phase 4 feature-complete; verifier + multi-host UAT pending — Bonjour service-name collision per backlog 999.1 blocks single-machine UAT)
 Plans:
 - [x] 04-01-protocol-and-types-PLAN.md — Wire protocol + ChatRecord/PresenceInfo types + round-trip tests
 - [x] 04-02-chat-log-PLAN.md — ChatLog persistence (mirror PushHistory) + 3 truncation modes + tests
@@ -105,7 +105,7 @@ Plans:
 - [x] 04-08-presence-panel-PLAN.md — PresenceTreeProvider TreeView + (you) suffix + divergence indicator + view registration
 - [x] 04-09-soft-notifications-PLAN.md — StatusBarManager flash/unread + extension.ts wiring (push-received → toast/flash, presence broadcast on tab change)
 - [x] 04-10-chat-panel-PLAN.md — ChatPanel WebviewPanel + bundled markdown-it/highlight.js/codicons + CSP + WorkspaceState chatHiddenBefore
-- [ ] 04-11-manage-chat-PLAN.md — versioncon.manageChat QuickPick + 4 modal confirms + host gating + export
+- [x] 04-11-manage-chat-PLAN.md — versioncon.manageChat QuickPick + 4 modal confirms + host gating + export
 **UI hint**: yes
 
 ### Phase 5: Dependency-Aware Conflict Detection (AST)
@@ -163,7 +163,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 1. Extension Foundation + LAN Networking | 8/9 | In Progress | - |
 | 2. Split-Pane UI + File System Layer | 0/4 | Not started | - |
 | 3. Push, Sync + Branch Management | 6/6 | Complete (UAT deferred) | 2026-05-07 |
-| 4. Presence, Chat + File-Level Conflict Notifications | 10/11 | In Progress | - |
+| 4. Presence, Chat + File-Level Conflict Notifications | 11/11 | Feature complete (UAT pending) | - |
 | 5. Dependency-Aware Conflict Detection (AST) | 0/TBD | Not started | - |
 | 6. Inline Code Review | 0/TBD | Not started | - |
 | 7. Cloud Mode + Relay Server | 0/TBD | Not started | - |

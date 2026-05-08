@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: context exhaustion at 75% (2026-05-05)
-last_updated: "2026-05-08T03:30:00Z"
-last_activity: "2026-05-08 -- Plan 04-10 complete: ChatPanel WebviewPanel singleton + bundled markdown-it/highlight.js/codicons + strict CSP per UI-SPEC §5.2 + WorkspaceState.chatHiddenBefore + extension.ts wiring (versioncon.openChat, chat client events forwarded to panel, host-local echo) + 16 new tests (262 passing)"
+last_updated: "2026-05-08T03:41:36Z"
+last_activity: "2026-05-08 -- Plan 04-11 complete: versioncon.manageChat full QuickPick implementation per UI-SPEC §6.4 (5 items + codicons), 4 destructive modal confirms with literal UI-SPEC §6.5 copy + positive-verb buttons, two-layer host gating (UI description + protocol structural), per-user Clear-my-view via WorkspaceState.chatHiddenBefore, dual-path export (host writes from chat-log.json; member writes in-memory cache), wired ChatLog into extension.ts (Rule 2 deviation). 22 new tests (284 passing). Phase 4 feature-complete (11/11 plans done)"
 progress:
   total_phases: 9
   completed_phases: 2
   total_plans: 32
-  completed_plans: 27
-  percent: 84
+  completed_plans: 28
+  percent: 88
 ---
 
 # Project State
@@ -25,33 +25,33 @@ See: .planning/PROJECT.md (updated 2026-05-04)
 
 ## Current Position
 
-Phase: 4 (Presence, Chat + File-Level Conflict Notifications) — EXECUTING
-Plan: 11 of 11
-Status: Executing Phase 4 — Plans 04-01..04-10 complete (10 of 11); wave-5 next (04-11 manage-chat)
-Next: Plan 04-11 (manage-chat) — versioncon.manageChat QuickPick (5 actions: Clear my view, Delete entire chat, Truncate keep-100, Truncate activity-only, Export chat to file) + 4 modal confirms + host gating + JSON/MD export. Will replace the placeholder versioncon.manageChat command registered in this plan and consume WorkspaceState.setChatHiddenBefore for the per-user clear-view path.
-Last activity: 2026-05-08 -- Plan 04-10 complete: ChatPanel WebviewPanel singleton + bundled markdown-it/highlight.js/codicons + strict CSP per UI-SPEC §5.2 + WorkspaceState.chatHiddenBefore + extension.ts wiring (versioncon.openChat, chat client events forwarded to panel, host-local echo) + 16 new tests (262 passing)
+Phase: 4 (Presence, Chat + File-Level Conflict Notifications) — FEATURE COMPLETE (11/11 plans)
+Plan: 11 of 11 (DONE)
+Status: Phase 4 feature-complete — all 11 plans (04-01..04-11) shipped. Awaiting Phase 4 verification (code review + multi-host UAT, blocked by Bonjour service-name collision per backlog 999.1 on single-machine setups).
+Next: Phase 4 close-out (verifier run + ROADMAP "Complete" marker once UAT path resolves) → Phase 2 (Split-Pane UI) or Phase 5 (Dependency-Aware Conflict Detection / AST) per execution-order rule.
+Last activity: 2026-05-08 -- Plan 04-11 complete: versioncon.manageChat full QuickPick implementation per UI-SPEC §6.4 (5 items + codicons), 4 destructive modal confirms with literal UI-SPEC §6.5 copy + positive-verb buttons, two-layer host gating (UI description + protocol structural), per-user Clear-my-view via WorkspaceState.chatHiddenBefore, dual-path export (host writes from chat-log.json; member writes in-memory cache), wired ChatLog into extension.ts (Rule 2 deviation). 22 new tests (284 passing). Phase 4 feature-complete (11/11 plans done).
 
-Progress: [████████▌░] 84%
+Progress: [█████████░] 88%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 16
+- Total plans completed: 17
 - Average duration: 4.7 min
-- Total execution time: 1.25 hours
+- Total execution time: 1.34 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 6 | 23 min | 3.8 min |
-| 04 | 10 | 52.5 min | 5.25 min |
+| 04 | 11 | 57.5 min | 5.2 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 04-10 (12 min), 04-09 (7.2 min), 04-08 (3.3 min), 04-07 (4 min), 04-06 (3 min)
-- Trend: 04-10 set a new Phase 4 maximum at 12 min — largest surface (5 new files, 4 modified, full webview bundle pipeline + ChatPanel singleton + WorkspaceState extension + extension.ts wiring + 16 unit tests). Six Rule-2/3 deviations (mostly module-state plumbing the plan's pseudo-code referenced but the codebase didn't have, plus markdown-it / @vscode/codicons dep additions the plan omitted). Bundle size 200KB minified for the webview JS — within the budget locked in CONTEXT.md "Code snippet rendering" decision. 16 new tests; 262 passing total.
+- Last 5 plans: 04-11 (5 min), 04-10 (12 min), 04-09 (7.2 min), 04-08 (3.3 min), 04-07 (4 min)
+- Trend: 04-11 closes Phase 4 at 5 min — back to the Phase 4 average after 04-10's 12-min ChatPanel outlier. Two deviations (Rule 2 chat-log wiring that prior plans deferred, Rule 1 break/return style fix). 22 new tests; 284 passing total. Phase 4 is feature-complete (11 of 11 plans done); awaiting verifier + multi-host UAT.
 
 *Updated after each plan completion*
 
@@ -125,6 +125,12 @@ Recent decisions affecting current work:
 - [Plan 04-10]: currentConnectionStatus is a module-level mirror, not a SessionClient call. Mirroring lets ChatPanel.currentPanel?.setConnectionStatus(...) calls inside connection-changed / session-ended / sidebar-disconnect handlers update the banner instantly. Plan's pseudo-code referenced a connectionStatus field that didn't exist; added as Rule 2 missing functionality.
 - [Plan 04-10]: chat unit tests duplicate the markdown-it config + formatRelativeTime in-place rather than importing browser modules — webview's main.ts can't load in Node tests because it imports highlight.js sub-modules + DOM types. Documented for future shared-util refactor.
 - [Plan 04-10]: versioncon.manageChat registered as a placeholder command — Plan 04-11 owns the QuickPick UX, but package.json's $(gear) menu binds to it via this plan's command declaration; placeholder prevents "command not found" until 04-11 ships.
+- [Plan 04-11]: Items 2-4 visible to non-host members with description "(host only — disabled)" — UI-SPEC §6.4 mandates the disabled-with-explanation visual contract over filtering items out for non-hosts. Defense-in-depth: UI gate + protocol gate (Plan 04-04 has no inbound chat-cleared/chat-truncated handler).
+- [Plan 04-11]: Modal confirm pattern uses a single positive-verb button — `if (yes !== 'Verb') return`. Cancel is implicit via Esc / VS Code modal default. UI-SPEC §6.5 "Cancel always second so Esc cancels by default" satisfied without passing a Cancel item.
+- [Plan 04-11]: Member-side export uses the in-memory clientChatRecords cache (not an on-demand chat-history fetch) — v1 has no on-demand chat-history request protocol; members export what their panel currently shows. Same scope decision as ChatLog.exportToFile's hiddenBefore filter from Plan 04-02.
+- [Plan 04-11]: Per-branch ChatLog reconstruction on switchBranch — chat-log.json is per-branch, so switching branches rebuilds the ChatLog and re-wires it into the host alongside fsLayer.setBranchDir. Late-arriving wiring resolves both ways (IIFE wires host if active; wireHostEvents wires chat-log if loaded).
+- [Plan 04-11]: ChatLog wiring landed in extension.ts in this plan, not Plan 04-10 — Plan 04-09 deferred to 04-10, but 04-10's host chat-message handler null-guarded chatLog so the wiring never landed. Plan 04-11 needs activeChatLog for clearAll/truncate*/exportToFile to do anything meaningful, so it became a Rule 2 deviation here.
+- [Plan 04-11]: UI-SPEC literal verification via source-grep tests — extension.ts read as a string, modal copy + button labels asserted against UI-SPEC §6.5 + §6.4. Catches future drift away from the spec without needing a VS Code extension host to mount the QuickPick. Pattern reusable for any future spec'd UI strings.
 
 ### Pending Todos
 
@@ -147,6 +153,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-08T03:30:00Z
-Stopped at: Completed plan 04-10 (Phase 4 wave-5 next; chat panel shipped — ChatPanel WebviewPanel singleton + bundled markdown-it/highlight.js/codicons + strict CSP + chatHiddenBefore + extension wiring + host-local echo; 262 tests passing)
+Last session: 2026-05-08T03:41:36Z
+Stopped at: Completed plan 04-11 (Phase 4 feature-complete — versioncon.manageChat full QuickPick implementation, 4 modal confirms, two-layer host gating, per-user clear-my-view, dual-path export, ChatLog wired into extension.ts; 22 new tests, 284 passing total). All 11 Phase 4 plans done; awaiting verifier + multi-host UAT.
 Resume file: None

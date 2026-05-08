@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: context exhaustion at 75% (2026-05-05)
-last_updated: "2026-05-08T02:05:51Z"
-last_activity: "2026-05-08 -- Plan 04-03 complete: PresenceMap accumulator + 8 unit tests (179 passing)"
+last_updated: "2026-05-08T02:13:45Z"
+last_activity: "2026-05-08 -- Plan 04-05 complete: SessionClient routes 5 Phase 4 wire types to typed events + 8 unit tests (187 passing)"
 progress:
   total_phases: 9
   completed_phases: 2
   total_plans: 32
-  completed_plans: 21
-  percent: 66
+  completed_plans: 22
+  percent: 69
 ---
 
 # Project State
@@ -26,31 +26,31 @@ See: .planning/PROJECT.md (updated 2026-05-04)
 ## Current Position
 
 Phase: 4 (Presence, Chat + File-Level Conflict Notifications) — EXECUTING
-Plan: 5 of 11
-Status: Executing Phase 4 — Plans 04-01, 04-02, 04-03, 04-06 complete (4 of 11); remaining wave-2/wave-3 plans queued
-Next: Plan 04-04 (host chat/presence relay) — wave-2 in progress; PresenceMap + ChatLog now both available for SessionHost consumer.
-Last activity: 2026-05-08 -- Plan 04-03 complete: PresenceMap accumulator + 8 unit tests (179 passing)
+Plan: 6 of 11
+Status: Executing Phase 4 — Plans 04-01, 04-02, 04-03, 04-05, 04-06 complete (5 of 11); remaining wave-2/wave-3 plans queued
+Next: Plan 04-04 (host chat/presence relay) — wave-2 final piece; SessionClient now translates host broadcasts into typed events for downstream UI plans.
+Last activity: 2026-05-08 -- Plan 04-05 complete: SessionClient routes 5 Phase 4 wire types to typed events + 8 unit tests (187 passing)
 
-Progress: [███████░░░] 66%
+Progress: [███████░░░] 69%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 10
-- Average duration: 3.8 min
-- Total execution time: 0.62 hours
+- Total plans completed: 11
+- Average duration: 3.7 min
+- Total execution time: 0.68 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 6 | 23 min | 3.8 min |
-| 04 | 4 | 15 min | 3.8 min |
+| 04 | 5 | 18 min | 3.6 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 01-08 (3 min), 04-01 (6 min), 04-06 (3 min), 04-02 (4 min), 04-03 (2 min)
+- Last 5 plans: 04-01 (6 min), 04-06 (3 min), 04-02 (4 min), 04-03 (2 min), 04-05 (3 min)
 - Trend: steady
 
 *Updated after each plan completion*
@@ -88,6 +88,10 @@ Recent decisions affecting current work:
 - [Plan 04-03]: PresenceMap is a class (not a bare Map) so Plan 04-08 (TreeProvider) has something to wrap with refresh() side effects and Plan 04-04 (host) can choose to use it or keep an inline Map — overrides RESEARCH §"PresenceMap location" advice based on Plan 04-08's needs.
 - [Plan 04-03]: getSnapshot() returns Array.from(values()) defensive copy — consistent with SyncTracker.getOutOfSyncPaths() and ChatLog.getRecords() patterns; tested explicitly so the invariant survives refactors.
 - [Plan 04-03]: PresenceMap is policy-agnostic — sanitization of memberId (T-04-03-01) and activeFilePath (T-04-03-03) is the caller's responsibility (Plan 04-04 and Plan 04-06); documented in upsert() JSDoc cross-referencing STRIDE threat IDs.
+- [Plan 04-05]: Wire→event field renames (recordId → id, timestamp → lastUpdated) happen at the SessionClient routing boundary so downstream code never sees wire-only field names — keeps the event-payload contract authoritative once it leaves SessionClient.
+- [Plan 04-05]: Conditional spread for optional subKind/meta fields preserves the JSDoc invariant 'subKind only set when kind === system' from src/types/chat.ts; carrying explicit undefined would leak wire-shape into consumers.
+- [Plan 04-05]: Test harness invokes private handleMessage via typed bracket cast — avoids real WebSocket spin-up for routing-only assertions; cleaner than mocking ws because the contract is purely 'wire shape in, event shape out'.
+- [Plan 04-05]: Build-script ordering quirk discovered — `npm run build` only bundles extension.ts; downstream plans that touch test files must run `npx tsc` (no flag) before `npm test` to compile dist/test/*.js, otherwise vscode-test runs stale compiled tests.
 
 ### Pending Todos
 
@@ -110,6 +114,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-08T02:05:51Z
-Stopped at: Completed plan 04-03 (Phase 4 sequential execution in progress)
+Last session: 2026-05-08T02:13:45Z
+Stopped at: Completed plan 04-05 (Phase 4 sequential execution in progress)
 Resume file: None

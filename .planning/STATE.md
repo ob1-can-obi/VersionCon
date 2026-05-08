@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: context exhaustion at 75% (2026-05-05)
-last_updated: "2026-05-08T02:13:45Z"
-last_activity: "2026-05-08 -- Plan 04-05 complete: SessionClient routes 5 Phase 4 wire types to typed events + 8 unit tests (187 passing)"
+last_updated: "2026-05-08T02:26:31Z"
+last_activity: "2026-05-08 -- Plan 04-04 complete: SessionHost chat/presence relay with server-trust + 7 public helpers + 11 integration tests (198 passing)"
 progress:
   total_phases: 9
   completed_phases: 2
   total_plans: 32
-  completed_plans: 22
-  percent: 69
+  completed_plans: 23
+  percent: 72
 ---
 
 # Project State
@@ -26,32 +26,32 @@ See: .planning/PROJECT.md (updated 2026-05-04)
 ## Current Position
 
 Phase: 4 (Presence, Chat + File-Level Conflict Notifications) — EXECUTING
-Plan: 6 of 11
-Status: Executing Phase 4 — Plans 04-01, 04-02, 04-03, 04-05, 04-06 complete (5 of 11); remaining wave-2/wave-3 plans queued
-Next: Plan 04-04 (host chat/presence relay) — wave-2 final piece; SessionClient now translates host broadcasts into typed events for downstream UI plans.
-Last activity: 2026-05-08 -- Plan 04-05 complete: SessionClient routes 5 Phase 4 wire types to typed events + 8 unit tests (187 passing)
+Plan: 7 of 11
+Status: Executing Phase 4 — Plans 04-01, 04-02, 04-03, 04-04, 04-05, 04-06 complete (6 of 11); wave-3 (UI plans 04-07..04-11) queued
+Next: Plan 04-07 (activity-tree TreeView) — wave-3 starts; ActivityLogProvider with ring buffer + sticky unread + view registration. Host relay is the trusted source of truth — clients now receive typed chat-received / presence-update / chat-history events ready for UI consumption.
+Last activity: 2026-05-08 -- Plan 04-04 complete: SessionHost chat/presence relay with server-trust + 7 public helpers + 11 integration tests (198 passing)
 
-Progress: [███████░░░] 69%
+Progress: [███████░░░] 72%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 11
-- Average duration: 3.7 min
-- Total execution time: 0.68 hours
+- Total plans completed: 12
+- Average duration: 4.1 min
+- Total execution time: 0.82 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 6 | 23 min | 3.8 min |
-| 04 | 5 | 18 min | 3.6 min |
+| 04 | 6 | 26 min | 4.3 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 04-01 (6 min), 04-06 (3 min), 04-02 (4 min), 04-03 (2 min), 04-05 (3 min)
-- Trend: steady
+- Last 5 plans: 04-06 (3 min), 04-02 (4 min), 04-03 (2 min), 04-05 (3 min), 04-04 (8 min)
+- Trend: integration-test plan (04-04) ran longer; wire-relay scope larger than wave-1 contract plans
 
 *Updated after each plan completion*
 
@@ -92,6 +92,11 @@ Recent decisions affecting current work:
 - [Plan 04-05]: Conditional spread for optional subKind/meta fields preserves the JSDoc invariant 'subKind only set when kind === system' from src/types/chat.ts; carrying explicit undefined would leak wire-shape into consumers.
 - [Plan 04-05]: Test harness invokes private handleMessage via typed bracket cast — avoids real WebSocket spin-up for routing-only assertions; cleaner than mocking ws because the contract is purely 'wire shape in, event shape out'.
 - [Plan 04-05]: Build-script ordering quirk discovered — `npm run build` only bundles extension.ts; downstream plans that touch test files must run `npx tsc` (no flag) before `npm test` to compile dist/test/*.js, otherwise vscode-test runs stale compiled tests.
+- [Plan 04-04]: setChatLog widened to (chatLog, branchName) two-arg signature — SessionHost has no existing branch-tracking field that Task 3's chat-history send could read from; storing activeBranch on the host is the cleanest fix. Plan 04-09 (extension wiring) must call setChatLog(chatLog, branchName) accordingly.
+- [Plan 04-04]: handleLocalChatMessage uses this.hostMemberId ?? 'host' fallback — the host process may not have self-authenticated as a member; using a stable 'host' marker keeps the local-compose path working regardless of self-auth state.
+- [Plan 04-04]: T-04-04-04 (chat-cleared/chat-truncated spoofing) mitigation is structural, not code — the ProtocolMessage union permits both wire types but the onmessage switch has NO inbound branches; spoofed messages from non-host clients silently drop. Verified by integration test that spoofed cleared/truncated never reach other clients AND host doesn't crash.
+- [Plan 04-04]: chat-message broadcast includes sender (no exclude) per RESEARCH Open Q #1 — sender sees own message after host echo. presence-update excludes sender (mirrors member-joined). Both branches mirror tracked-paths-update precedent (T-03-14) for the closure-bound memberId override.
+- [Plan 04-04]: Test harness uses raw ws package, not full SessionClient — routing-level integration tests don't need reconnect/heartbeat machinery. Smaller harness (connectClient + waitFor, ~50 lines) gives precise wire-level send/receive assertions; mirrors Plan 04-05's typed-bracket-cast decision at one level higher.
 
 ### Pending Todos
 
@@ -114,6 +119,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-08T02:13:45Z
-Stopped at: Completed plan 04-05 (Phase 4 sequential execution in progress)
+Last session: 2026-05-08T02:26:31Z
+Stopped at: Completed plan 04-04 (Phase 4 sequential execution in progress; wave-2 done)
 Resume file: None

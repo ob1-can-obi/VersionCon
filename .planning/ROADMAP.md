@@ -98,7 +98,7 @@ Plans:
 - [x] 04-01-protocol-and-types-PLAN.md — Wire protocol + ChatRecord/PresenceInfo types + round-trip tests
 - [x] 04-02-chat-log-PLAN.md — ChatLog persistence (mirror PushHistory) + 3 truncation modes + tests
 - [x] 04-03-presence-map-PLAN.md — In-memory PresenceMap accumulator + tests
-- [ ] 04-04-host-relay-PLAN.md — SessionHost chat/presence relay, server-trusted memberId, broadcast helpers, chat-history replay
+- [x] 04-04-host-relay-PLAN.md — SessionHost chat/presence relay, server-trusted memberId, broadcast helpers, chat-history replay
 - [x] 04-05-client-events-PLAN.md — SessionClient routes 5 new wire types to typed events + tests
 - [x] 04-06-file-overlap-PLAN.md — Pure-fn computeFileOverlap + getOpenTabPaths + cross-platform path tests
 - [ ] 04-07-activity-tree-PLAN.md — ActivityLogProvider TreeView + ring buffer + sticky unread + view registration
@@ -163,7 +163,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 1. Extension Foundation + LAN Networking | 8/9 | In Progress | - |
 | 2. Split-Pane UI + File System Layer | 0/4 | Not started | - |
 | 3. Push, Sync + Branch Management | 6/6 | Complete (UAT deferred) | 2026-05-07 |
-| 4. Presence, Chat + File-Level Conflict Notifications | 5/11 | In Progress | - |
+| 4. Presence, Chat + File-Level Conflict Notifications | 6/11 | In Progress | - |
 | 5. Dependency-Aware Conflict Detection (AST) | 0/TBD | Not started | - |
 | 6. Inline Code Review | 0/TBD | Not started | - |
 | 7. Cloud Mode + Relay Server | 0/TBD | Not started | - |

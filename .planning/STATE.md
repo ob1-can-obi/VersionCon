@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: ready for Phase 4
-last_updated: "2026-05-07T00:45:00.000Z"
-last_activity: 2026-05-07 -- Phase 3 gap closure 03-06 shipped (PUSH-09 modal block, PUSH-10 real Sync, PUSH-11 per-file conflict prompt). 6/6 SCs satisfied by code; 129 unit tests passing. Visual UAT deferred (Bonjour collision blocks single-machine two-host setup; tracked as backlog 999.1).
+stopped_at: context exhaustion at 75% (2026-05-05)
+last_updated: "2026-05-08T01:44:26Z"
+last_activity: "2026-05-08 -- Plan 04-01 complete: Phase 4 wire protocol + chat/presence types + 11 round-trip tests"
 progress:
-  total_phases: 8
-  completed_phases: 3
-  total_plans: 20
-  completed_plans: 21
-  percent: 65
+  total_phases: 9
+  completed_phases: 2
+  total_plans: 32
+  completed_plans: 18
+  percent: 56
 ---
 
 # Project State
@@ -21,35 +21,36 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-04)
 
 **Core value:** Teams collaborate on code without merge conflict pain — dependency-aware tracking means you only stop coding when changes genuinely affect what you're working on.
-**Current focus:** Phase 4 — presence-chat-file-conflict-notifications (Phase 3 complete as of 2026-05-07)
+**Current focus:** Phase 4 — Presence, Chat + File-Level Conflict Notifications
 
 ## Current Position
 
-Phase: 03 (push-sync-branch-management) — COMPLETE (visual UAT deferred)
-Plan: 6 of 6 complete (03-01..03-06 all merged)
-Status: 6/6 ROADMAP success criteria satisfied by code. 129 unit tests passing, 0 failing. Visual UAT deferred per 03-HUMAN-UAT.md (single-machine two-host setup blocked by Bonjour collision — tracked as backlog 999.1).
-Next: Phase 4 — Presence, Chat + File-Level Conflict Notifications. Run /gsd-plan-phase 4 to plan it.
-Last activity: 2026-05-07 -- Phase 3 gap closure 03-06 shipped (PUSH-09 modal block, PUSH-10 real Sync, PUSH-11 per-file conflict prompt)
+Phase: 4 (Presence, Chat + File-Level Conflict Notifications) — EXECUTING
+Plan: 2 of 11
+Status: Executing Phase 4 — Plan 04-01 complete, advancing to 04-02
+Next: Plan 04-02 (ChatLog persistence) — wave 1 contracts now in place for downstream consumers.
+Last activity: 2026-05-08 -- Plan 04-01 complete: Phase 4 wire protocol + chat/presence types + 11 round-trip tests
 
-Progress: [██████████] 100%
+Progress: [█████░░░░░] 56%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 6
-- Average duration: 3.8 min
-- Total execution time: 0.38 hours
+- Total plans completed: 7
+- Average duration: 4.1 min
+- Total execution time: 0.48 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 6 | 23 min | 3.8 min |
+| 04 | 1 | 6 min | 6 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 01-01 (5 min), 01-02 (5 min), 01-03 (5 min), 01-07 (3 min), 01-08 (3 min)
+- Last 5 plans: 01-02 (5 min), 01-03 (5 min), 01-07 (3 min), 01-08 (3 min), 04-01 (6 min)
 - Trend: steady
 
 *Updated after each plan completion*
@@ -71,6 +72,10 @@ Recent decisions affecting current work:
 - [Plan 01-02]: First authenticated member gets host role; tracked via hostMemberId for admin command authorization.
 - [Plan 01-02]: SessionClient uses null-ws pattern to distinguish intentional disconnect from connection drops.
 - [Plan 01-03]: Used optional chaining for bonjour-service Service.stop (type declares it as optional).
+- [Plan 04-01]: Phase 4 wire types added contract-first in Wave 1 so Waves 2-4 share one canonical shape.
+- [Plan 04-01]: ChatRecord.meta.affectsLocal is computed client-side only — JSDoc documents non-persistence (T-04-01-03).
+- [Plan 04-01]: PresenceInfo.activeFilePath uses 'string | null' rather than 'string | undefined' so the value travels through JSON cleanly.
+- [Plan 04-01]: VALID_TYPES gate test verifies T-04-01-02 mitigation — invented chat-* types are rejected at the parser layer.
 
 ### Pending Todos
 
@@ -93,6 +98,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-05T04:19:54.867Z
-Stopped at: context exhaustion at 75% (2026-05-05)
+Last session: 2026-05-08T01:44:26Z
+Stopped at: Completed plan 04-01 (Phase 4 sequential execution in progress)
 Resume file: None

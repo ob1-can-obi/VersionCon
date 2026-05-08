@@ -93,7 +93,19 @@ Plans:
   3. Push events, revert events, and branch events are automatically posted to the chat timeline so the activity history is always visible
   4. When a teammate pushes changes to a file the user has open, the user receives a soft non-blocking notification (not a modal) identifying what changed and who pushed it
   5. When a push does not affect the user's workspace at all, the user sees a green "no impact" status and continues working without interruption
-**Plans**: TBD
+**Plans:** 11 plans
+Plans:
+- [x] 04-01-protocol-and-types-PLAN.md — Wire protocol + ChatRecord/PresenceInfo types + round-trip tests
+- [ ] 04-02-chat-log-PLAN.md — ChatLog persistence (mirror PushHistory) + 3 truncation modes + tests
+- [ ] 04-03-presence-map-PLAN.md — In-memory PresenceMap accumulator + tests
+- [ ] 04-04-host-relay-PLAN.md — SessionHost chat/presence relay, server-trusted memberId, broadcast helpers, chat-history replay
+- [ ] 04-05-client-events-PLAN.md — SessionClient routes 5 new wire types to typed events + tests
+- [ ] 04-06-file-overlap-PLAN.md — Pure-fn computeFileOverlap + getOpenTabPaths + cross-platform path tests
+- [ ] 04-07-activity-tree-PLAN.md — ActivityLogProvider TreeView + ring buffer + sticky unread + view registration
+- [ ] 04-08-presence-panel-PLAN.md — PresenceTreeProvider TreeView + (you) suffix + divergence indicator + view registration
+- [ ] 04-09-soft-notifications-PLAN.md — StatusBarManager flash/unread + extension.ts wiring (push-received → toast/flash, presence broadcast on tab change)
+- [ ] 04-10-chat-panel-PLAN.md — ChatPanel WebviewPanel + bundled markdown-it/highlight.js/codicons + CSP + WorkspaceState chatHiddenBefore
+- [ ] 04-11-manage-chat-PLAN.md — versioncon.manageChat QuickPick + 4 modal confirms + host gating + export
 **UI hint**: yes
 
 ### Phase 5: Dependency-Aware Conflict Detection (AST)
@@ -151,7 +163,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 1. Extension Foundation + LAN Networking | 8/9 | In Progress | - |
 | 2. Split-Pane UI + File System Layer | 0/4 | Not started | - |
 | 3. Push, Sync + Branch Management | 6/6 | Complete (UAT deferred) | 2026-05-07 |
-| 4. Presence, Chat + File-Level Conflict Notifications | 0/TBD | Not started | - |
+| 4. Presence, Chat + File-Level Conflict Notifications | 0/11 | Not started | - |
 | 5. Dependency-Aware Conflict Detection (AST) | 0/TBD | Not started | - |
 | 6. Inline Code Review | 0/TBD | Not started | - |
 | 7. Cloud Mode + Relay Server | 0/TBD | Not started | - |

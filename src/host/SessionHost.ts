@@ -362,20 +362,32 @@ export class SessionHost implements SessionEventEmitter {
           // after host echo, per RESEARCH Open Q #1.
           this.broadcast(sanitized);
         } else if (msg.type === 'presence-update') {
-          // CR-02 (T-04-13-02): validate activeFilePath against path traversal
-          // BEFORE upsert. PresenceMap.ts T-04-03-03 documents this as a
-          // precondition the caller MUST enforce. The client-side normalization
-          // in extension.ts (presence broadcast on onDidChangeActiveTextEditor)
-          // is a defense-in-depth pair but the wire is not trusted, so the
-          // host MUST also enforce. Drop silently on any rejection — same
-          // posture as parseMessage returning null. activeFilePath === null
-          // is the legitimate "no file open" signal and is preserved.
+          // CR-02 (T-04-13-02) + CR-03-NEW (Plan 04-15): validate activeFilePath
+          // against path traversal BEFORE upsert. PresenceMap.ts T-04-03-03
+          // documents this as a precondition the caller MUST enforce. The
+          // client-side normalization in extension.ts (presence broadcast on
+          // onDidChangeActiveTextEditor) is a defense-in-depth pair but the
+          // wire is not trusted, so the host MUST also enforce. Drop silently
+          // on any rejection — same posture as parseMessage returning null.
+          // activeFilePath === null is the legitimate "no file open" signal
+          // and is preserved.
+          // Segment-aware traversal detection rejects the path SEGMENT '..'
+          // (true directory traversal) but accepts filenames whose basename
+          // contains '..' as a substring (e.g. 'src/foo..bar.ts',
+          // 'package..json').
           let safePath: string | null = null;
           if (msg.activeFilePath !== null) {
             if (typeof msg.activeFilePath !== 'string') return;
             if (msg.activeFilePath.length > 1024) return;
             const p = msg.activeFilePath;
-            if (p.includes('..') || p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p) || p.includes('\\')) {
+            // Plan 04-15 (CR-03-NEW closure): segment-aware traversal detection.
+            // The prior substring check on the dot-dot sequence over-rejected
+            // legitimate filenames whose basename contained two consecutive
+            // periods (e.g. 'src/foo..bar.ts', 'package..json'). Splitting on
+            // the path separator and checking for the exact `..` segment
+            // narrows the check to true directory traversal.
+            const segments = p.split('/');
+            if (segments.includes('..') || p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p) || p.includes('\\')) {
               return; // path traversal / absolute path / backslash — drop silently
             }
             safePath = p;

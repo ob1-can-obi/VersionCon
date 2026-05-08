@@ -362,6 +362,25 @@ export class SessionHost implements SessionEventEmitter {
           // after host echo, per RESEARCH Open Q #1.
           this.broadcast(sanitized);
         } else if (msg.type === 'presence-update') {
+          // CR-02 (T-04-13-02): validate activeFilePath against path traversal
+          // BEFORE upsert. PresenceMap.ts T-04-03-03 documents this as a
+          // precondition the caller MUST enforce. The client-side normalization
+          // in extension.ts (presence broadcast on onDidChangeActiveTextEditor)
+          // is a defense-in-depth pair but the wire is not trusted, so the
+          // host MUST also enforce. Drop silently on any rejection — same
+          // posture as parseMessage returning null. activeFilePath === null
+          // is the legitimate "no file open" signal and is preserved.
+          let safePath: string | null = null;
+          if (msg.activeFilePath !== null) {
+            if (typeof msg.activeFilePath !== 'string') return;
+            if (msg.activeFilePath.length > 1024) return;
+            const p = msg.activeFilePath;
+            if (p.includes('..') || p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p) || p.includes('\\')) {
+              return; // path traversal / absolute path / backslash — drop silently
+            }
+            safePath = p;
+          }
+
           // T-04-04-01: server-trusted memberId override (same policy as
           // chat-message). T-04-04-02: stamp host-arrival timestamp.
           const cm = this.members.get(memberId);
@@ -371,13 +390,14 @@ export class SessionHost implements SessionEventEmitter {
             ...msg,
             memberId,
             displayName,
+            activeFilePath: safePath,           // CR-02: validated path flows to broadcast
             timestamp: stampedTs,
           };
           const info: PresenceInfo = {
             memberId,
             displayName,
             branch: msg.branch,
-            activeFilePath: msg.activeFilePath,
+            activeFilePath: safePath,           // CR-02: validated path flows to PresenceMap
             lastUpdated: stampedTs,
           };
           this.presenceMap.upsert(info);

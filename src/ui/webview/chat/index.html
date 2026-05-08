@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="%%CSP%%">
+  <link href="%%CODICON_CSS_URI%%" rel="stylesheet">
+  <link href="%%CSS_URI%%" rel="stylesheet">
+  <title>VersionCon: Chat</title>
+</head>
+<body>
+  <div id="chat-root">
+    <header class="chat-header">
+      <span class="header-title"></span>
+      <button class="header-gear" type="button" aria-label="Manage chat" title="Manage chat">
+        <span class="codicon codicon-gear"></span>
+      </button>
+    </header>
+    <div class="banner banner-reconnecting" hidden role="status" aria-live="polite">
+      <span class="codicon codicon-sync codicon-modifier-spin"></span>
+      Reconnecting to session…
+    </div>
+    <div class="banner banner-disconnected" hidden role="alert" aria-live="assertive">
+      <span class="codicon codicon-error"></span>
+      Disconnected. Messages won't send until you reconnect.
+    </div>
+    <main id="message-list" aria-label="Chat messages"></main>
+    <button class="jump-bottom" type="button" hidden aria-label="Jump to newest">
+      ↓ <span class="jump-count">0</span> new
+    </button>
+    <footer class="composer">
+      <textarea id="composer" rows="1" placeholder="Type a message…"
+                aria-label="Compose chat message"></textarea>
+      <button id="send-button" type="button" disabled aria-label="Send message">Send</button>
+      <div class="composer-hint">
+        <button class="paste-code" type="button" aria-label="Paste code">
+          <span class="codicon codicon-code"></span> Paste code
+        </button>
+        <span class="kbd-hint">Cmd/Ctrl + Enter to send</span>
+      </div>
+    </footer>
+  </div>
+  <script nonce="%%NONCE%%" src="%%JS_URI%%"></script>
+</body>
+</html>

@@ -1,0 +1,365 @@
+/*
+ * VersionCon chat webview styles.
+ *
+ * UI-SPEC §4.1 hard rule: NO hex codes anywhere. Every color routes through
+ * var(--vscode-*) so the panel respects the user's active theme (Light+,
+ * Dark+, High Contrast).
+ *
+ * UI-SPEC §4.4 spacing: multiples of 4 only.
+ * UI-SPEC §4.3 typography: VS Code font-family + font-size; weights 400/600.
+ */
+
+:root {
+  --gap-xs: 4px;
+  --gap-sm: 8px;
+  --gap-md: 12px;
+  --gap-lg: 16px;
+  --gap-xl: 20px;
+  --gap-2xl: 24px;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+}
+
+#chat-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ----- Header ----- */
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  padding: 0 var(--gap-lg);
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-sideBar-background);
+  flex-shrink: 0;
+}
+
+.header-title {
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.header-gear {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--vscode-foreground);
+  padding: var(--gap-xs);
+}
+
+.header-gear:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  border-radius: 3px;
+}
+
+/* ----- Banners (reconnecting / disconnected / send-failed) ----- */
+.banner {
+  padding: var(--gap-sm) var(--gap-md);
+  font-size: calc(var(--vscode-font-size) - 1px);
+  background: var(--vscode-editorWarning-background);
+  color: var(--vscode-editorWarning-foreground);
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  flex-shrink: 0;
+}
+
+/* ----- Message list ----- */
+#message-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--gap-lg) var(--gap-xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-md);
+}
+
+.msg-row {
+  display: flex;
+  gap: var(--gap-sm);
+}
+
+.msg-row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.msg-user .avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--vscode-charts-blue);
+  color: var(--vscode-editor-background);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.msg-content {
+  flex: 1;
+  min-width: 0;  /* allow flex children to shrink for word-wrap */
+}
+
+.msg-meta {
+  display: flex;
+  gap: var(--gap-sm);
+  align-items: baseline;
+}
+
+.author {
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.you {
+  color: var(--vscode-descriptionForeground);
+  font-weight: 400;
+}
+
+.ts {
+  color: var(--vscode-descriptionForeground);
+  font-size: calc(var(--vscode-font-size) - 1px);
+  min-width: 60px;
+  text-align: right;
+}
+
+.body {
+  color: var(--vscode-foreground);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+.body p {
+  margin: 0 0 var(--gap-sm) 0;
+}
+
+.body p:last-child {
+  margin-bottom: 0;
+}
+
+.body pre {
+  background: var(--vscode-textCodeBlock-background);
+  padding: var(--gap-md);
+  border-radius: 3px;
+  overflow-x: auto;
+  font-family: var(--vscode-editor-font-family);
+  font-size: var(--vscode-editor-font-size);
+  line-height: 1.45;
+  margin: var(--gap-sm) 0;
+}
+
+.body code {
+  background: var(--vscode-textCodeBlock-background);
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family);
+}
+
+.body pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.body a {
+  color: var(--vscode-textLink-foreground);
+}
+
+.body a:hover {
+  color: var(--vscode-textLink-activeForeground);
+}
+
+/* ----- System event row ----- */
+.msg-system {
+  border-left: 2px solid var(--vscode-textBlockQuote-border);
+  padding: var(--gap-xs) var(--gap-md);
+  background: var(--vscode-textBlockQuote-background);
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+  font-size: calc(var(--vscode-font-size) - 1px);
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.msg-system .sys-text {
+  flex: 1;
+}
+
+/* ----- Highlight.js class shim — VS Code semantic tokens ----- */
+.hljs-keyword     { color: var(--vscode-symbolIcon-keywordForeground); }
+.hljs-string      { color: var(--vscode-symbolIcon-stringForeground); }
+.hljs-number      { color: var(--vscode-symbolIcon-numberForeground); }
+.hljs-comment     { color: var(--vscode-symbolIcon-snippetForeground); font-style: italic; }
+.hljs-function    { color: var(--vscode-symbolIcon-functionForeground); }
+.hljs-class       { color: var(--vscode-symbolIcon-classForeground); }
+.hljs-variable    { color: var(--vscode-symbolIcon-variableForeground); }
+.hljs-built_in    { color: var(--vscode-symbolIcon-classForeground); }
+.hljs-title       { color: var(--vscode-symbolIcon-functionForeground); }
+.hljs-attr        { color: var(--vscode-symbolIcon-propertyForeground); }
+.hljs-literal     { color: var(--vscode-symbolIcon-keywordForeground); }
+.hljs-meta        { color: var(--vscode-symbolIcon-snippetForeground); }
+.hljs-tag         { color: var(--vscode-symbolIcon-keywordForeground); }
+.hljs-name        { color: var(--vscode-symbolIcon-classForeground); }
+.hljs-params      { color: var(--vscode-symbolIcon-variableForeground); }
+
+/* ----- Composer ----- */
+.composer {
+  display: grid;
+  grid-template-areas:
+    "input send"
+    "hint hint";
+  grid-template-columns: 1fr auto;
+  gap: var(--gap-sm);
+  padding: var(--gap-lg);
+  border-top: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-sideBar-background);
+  flex-shrink: 0;
+}
+
+#composer {
+  grid-area: input;
+  min-height: 36px;
+  max-height: 144px;
+  resize: none;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border);
+  padding: var(--gap-sm) var(--gap-md);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  line-height: 1.5;
+}
+
+#composer:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+
+#composer:disabled {
+  color: var(--vscode-disabledForeground);
+}
+
+#send-button {
+  grid-area: send;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  padding: 6px 14px;
+  border-radius: 2px;
+  min-width: 64px;
+  cursor: pointer;
+  align-self: end;
+}
+
+#send-button:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+#send-button:disabled {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-disabledForeground);
+  cursor: not-allowed;
+}
+
+.composer-hint {
+  grid-area: hint;
+  display: flex;
+  gap: var(--gap-md);
+  align-items: center;
+}
+
+.paste-code {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--vscode-descriptionForeground);
+  font-size: calc(var(--vscode-font-size) - 1px);
+  padding: var(--gap-xs);
+}
+
+.paste-code:hover {
+  color: var(--vscode-foreground);
+}
+
+.kbd-hint {
+  color: var(--vscode-descriptionForeground);
+  font-size: calc(var(--vscode-font-size) - 2px);
+}
+
+/* ----- Jump to bottom pill ----- */
+.jump-bottom {
+  position: fixed;
+  right: var(--gap-lg);
+  bottom: 92px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  border-radius: 16px;
+  padding: var(--gap-xs) var(--gap-md);
+  cursor: pointer;
+  font-family: var(--vscode-font-family);
+  font-size: calc(var(--vscode-font-size) - 1px);
+}
+
+.jump-bottom:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+/* ----- Empty state (UI-SPEC §7.3) ----- */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  text-align: center;
+  padding: var(--gap-2xl);
+  gap: var(--gap-md);
+}
+
+.empty-icon {
+  font-size: 48px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.empty-heading {
+  font-size: calc(var(--vscode-font-size) + 2px);
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  margin: 0;
+}
+
+.empty-body {
+  color: var(--vscode-descriptionForeground);
+  margin: 0;
+  max-width: 480px;
+  line-height: 1.5;
+}
+
+/* ----- Reduced motion (UI-SPEC §8.5) ----- */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto !important;
+    transition: none !important;
+    animation: none !important;
+  }
+}

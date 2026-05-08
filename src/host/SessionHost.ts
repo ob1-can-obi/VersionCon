@@ -643,8 +643,25 @@ export class SessionHost implements SessionEventEmitter {
   // Phase 3: Push + Branch broadcasts
   // ---------------------------------------------------------------------------
 
-  /** Broadcast a push notification to all members. */
+  /**
+   * Broadcast a push notification to all members.
+   *
+   * Plan 04-12: ALSO append a `kind: 'system'`, `subKind: 'push'` ChatRecord
+   * to chat-log.json AND broadcast a `chat-message` envelope so the activity
+   * timeline (which IS the chat timeline per CONTEXT.md decision) reflects the
+   * push as a durable system event. The original push-notification wire
+   * broadcast still fires unconditionally (Phase 3 contract preserved); the
+   * system-event work runs AFTER it so a chat-log persistence failure cannot
+   * regress the Phase 3 fan-out.
+   *
+   * Body format follows UI-SPEC §6.3 / activity tree label convention —
+   * `{hostDisplayName} pushed {N} file(s)`. The host doesn't know per-receiver
+   * `affectsLocal`, so the body uses the neutral remote-no-overlap shape;
+   * each receiver's local push-received handler still computes its own
+   * overlap and renders the activity-tree row independently.
+   */
   broadcastPush(record: PushRecord): void {
+    const stampedTs = createTimestamp();
     this.broadcast({
       type: 'push-notification',
       pushId: record.id,
@@ -653,29 +670,132 @@ export class SessionHost implements SessionEventEmitter {
       message: record.message,
       branch: record.branch,
       files: record.files,
-      timestamp: createTimestamp(),
+      timestamp: stampedTs,
+    });
+    const fileCount = record.files.length;
+    const body = `${this.hostDisplayName} pushed ${fileCount} file(s)`;
+    this.appendAndBroadcastSystemEvent('push', body, stampedTs, {
+      pushId: record.id,
+      branch: record.branch,
+      files: record.files.map(f => f.relativePath),
     });
   }
 
-  /** Broadcast a push revert notification to all members. */
+  /**
+   * Broadcast a push revert notification to all members.
+   *
+   * Plan 04-12: ALSO append + broadcast a `subKind: 'revert'` system event
+   * (see broadcastPush for rationale). Body: `{hostDisplayName} reverted
+   * {N} file(s)` per UI-SPEC §6.3.
+   */
   broadcastRevert(record: PushRecord): void {
+    const stampedTs = createTimestamp();
+    const filePaths = record.files.map(f => f.relativePath);
     this.broadcast({
       type: 'push-reverted',
       pushId: record.id,
       memberId: record.memberId,
       memberDisplayName: record.memberDisplayName,
       branch: record.branch,
-      files: record.files.map(f => f.relativePath),
-      timestamp: createTimestamp(),
+      files: filePaths,
+      timestamp: stampedTs,
+    });
+    const fileCount = filePaths.length;
+    const body = `${this.hostDisplayName} reverted ${fileCount} file(s)`;
+    this.appendAndBroadcastSystemEvent('revert', body, stampedTs, {
+      pushId: record.id,
+      branch: record.branch,
+      files: filePaths,
     });
   }
 
-  /** Broadcast a new branch creation. */
+  /**
+   * Broadcast a new branch creation.
+   *
+   * Plan 04-12: ALSO append + broadcast a `subKind: 'branch-created'` system
+   * event. Body: `{hostDisplayName} created branch '{branchName}'` per
+   * UI-SPEC §6.3 (the host process is the actor for host-initiated creates;
+   * the branch.createdBy field is a memberId, not a displayName).
+   */
   broadcastBranchCreated(branch: BranchInfo): void {
+    const stampedTs = createTimestamp();
     this.broadcast({
       type: 'branch-created',
       branch,
-      timestamp: createTimestamp(),
+      timestamp: stampedTs,
+    });
+    const body = `${this.hostDisplayName} created branch '${branch.name}'`;
+    this.appendAndBroadcastSystemEvent('branch-created', body, stampedTs, {
+      branch: branch.name,
+    });
+  }
+
+  /**
+   * Plan 04-12 internal helper: persist a host-emitted system event to the
+   * active branch's chat-log.json AND broadcast a `chat-message` envelope to
+   * all connected members so the activity timeline (which IS the chat
+   * timeline) updates live.
+   *
+   * Identity policy: `memberId = this.hostMemberId ?? 'host'` and
+   * `memberDisplayName = this.hostDisplayName` — mirrors handleLocalChatMessage
+   * (Plan 04-04). The 'host' fallback covers the pre-self-auth case.
+   *
+   * Coexists with Plan 04-13's CR-01 client-frame coercion: this is a
+   * HOST-INTERNAL write path, NOT a wire frame from a client, so the
+   * `kind: 'system'` here is legitimate. CR-01 only coerces client-authored
+   * `chat-message` wire frames in the onmessage switch — that branch never
+   * sees these system records.
+   *
+   * Failure handling: chat-log persistence failure is logged + swallowed;
+   * the chat-message wire broadcast still fires so live chat keeps working
+   * even when disk writes transiently fail (mirrors the chat-message wire
+   * handler's existing posture, T-04-04 ChatLog null-tolerant).
+   */
+  private appendAndBroadcastSystemEvent(
+    subKind: SystemEventSubKind,
+    body: string,
+    timestamp: number,
+    meta: { pushId?: string; branch?: string; files?: string[] },
+  ): void {
+    const memberId = this.hostMemberId ?? 'host';
+    const memberDisplayName = this.hostDisplayName;
+    // Shared id between the persisted ChatRecord.id and the wire envelope's
+    // recordId — guarantees that a client receiving the live chat-message
+    // can dedupe against the same record when it arrives in a subsequent
+    // chat-history replay (Plan 04-04 Task 3 / RESEARCH Open Q #2).
+    const recordId = crypto.randomUUID();
+    if (this.chatLog) {
+      const record: ChatRecord = {
+        id: recordId,
+        kind: 'system',
+        subKind,
+        memberId,
+        memberDisplayName,
+        body,
+        timestamp,
+        meta,
+      };
+      // Fire-and-forget: a chat-log append failure must NOT block the
+      // chat-message wire broadcast below. Mirrors the chat-message wire
+      // handler's posture (T-04-04 / Plan 04-04 Task 1).
+      this.chatLog.append(record).catch((err: unknown) => {
+        console.error('[SessionHost] system-event chat-log append failed', err);
+      });
+    }
+    // Broadcast chat-message envelope to ALL members (no exclude) — same
+    // fan-out as handleLocalChatMessage (Plan 04-04) and the chat-message
+    // wire handler. Shared recordId/id (above) lets clients dedupe live
+    // events against later chat-history replays.
+    this.broadcast({
+      type: 'chat-message',
+      timestamp,
+      recordId,
+      kind: 'system',
+      subKind,
+      memberId,
+      memberDisplayName,
+      body,
+      meta,
     });
   }
 

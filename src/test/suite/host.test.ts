@@ -13,6 +13,8 @@ import type {
   PresenceUpdate,
 } from '../../network/protocol.js';
 import type { SessionConfig } from '../../types/session.js';
+import type { PushRecord, PushFileEntry } from '../../types/push.js';
+import type { BranchInfo } from '../../types/branch.js';
 
 // NET-01: Host can create a LAN session
 suite('SessionHost', () => {
@@ -927,5 +929,492 @@ suite('Phase 4 host input validation', () => {
 
     await alice.close();
     await bob.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4 system events in chat (Plan 04-12)
+//
+// broadcastPush / broadcastRevert / broadcastBranchCreated must:
+//   1. Append a kind:'system' ChatRecord to chat-log.json with the matching
+//      subKind ('push' | 'revert' | 'branch-created') and meta:{ pushId,
+//      branch, files }.
+//   2. Broadcast a chat-message envelope to ALL connected members (no
+//      exclude) so the activity timeline updates live — same fan-out as
+//      handleLocalChatMessage from Plan 04-04.
+//   3. Use this.hostMemberId ?? 'host' as memberId and this.hostDisplayName
+//      as memberDisplayName (mirrors handleLocalChatMessage).
+//   4. Emit a body string per UI-SPEC §6.3 / activity tree label format:
+//        "{hostDisplayName} pushed {N} file(s)"
+//        "{hostDisplayName} reverted {N} file(s)"
+//        "{hostDisplayName} created branch '{branchName}'"
+//   5. Preserve the Phase 3 wire-broadcast contract — original
+//      push-notification / push-reverted / branch-created envelopes still
+//      fire unconditionally (a chat-log persistence failure must NOT
+//      regress Phase 3 fan-out).
+//   6. Coexist with Plan 04-13 CR-01 client-frame coercion — host-internal
+//      kind:'system' writes are legitimate; the wire validator only coerces
+//      client-authored chat-message frames.
+//
+// Reuses connectClient / waitFor module-scope helpers.
+// ---------------------------------------------------------------------------
+
+suite('Phase 4 system events in chat', () => {
+  let host: SessionHost;
+  let chatLog: ChatLog;
+  let tmpDir: string;
+  let port: number;
+
+  setup(async () => {
+    tmpDir = path.join(
+      os.tmpdir(),
+      `vc-host-system-events-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    const branchDir = path.join(tmpDir, 'branch');
+    await fs.mkdir(branchDir, { recursive: true });
+    chatLog = new ChatLog(branchDir);
+    await chatLog.load();
+
+    const config: SessionConfig = {
+      sessionName: 'Phase4SystemEvents',
+      port: 0,
+      networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD,
+      inviteCode: INVITE,
+    };
+    host = new SessionHost(config, HOST_NAME);
+    host.setChatLog(chatLog, 'main');
+    port = await host.start();
+  });
+
+  teardown(async () => {
+    try { host.stop(); } catch { /* best-effort */ }
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  // -------------------- broadcastPush --------------------
+
+  test("broadcastPush appends kind:'system' subKind:'push' ChatRecord with meta", async () => {
+    const files: PushFileEntry[] = [
+      { relativePath: 'src/foo.ts', status: 'modified', addedLines: 10, removedLines: 2 },
+      { relativePath: 'src/bar.ts', status: 'added', addedLines: 50, removedLines: 0 },
+    ];
+    const record: PushRecord = {
+      id: 'push-id-1',
+      memberId: 'host-id',
+      memberDisplayName: HOST_NAME,
+      message: 'Wire up token refresh',
+      branch: 'main',
+      files,
+      timestamp: Date.now(),
+      reverted: false,
+    };
+
+    host.broadcastPush(record);
+
+    await waitFor(() => chatLog.getRecords().length === 1);
+    const persisted = chatLog.getRecords();
+    assert.strictEqual(persisted.length, 1);
+    const r = persisted[0];
+    assert.strictEqual(r.kind, 'system', 'kind is system (not user)');
+    assert.strictEqual(r.subKind, 'push', 'subKind is push');
+    assert.strictEqual(r.body, `${HOST_NAME} pushed 2 file(s)`, 'body matches UI-SPEC §6.3 format');
+    assert.ok(r.meta, 'meta present');
+    assert.strictEqual(r.meta.pushId, 'push-id-1');
+    assert.strictEqual(r.meta.branch, 'main');
+    assert.deepStrictEqual(r.meta.files, ['src/foo.ts', 'src/bar.ts']);
+  });
+
+  test('broadcastPush broadcasts chat-message envelope to all connected clients', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const bob = await connectClient(port, 'Bob');
+    const aliceChat: ChatMessage[] = [];
+    const bobChat: ChatMessage[] = [];
+    alice.onMessage((m) => { if (m.type === 'chat-message') { aliceChat.push(m); } });
+    bob.onMessage((m) => { if (m.type === 'chat-message') { bobChat.push(m); } });
+
+    const record: PushRecord = {
+      id: 'push-id-2',
+      memberId: 'host-id',
+      memberDisplayName: HOST_NAME,
+      message: 'msg',
+      branch: 'feature-x',
+      files: [{ relativePath: 'a.ts', status: 'modified', addedLines: 1, removedLines: 0 }],
+      timestamp: Date.now(),
+      reverted: false,
+    };
+
+    host.broadcastPush(record);
+
+    await waitFor(() => aliceChat.length === 1 && bobChat.length === 1);
+    const env = aliceChat[0];
+    assert.strictEqual(env.kind, 'system', 'wire envelope is kind:system');
+    assert.strictEqual(env.subKind, 'push');
+    assert.strictEqual(env.body, `${HOST_NAME} pushed 1 file(s)`);
+    assert.strictEqual(env.memberDisplayName, HOST_NAME, 'envelope memberDisplayName = hostDisplayName');
+    assert.ok(env.meta);
+    assert.strictEqual(env.meta.pushId, 'push-id-2');
+    assert.strictEqual(env.meta.branch, 'feature-x');
+    assert.deepStrictEqual(env.meta.files, ['a.ts']);
+    assert.strictEqual(bobChat[0].body, env.body, 'all connected clients receive the same body');
+
+    await alice.close();
+    await bob.close();
+  });
+
+  test('broadcastPush still fires the original push-notification wire envelope (Phase 3 contract)', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const aliceNotifs: ProtocolMessage[] = [];
+    alice.onMessage((m) => {
+      if (m.type === 'push-notification') { aliceNotifs.push(m); }
+    });
+
+    const record: PushRecord = {
+      id: 'push-id-3',
+      memberId: 'host-id',
+      memberDisplayName: HOST_NAME,
+      message: 'fix bug',
+      branch: 'main',
+      files: [{ relativePath: 'x.ts', status: 'modified', addedLines: 5, removedLines: 3 }],
+      timestamp: Date.now(),
+      reverted: false,
+    };
+
+    host.broadcastPush(record);
+
+    await waitFor(() => aliceNotifs.length === 1);
+    const notif = aliceNotifs[0];
+    assert.strictEqual(notif.type, 'push-notification');
+    if (notif.type === 'push-notification') {
+      assert.strictEqual(notif.pushId, 'push-id-3');
+      assert.strictEqual(notif.branch, 'main');
+      assert.strictEqual(notif.files.length, 1);
+    }
+
+    await alice.close();
+  });
+
+  // -------------------- broadcastRevert --------------------
+
+  test("broadcastRevert appends kind:'system' subKind:'revert' ChatRecord and broadcasts envelope", async () => {
+    const alice = await connectClient(port, 'Alice');
+    const aliceChat: ChatMessage[] = [];
+    alice.onMessage((m) => { if (m.type === 'chat-message') { aliceChat.push(m); } });
+
+    const files: PushFileEntry[] = [
+      { relativePath: 'src/a.ts', status: 'modified', addedLines: 0, removedLines: 0 },
+      { relativePath: 'src/b.ts', status: 'modified', addedLines: 0, removedLines: 0 },
+      { relativePath: 'src/c.ts', status: 'modified', addedLines: 0, removedLines: 0 },
+    ];
+    const record: PushRecord = {
+      id: 'push-id-4',
+      memberId: 'host-id',
+      memberDisplayName: HOST_NAME,
+      message: '',
+      branch: 'main',
+      files,
+      timestamp: Date.now(),
+      reverted: true,
+    };
+
+    host.broadcastRevert(record);
+
+    // Persisted record assertions
+    await waitFor(() => chatLog.getRecords().length === 1);
+    const r = chatLog.getRecords()[0];
+    assert.strictEqual(r.kind, 'system');
+    assert.strictEqual(r.subKind, 'revert');
+    assert.strictEqual(r.body, `${HOST_NAME} reverted 3 file(s)`);
+    assert.ok(r.meta);
+    assert.strictEqual(r.meta.pushId, 'push-id-4');
+    assert.strictEqual(r.meta.branch, 'main');
+    assert.deepStrictEqual(r.meta.files, ['src/a.ts', 'src/b.ts', 'src/c.ts']);
+
+    // Wire envelope assertions
+    await waitFor(() => aliceChat.length === 1);
+    const env = aliceChat[0];
+    assert.strictEqual(env.kind, 'system');
+    assert.strictEqual(env.subKind, 'revert');
+    assert.strictEqual(env.body, `${HOST_NAME} reverted 3 file(s)`);
+
+    await alice.close();
+  });
+
+  test('broadcastRevert still fires the original push-reverted wire envelope (Phase 3 contract)', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const reverts: ProtocolMessage[] = [];
+    alice.onMessage((m) => { if (m.type === 'push-reverted') { reverts.push(m); } });
+
+    const record: PushRecord = {
+      id: 'push-id-5',
+      memberId: 'host-id',
+      memberDisplayName: HOST_NAME,
+      message: '',
+      branch: 'main',
+      files: [{ relativePath: 'foo.ts', status: 'modified', addedLines: 0, removedLines: 0 }],
+      timestamp: Date.now(),
+      reverted: true,
+    };
+
+    host.broadcastRevert(record);
+    await waitFor(() => reverts.length === 1);
+    const notif = reverts[0];
+    assert.strictEqual(notif.type, 'push-reverted');
+    if (notif.type === 'push-reverted') {
+      assert.deepStrictEqual(notif.files, ['foo.ts']);
+    }
+
+    await alice.close();
+  });
+
+  // -------------------- broadcastBranchCreated --------------------
+
+  test("broadcastBranchCreated appends kind:'system' subKind:'branch-created' ChatRecord and broadcasts envelope", async () => {
+    const alice = await connectClient(port, 'Alice');
+    const aliceChat: ChatMessage[] = [];
+    alice.onMessage((m) => { if (m.type === 'chat-message') { aliceChat.push(m); } });
+
+    const branch: BranchInfo = {
+      name: 'fix-typo',
+      createdBy: 'host-id',
+      createdAt: Date.now(),
+      locked: false,
+    };
+
+    host.broadcastBranchCreated(branch);
+
+    // Persisted record assertions
+    await waitFor(() => chatLog.getRecords().length === 1);
+    const r = chatLog.getRecords()[0];
+    assert.strictEqual(r.kind, 'system');
+    assert.strictEqual(r.subKind, 'branch-created');
+    assert.strictEqual(r.body, `${HOST_NAME} created branch 'fix-typo'`);
+    assert.ok(r.meta);
+    assert.strictEqual(r.meta.branch, 'fix-typo');
+    // pushId / files absent for branch-created
+    assert.strictEqual(r.meta.pushId, undefined);
+    assert.strictEqual(r.meta.files, undefined);
+
+    // Wire envelope assertions
+    await waitFor(() => aliceChat.length === 1);
+    const env = aliceChat[0];
+    assert.strictEqual(env.kind, 'system');
+    assert.strictEqual(env.subKind, 'branch-created');
+    assert.strictEqual(env.body, `${HOST_NAME} created branch 'fix-typo'`);
+    assert.ok(env.meta);
+    assert.strictEqual(env.meta.branch, 'fix-typo');
+
+    await alice.close();
+  });
+
+  test('broadcastBranchCreated still fires the original branch-created wire envelope (Phase 3 contract)', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const events: ProtocolMessage[] = [];
+    alice.onMessage((m) => { if (m.type === 'branch-created') { events.push(m); } });
+
+    const branch: BranchInfo = {
+      name: 'feature-y',
+      createdBy: 'host-id',
+      createdAt: Date.now(),
+      locked: false,
+    };
+    host.broadcastBranchCreated(branch);
+
+    await waitFor(() => events.length === 1);
+    const notif = events[0];
+    assert.strictEqual(notif.type, 'branch-created');
+    if (notif.type === 'branch-created') {
+      assert.strictEqual(notif.branch.name, 'feature-y');
+    }
+
+    await alice.close();
+  });
+
+  // -------------------- identity policy --------------------
+
+  test("system events use memberId='host' fallback when host has not self-authenticated as a member", async () => {
+    // No client connects → hostMemberId never set → memberId falls back to 'host'.
+    const branch: BranchInfo = { name: 'b1', createdBy: 'x', createdAt: 1, locked: false };
+    host.broadcastBranchCreated(branch);
+
+    await waitFor(() => chatLog.getRecords().length === 1);
+    const r = chatLog.getRecords()[0];
+    assert.strictEqual(r.memberId, 'host', "fallback 'host' marker used when hostMemberId is null");
+    assert.strictEqual(
+      r.memberDisplayName,
+      HOST_NAME,
+      'memberDisplayName always pulls from hostDisplayName (constructor arg)',
+    );
+  });
+
+  test('system events use this.hostMemberId once the host has self-authenticated', async () => {
+    // The first connecting client becomes the host (handleAuthRequest assigns
+    // role:'host' and stores the new member id as this.hostMemberId).
+    const aliceHost = await connectClient(port, HOST_NAME);
+    // Wait for the host's id to be wired into this.hostMemberId.
+    await new Promise((r) => setTimeout(r, 50));
+
+    const branch: BranchInfo = { name: 'b2', createdBy: 'x', createdAt: 1, locked: false };
+    host.broadcastBranchCreated(branch);
+
+    await waitFor(() => chatLog.getRecords().length === 1);
+    const r = chatLog.getRecords()[0];
+    assert.strictEqual(
+      r.memberId,
+      aliceHost.memberId,
+      'memberId pulls from this.hostMemberId once a host has authenticated',
+    );
+
+    await aliceHost.close();
+  });
+
+  // -------------------- chat-log persistence failure tolerance --------------------
+
+  test('chat-log persistence failure does NOT block the wire broadcast', async () => {
+    // Replace the host's ChatLog with one whose append always rejects.
+    // The original push-notification wire broadcast AND the chat-message
+    // envelope must still reach connected clients.
+    const failingLog = new ChatLog(path.join(tmpDir, 'branch-fail'));
+    await failingLog.load();
+    // Monkey-patch append to reject.
+    (failingLog as unknown as { append: (r: ChatRecord) => Promise<void> }).append = (
+      _r: ChatRecord,
+    ) => Promise.reject(new Error('disk write failed (intentional test)'));
+    host.setChatLog(failingLog, 'main');
+
+    const alice = await connectClient(port, 'Alice');
+    const pushNotifs: ProtocolMessage[] = [];
+    const chatMessages: ChatMessage[] = [];
+    alice.onMessage((m) => {
+      if (m.type === 'push-notification') { pushNotifs.push(m); }
+      if (m.type === 'chat-message') { chatMessages.push(m); }
+    });
+
+    const record: PushRecord = {
+      id: 'push-id-fail-test',
+      memberId: 'host-id',
+      memberDisplayName: HOST_NAME,
+      message: 'failed-disk',
+      branch: 'main',
+      files: [{ relativePath: 'q.ts', status: 'modified', addedLines: 1, removedLines: 0 }],
+      timestamp: Date.now(),
+      reverted: false,
+    };
+
+    host.broadcastPush(record);
+
+    // Both wire broadcasts should reach alice even though the persistence
+    // path is throwing.
+    await waitFor(() => pushNotifs.length === 1 && chatMessages.length === 1);
+    assert.strictEqual(pushNotifs[0].type, 'push-notification', 'Phase 3 wire broadcast still fires');
+    assert.strictEqual(chatMessages[0].kind, 'system', 'system-event chat-message still fires');
+    assert.strictEqual(chatMessages[0].body, `${HOST_NAME} pushed 1 file(s)`);
+
+    await alice.close();
+  });
+
+  test('null chatLog is tolerated — broadcasts still fire when setChatLog has not been called', async () => {
+    // Build a fresh host with no setChatLog call — exercises the chatLog===null
+    // branch in appendAndBroadcastSystemEvent. Important because the host's
+    // public API contract is "wire-up is optional" (Plan 04-04 graceful
+    // degradation).
+    const cfg: SessionConfig = {
+      sessionName: 'Phase4SystemEventsNoLog',
+      port: 0,
+      networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD,
+      inviteCode: INVITE,
+    };
+    const noLogHost = new SessionHost(cfg, HOST_NAME);
+    const noLogPort = await noLogHost.start();
+    try {
+      const alice = await connectClient(noLogPort, 'Alice');
+      const chatMessages: ChatMessage[] = [];
+      alice.onMessage((m) => {
+        if (m.type === 'chat-message') { chatMessages.push(m); }
+      });
+
+      const branch: BranchInfo = { name: 'b3', createdBy: 'x', createdAt: 1, locked: false };
+      noLogHost.broadcastBranchCreated(branch);
+
+      // chat-message envelope must still fire even with no chatLog.
+      await waitFor(() => chatMessages.length === 1);
+      assert.strictEqual(chatMessages[0].subKind, 'branch-created');
+      assert.strictEqual(chatMessages[0].body, `${HOST_NAME} created branch 'b3'`);
+
+      await alice.close();
+    } finally {
+      noLogHost.stop();
+    }
+  });
+
+  // -------------------- coexistence with Plan 04-13 input validation --------------------
+
+  test("CR-01 still coerces client-authored kind:'system' frames — host-internal system writes remain intact (04-12 vs 04-13)", async () => {
+    // This regression test pins down the boundary established by Plan 04-13:
+    //   • Client-authored chat-message frames with kind:'system' → COERCED to user (CR-01)
+    //   • Host-internal broadcastPush/Revert/BranchCreated → kind:'system' PRESERVED
+    // Both paths coexist in the same SessionHost instance simultaneously.
+
+    const alice = await connectClient(port, 'Alice');
+    const bob = await connectClient(port, 'Bob');
+    const bobChat: ChatMessage[] = [];
+    bob.onMessage((m) => { if (m.type === 'chat-message') { bobChat.push(m); } });
+
+    // (1) Client tries to forge a system event — must be coerced to user.
+    alice.send({
+      type: 'chat-message',
+      timestamp: 1,
+      recordId: 'r-forge',
+      kind: 'system',
+      subKind: 'push',
+      memberId: alice.memberId,
+      memberDisplayName: 'Alice',
+      body: 'fake push',
+      meta: { pushId: 'fake', branch: 'main', files: ['x.ts'] },
+    });
+
+    // (2) Host emits a real system event — must remain kind:'system'.
+    host.broadcastBranchCreated({ name: 'real-branch', createdBy: 'host-id', createdAt: 1, locked: false });
+
+    // Wait until bob has both messages (order is best-effort but both must arrive).
+    await waitFor(() => bobChat.length >= 2, 3000);
+
+    const forged = bobChat.find((m) => m.recordId === 'r-forge');
+    const real = bobChat.find((m) => m.subKind === 'branch-created');
+
+    assert.ok(forged, 'forged frame still reached bob (just coerced)');
+    assert.strictEqual(forged.kind, 'user', "forged kind:'system' coerced to 'user' (CR-01 from 04-13)");
+    assert.strictEqual(forged.subKind, undefined, 'forged subKind stripped');
+
+    assert.ok(real, 'real host-emitted system event reached bob');
+    assert.strictEqual(real.kind, 'system', "host-internal kind:'system' preserved (04-12)");
+    assert.strictEqual(real.subKind, 'branch-created');
+    assert.strictEqual(real.body, `${HOST_NAME} created branch 'real-branch'`);
+
+    await alice.close();
+    await bob.close();
+  });
+
+  // -------------------- shared id between persisted record and wire envelope --------------------
+
+  test('persisted ChatRecord.id matches the chat-message envelope.recordId (dedupe contract)', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const aliceChat: ChatMessage[] = [];
+    alice.onMessage((m) => { if (m.type === 'chat-message') { aliceChat.push(m); } });
+
+    const branch: BranchInfo = { name: 'shared-id', createdBy: 'x', createdAt: 1, locked: false };
+    host.broadcastBranchCreated(branch);
+
+    await waitFor(() => chatLog.getRecords().length === 1 && aliceChat.length === 1);
+    const persistedId = chatLog.getRecords()[0].id;
+    const envelopeRecordId = aliceChat[0].recordId;
+    assert.strictEqual(
+      persistedId,
+      envelopeRecordId,
+      'shared id lets clients dedupe live system events against later chat-history replays',
+    );
+
+    await alice.close();
   });
 });

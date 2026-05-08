@@ -750,31 +750,44 @@ export class SessionHost implements SessionEventEmitter {
    * the chat-message wire broadcast still fires so live chat keeps working
    * even when disk writes transiently fail (mirrors the chat-message wire
    * handler's existing posture, T-04-04 ChatLog null-tolerant).
+   *
+   * Identity policy (Plan 04-15 update — CR-01-NEW closure):
+   *   `actorMemberId` / `actorDisplayName` override the host defaults so callers
+   *   can stamp the correct actor on push/revert events whose actor is a non-host
+   *   member (the prior implementation always baked hostDisplayName, misattributing
+   *   reverts of other members' pushes — see 04-VERIFICATION.md CR-01-NEW).
+   *
+   * Returns the constructed ChatRecord (Plan 04-15 update — CR-02-NEW closure):
+   *   so callers can echo it into the host process's own ChatPanel via
+   *   dispatchChatReceivedLocally — the host does NOT receive its own broadcast,
+   *   mirroring the same echo pattern as handleLocalChatMessage at extension.ts:285.
    */
   private appendAndBroadcastSystemEvent(
     subKind: SystemEventSubKind,
     body: string,
     timestamp: number,
     meta: { pushId?: string; branch?: string; files?: string[] },
-  ): void {
-    const memberId = this.hostMemberId ?? 'host';
-    const memberDisplayName = this.hostDisplayName;
+    actorMemberId?: string,
+    actorDisplayName?: string,
+  ): ChatRecord {
+    const memberId = actorMemberId ?? this.hostMemberId ?? 'host';
+    const memberDisplayName = actorDisplayName ?? this.hostDisplayName;
     // Shared id between the persisted ChatRecord.id and the wire envelope's
     // recordId — guarantees that a client receiving the live chat-message
     // can dedupe against the same record when it arrives in a subsequent
     // chat-history replay (Plan 04-04 Task 3 / RESEARCH Open Q #2).
     const recordId = crypto.randomUUID();
+    const record: ChatRecord = {
+      id: recordId,
+      kind: 'system',
+      subKind,
+      memberId,
+      memberDisplayName,
+      body,
+      timestamp,
+      meta,
+    };
     if (this.chatLog) {
-      const record: ChatRecord = {
-        id: recordId,
-        kind: 'system',
-        subKind,
-        memberId,
-        memberDisplayName,
-        body,
-        timestamp,
-        meta,
-      };
       // Fire-and-forget: a chat-log append failure must NOT block the
       // chat-message wire broadcast below. Mirrors the chat-message wire
       // handler's posture (T-04-04 / Plan 04-04 Task 1).
@@ -797,6 +810,7 @@ export class SessionHost implements SessionEventEmitter {
       body,
       meta,
     });
+    return record;
   }
 
   /** Broadcast a branch lock/unlock. */

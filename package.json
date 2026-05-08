@@ -44,6 +44,10 @@
         {
           "id": "versioncon.activityLog",
           "name": "Activity"
+        },
+        {
+          "id": "versioncon.presence",
+          "name": "Presence"
         }
       ]
     },
@@ -164,6 +168,12 @@
         "command": "versioncon.activityLog.openEntry",
         "title": "Open Activity Entry",
         "category": "VersionCon"
+      },
+      {
+        "command": "versioncon.refreshPresence",
+        "title": "Refresh",
+        "icon": "$(refresh)",
+        "category": "VersionCon"
       }
     ],
     "menus": {
@@ -224,6 +234,11 @@
           "command": "versioncon.refreshActivityLog",
           "when": "view == versioncon.activityLog",
           "group": "navigation"
+        },
+        {
+          "command": "versioncon.refreshPresence",
+          "when": "view == versioncon.presence",
+          "group": "navigation"
         }
       ]
     },
@@ -245,6 +260,16 @@
         "view": "versioncon.activityLog",
         "contents": "No activity yet.\nPushes, reverts, and new branches show up here as your team works.",
         "when": "versioncon.connected && versioncon.activityLog.empty"
+      },
+      {
+        "view": "versioncon.presence",
+        "contents": "Not connected.\nHost or join a session to see who's online.\n[Host Session](command:versioncon.hostSession)\n[Join Session](command:versioncon.joinSession)",
+        "when": "!versioncon.connected"
+      },
+      {
+        "view": "versioncon.presence",
+        "contents": "You're the only one here.\nShare your session to invite teammates.",
+        "when": "versioncon.connected && versioncon.presence.alone"
       }
     ]
   },

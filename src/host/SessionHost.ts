@@ -490,6 +490,15 @@ export class SessionHost implements SessionEventEmitter {
       timestamp: createTimestamp(),
     });
 
+    // Phase 4 (Plan 04-04): replay last 100 chat records to the new joiner so
+    // their chat panel populates immediately. Per RESEARCH Open Q #2 the order
+    // is auth-response → state-sync → chat-history. Fire-and-forget: a
+    // chat-history failure does not block auth (the method itself logs and
+    // swallows). No-op when setChatLog has not yet wired the active branch.
+    if (this.chatLog && this.activeBranch) {
+      void this.sendChatHistoryToMember(newMemberId, this.activeBranch);
+    }
+
     // Broadcast member-joined to all OTHER members
     this.broadcast(
       {

@@ -21,6 +21,11 @@ import { PushHistory } from './filesystem/PushHistory.js';
 import { PushService } from './filesystem/PushService.js';
 import { SyncTracker } from './filesystem/SyncTracker.js';
 import { createTimestamp } from './network/protocol.js';
+import { ActivityLogProvider } from './ui/ActivityLogProvider.js';
+import { PresenceTreeProvider } from './ui/PresenceTreeProvider.js';
+import { computeFileOverlap, getOpenTabPaths } from './utils/fileOverlap.js';
+import type { PresenceInfo } from './types/chat.js';
+import type { ChatRecord } from './types/chat.js';
 
 // Module-level state for deactivation access
 let activeHost: SessionHost | null = null;
@@ -45,6 +50,61 @@ let hostMemberId = 'local-user';
 let activePermissions: { canPushToBranch: (memberId: string, branchName: string) => boolean } | null = null;
 let activePushHistory: { getLatestRecord: () => { id: string } | undefined } | null = null;
 
+// Phase 4: provider singletons constructed once in activate() so wire helpers
+// (which run after the workspace IIFE) and outer-scope event handlers can both
+// reach them.
+let presenceTreeProvider: PresenceTreeProvider | null = null;
+let activityLogProvider: ActivityLogProvider | null = null;
+// Phase 4: chat unread count + panel-active flag. Plan 04-10 (chat panel) flips
+// `chatPanelIsActive` on its onDidChangeViewState; until then this stays false
+// so chat-received events always increment unread.
+let unreadChatCount = 0;
+let chatPanelIsActive = false;
+// Phase 4: self identity mirrors so wireClientEvents (module-level) can build
+// activity-log entries with a stable isMine flag and so the workspace IIFE can
+// flow these into the providers' setSelfMemberId. The IIFE sets the host/local
+// values; wireClientEvents updates from auth context when joining as a member.
+let currentSelfMemberId = 'local-user';
+let currentSelfDisplayName = 'You';
+// Phase 4: active branch mirror for presence-update broadcasts and activity-log
+// rendering. Updated by the IIFE on init and by versioncon.switchBranch.
+let currentBranchName: string | null = null;
+
+/**
+ * Format the CONF-07 toast string per UI-SPEC §6.1 (locked literals):
+ *   - 1 file overlap: `{name} pushed 1 file — affects: {fileBasename}: '{msg}'`
+ *   - 2-3 overlap:    `{name} pushed N file(s) — affects: a, b, c: '{msg}'`
+ *   - >3 overlap:     `{name} pushed N file(s) — affects: a, b, +(N-2) more: '{msg}'`
+ *   - empty msg → trailing `: '{msg}'` is omitted entirely.
+ *
+ * Pure helper — exported only for unit-testability shape (no external import yet).
+ */
+function formatPushToast(name: string, overlapping: string[], message: string): string {
+  const N = overlapping.length;
+  const msgSuffix = message ? `: '${message}'` : '';
+  if (N === 1) {
+    return `${name} pushed 1 file — affects: ${path.basename(overlapping[0])}${msgSuffix}`;
+  }
+  if (N <= 3) {
+    return `${name} pushed ${N} file(s) — affects: ${overlapping.map(f => path.basename(f)).join(', ')}${msgSuffix}`;
+  }
+  const firstTwo = overlapping.slice(0, 2).map(f => path.basename(f)).join(', ');
+  return `${name} pushed ${N} file(s) — affects: ${firstTwo}, +${N - 2} more${msgSuffix}`;
+}
+
+/** Re-evaluate the `versioncon.activityLog.empty` context key after every entry mutation. */
+function updateActivityContext(): void {
+  const empty = (activityLogProvider?.getEntries().length ?? 0) === 0;
+  void vscode.commands.executeCommand('setContext', 'versioncon.activityLog.empty', empty);
+}
+
+/** Re-evaluate the `versioncon.presence.alone` context key after presence mutations. */
+function updatePresenceContext(): void {
+  const others = (presenceTreeProvider?.getEntries() ?? [])
+    .filter(e => e.memberId !== currentSelfMemberId);
+  void vscode.commands.executeCommand('setContext', 'versioncon.presence.alone', others.length === 0);
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   // --- Core services ---
   const sessionHistory = new SessionHistory(context);
@@ -56,6 +116,55 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerWebviewViewProvider('versioncon.sidebar', sidebarProvider),
   );
   context.subscriptions.push(statusBarManager);
+
+  // --- Phase 4: providers for presence + activity-log views ---
+  presenceTreeProvider = new PresenceTreeProvider();
+  activityLogProvider = new ActivityLogProvider();
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('versioncon.presence', presenceTreeProvider),
+    vscode.window.registerTreeDataProvider('versioncon.activityLog', activityLogProvider),
+  );
+
+  // --- Phase 4: starting context keys for viewsWelcome `when` clauses ---
+  void vscode.commands.executeCommand('setContext', 'versioncon.connected', false);
+  void vscode.commands.executeCommand('setContext', 'versioncon.activityLog.empty', true);
+  void vscode.commands.executeCommand('setContext', 'versioncon.presence.alone', true);
+
+  // --- Phase 4: refresh commands ---
+  context.subscriptions.push(
+    vscode.commands.registerCommand('versioncon.refreshPresence', () => {
+      presenceTreeProvider?.refresh();
+    }),
+    vscode.commands.registerCommand('versioncon.refreshActivityLog', () => {
+      activityLogProvider?.refresh();
+    }),
+  );
+
+  // --- Phase 4: activity-tree row click dispatcher (UI-SPEC §3.2) ---
+  // ActivityLogProvider declares `versioncon.activityLog.openEntry` as the click
+  // command for push/revert/branch entries (chat-unread routes to openChat itself).
+  // Dispatch per kind: push/revert → push history modal; branch-create → switchBranch
+  // picker; chat-unread is handled directly by the provider.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      'versioncon.activityLog.openEntry',
+      (entry: import('./ui/ActivityLogProvider.js').ActivityEntry) => {
+        if (!entry) return;
+        switch (entry.kind) {
+          case 'push':
+          case 'revert':
+            void vscode.commands.executeCommand('versioncon.showPushHistory');
+            break;
+          case 'branch-created':
+            void vscode.commands.executeCommand('versioncon.switchBranch');
+            break;
+          case 'chat-unread':
+            void vscode.commands.executeCommand('versioncon.openChat');
+            break;
+        }
+      },
+    ),
+  );
 
   // --- Helper: wire host events to UI ---
   function wireHostEvents(host: SessionHost, sessionName: string): void {
@@ -75,6 +184,13 @@ export function activate(context: vscode.ExtensionContext): void {
       host.setPushHistory(activePushHistory);
     }
     statusBarManager.setStatus('connected', sessionName);
+    // Phase 4: host runs as 'local-user' for permission checks; mirror that into
+    // the self-identity fields used by the activity log + presence broadcasts.
+    currentSelfMemberId = hostMemberId;
+    presenceTreeProvider?.setSelfMemberId(currentSelfMemberId);
+    void vscode.commands.executeCommand(
+      'setContext', 'versioncon.connected', true,
+    );
     sidebarProvider.updateState({
       connectionStatus: 'connected',
       sessionName,
@@ -106,6 +222,12 @@ export function activate(context: vscode.ExtensionContext): void {
     host.on('session-ended', () => {
       activeHost = null;
       statusBarManager.setStatus('disconnected');
+      // Phase 4: drop everyone from the presence panel + reset connected context.
+      presenceTreeProvider?.clear();
+      presenceTreeProvider?.setSelfMemberId(null);
+      presenceTreeProvider?.setCurrentBranch(null);
+      updatePresenceContext();
+      void vscode.commands.executeCommand('setContext', 'versioncon.connected', false);
       sidebarProvider.updateState({
         connectionStatus: 'disconnected',
         sessionName: null,
@@ -125,6 +247,21 @@ export function activate(context: vscode.ExtensionContext): void {
     activeClient = client;
     const info = client.getSessionInfo();
     statusBarManager.setStatus('connected', info?.name);
+    // Phase 4: capture self identity from the authenticated SessionClient so
+    // activity-log isMine flags + presence-update broadcasts use the real id
+    // (not the 'local-user' placeholder used by host-side commands).
+    const selfId = client.getMemberId();
+    if (selfId) {
+      currentSelfMemberId = selfId;
+      const selfMember = client.getMembers().find(m => m.id === selfId);
+      if (selfMember) {
+        currentSelfDisplayName = selfMember.displayName;
+      }
+    }
+    presenceTreeProvider?.setSelfMemberId(currentSelfMemberId);
+    void vscode.commands.executeCommand(
+      'setContext', 'versioncon.connected', true,
+    );
     sidebarProvider.updateState({
       connectionStatus: 'connected',
       sessionName: info?.name ?? null,
@@ -157,6 +294,10 @@ export function activate(context: vscode.ExtensionContext): void {
         connectionStatus: data.status,
         error: data.status === 'disconnected' ? (data.error ?? 'Connection lost') : null,
       });
+      // Phase 4: drive the viewsWelcome `when` clauses for activity + presence.
+      void vscode.commands.executeCommand(
+        'setContext', 'versioncon.connected', data.status === 'connected',
+      );
       // D-11: if 'reconnecting', no toast. D-12: no workspace lockout.
       if (data.status === 'disconnected' && data.error) {
         vscode.window.showWarningMessage(`VersionCon: ${data.error}`);
@@ -165,10 +306,15 @@ export function activate(context: vscode.ExtensionContext): void {
       // from a clean state. On reconnect, sync-response reseeds latestPushId.
       if (data.status === 'disconnected') {
         syncTracker.reset();
+        // Phase 4: clear the presence panel — the host's snapshot is gone.
+        presenceTreeProvider?.clear();
+        presenceTreeProvider?.setSelfMemberId(null);
+        presenceTreeProvider?.setCurrentBranch(null);
+        updatePresenceContext();
       }
     });
 
-    // Phase 3: Handle push/branch notifications from other members
+    // Phase 3 + 4: Handle push/branch notifications from other members
     client.on('push-received', (data) => {
       // PUSH-09: track remote push -- workspace is now potentially out of sync
       syncTracker.onRemotePush(data.pushId);
@@ -176,23 +322,40 @@ export function activate(context: vscode.ExtensionContext): void {
       // pull each one and prompt on conflict.
       syncTracker.recordRemoteFiles(data.files.map(f => f.relativePath));
 
-      // PUSH-03: surface file overlap to the receiving member so they know
-      // immediately which of their tracked files were touched.
-      let overlapping: string[] = [];
-      let overlapMsg = '';
-      if (workspaceProvider) {
-        const tracked = workspaceProvider.getTrackedPaths();
-        overlapping = data.files
-          .filter(f => tracked.includes(f.relativePath))
-          .map(f => f.relativePath);
-        if (overlapping.length > 0) {
-          overlapMsg = ` -- affects your files: ${overlapping.join(', ')}`;
-          statusBarManager.setSyncWarning(true);
-        }
-      }
-      void vscode.window.showInformationMessage(
-        `${data.memberDisplayName} pushed ${data.files.length} file(s): "${data.message}"${overlapMsg}`,
+      // Phase 4 (CONF-07/CONF-08, COLLAB-04): compute open-tab overlap and dispatch
+      // either the toast or the green flash. Activity tree gets a row in both cases.
+      const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+      const pushedRel = data.files.map(f => f.relativePath);
+      const { overlapping } = computeFileOverlap(
+        pushedRel,
+        getOpenTabPaths(),
+        wsRoot,
+        process.platform,
       );
+
+      // Activity log entry (UI-SPEC §6.3 labels rendered by ActivityLogProvider).
+      activityLogProvider?.addPushEntry({
+        timestamp: Date.now(),
+        memberId: data.memberId,
+        memberDisplayName: data.memberDisplayName,
+        isMine: data.memberId === currentSelfMemberId,
+        files: pushedRel,
+        pushMessage: data.message,
+        affectsLocal: overlapping.length > 0,
+      });
+      updateActivityContext();
+
+      if (overlapping.length > 0) {
+        // CONF-07: file-level overlap → soft non-modal toast (UI-SPEC §6.1 strings).
+        // PUSH-09 sync-warning still fires (Phase 3 contract preserved).
+        statusBarManager.setSyncWarning(true);
+        void vscode.window.showInformationMessage(
+          formatPushToast(data.memberDisplayName, overlapping, data.message),
+        );
+      } else if (data.files.length > 0) {
+        // CONF-08: no overlap → 5s green status flash, no toast (UI-SPEC §6.2).
+        statusBarManager.flashNoImpact(data.files.length, 5000);
+      }
     });
 
     client.on('push-reverted', (data) => {
@@ -203,6 +366,16 @@ export function activate(context: vscode.ExtensionContext): void {
       // versioncon.sync can reconcile.
       syncTracker.recordRemoteFiles(data.files);
       statusBarManager.setSyncWarning(true);
+      // Phase 4: activity log row for the revert.
+      activityLogProvider?.addRevertEntry({
+        timestamp: Date.now(),
+        memberId: data.memberId,
+        memberDisplayName: data.memberDisplayName,
+        isMine: data.memberId === currentSelfMemberId,
+        files: data.files,
+        affectsLocal: false,
+      });
+      updateActivityContext();
       void vscode.window.showInformationMessage(
         `${data.memberDisplayName} reverted a push on branch "${data.branch}"`,
       );
@@ -228,6 +401,15 @@ export function activate(context: vscode.ExtensionContext): void {
       if (activeBranchListProvider) {
         activeBranchListProvider.refresh();
       }
+      // Phase 4: activity log row for the branch creation.
+      activityLogProvider?.addBranchCreateEntry({
+        timestamp: Date.now(),
+        memberId: data.branch.createdBy ?? '',
+        memberDisplayName: data.branch.createdBy ?? '',
+        isMine: data.branch.createdBy === currentSelfMemberId,
+        branchName: data.branch.name,
+      });
+      updateActivityContext();
       void vscode.window.showInformationMessage(
         `New branch created: "${data.branch.name}" by ${data.branch.createdBy}`,
       );
@@ -241,6 +423,50 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage(
         `Branch "${data.branchName}" was ${data.locked ? 'locked' : 'unlocked'}`,
       );
+    });
+
+    // ----- Phase 4: presence + chat client event wiring (Plan 04-09) -----
+
+    client.on('presence-update', (info: PresenceInfo) => {
+      presenceTreeProvider?.upsert(info);
+      updatePresenceContext();
+    });
+
+    client.on('member-left', (data: { memberId: string }) => {
+      presenceTreeProvider?.removeMember(data.memberId);
+      updatePresenceContext();
+    });
+
+    client.on('chat-received', (record: ChatRecord) => {
+      // System events (push/revert/branch-created) ALSO ride the chat stream — but
+      // push-received / push-reverted / branch-created already feed the activity
+      // log via their dedicated client events above. We only need to surface USER
+      // chat messages here as unread badges; system events are already accounted for.
+      if (record.kind === 'user' && !chatPanelIsActive) {
+        unreadChatCount += 1;
+        statusBarManager?.setUnreadCount(unreadChatCount);
+        activityLogProvider?.setUnread(unreadChatCount);
+      }
+      // Plan 04-10 (chat panel) will append the record to the panel here.
+    });
+
+    client.on('chat-cleared', () => {
+      // Host wiped the chat for everyone (UI-SPEC §7.3). Clear unread state and
+      // let the activity tree drop the sticky row. Plan 04-10 will also clear
+      // the chat panel.
+      unreadChatCount = 0;
+      statusBarManager?.setUnreadCount(0);
+      activityLogProvider?.setUnread(0);
+    });
+
+    client.on('chat-truncated', () => {
+      // Plan 04-10 (chat panel) re-renders the trimmed dataset. No status-bar
+      // side effect required at this layer.
+    });
+
+    client.on('chat-history', () => {
+      // Plan 04-10 (chat panel) installs the snapshot. Host fires this once on
+      // join after state-sync (RESEARCH Open Q #2).
     });
   }
 
@@ -363,6 +589,11 @@ export function activate(context: vscode.ExtensionContext): void {
       branchProvider.setBranchDir(activeBranchDir);
       branchProvider.setActiveBranchName(activeBranchName);
 
+      // Phase 4: mirror the active branch into module scope so presence-update
+      // broadcasts and the divergence indicator stay in sync.
+      currentBranchName = activeBranchName;
+      presenceTreeProvider?.setCurrentBranch(activeBranchName);
+
       // BRANCH-03: all-branches tree (separate from active-branch file tree)
       const branchListProvider = new BranchListProvider(branchManager);
       branchListProvider.setActiveBranchName(activeBranchName);
@@ -411,6 +642,61 @@ export function activate(context: vscode.ExtensionContext): void {
           timestamp: createTimestamp(),
         });
       }
+
+      // --- Phase 4: presence broadcast on activeTextEditor change ---
+      // CONTEXT.md "Presence broadcast cadence" locked: broadcast on
+      // onDidChangeActiveTextEditor, no periodic heartbeat in v1. The event
+      // already fires only on editor focus changes (NOT every keystroke), so
+      // a small debounce is defensive — guards against rapid tab cycling.
+      const sendPresenceUpdate = (editor: vscode.TextEditor | undefined): void => {
+        if (!activeClient && !activeHost) return;
+        const wsRoot = workspaceFolder.uri.fsPath;
+        let activeFilePath: string | null = null;
+        if (editor && wsRoot) {
+          // Only count files inside the workspace; mirrors fileOverlap.ts's filter.
+          const rel = path.relative(wsRoot, editor.document.uri.fsPath);
+          if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+            // Normalize to posix (per chat.ts PresenceInfo.activeFilePath spec).
+            activeFilePath = rel.split(path.sep).join('/');
+          }
+        }
+        const branch = currentBranchName ?? 'main';
+        if (activeClient) {
+          activeClient.sendMessage({
+            type: 'presence-update',
+            timestamp: createTimestamp(),
+            memberId: currentSelfMemberId,
+            displayName: currentSelfDisplayName,
+            branch,
+            activeFilePath,
+          });
+        } else if (activeHost) {
+          const info: PresenceInfo = {
+            memberId: currentSelfMemberId,
+            displayName: currentSelfDisplayName,
+            branch,
+            activeFilePath,
+            lastUpdated: createTimestamp(),
+          };
+          activeHost.upsertHostPresence(info);
+          // Mirror into the local presence tree so the host sees their own row.
+          presenceTreeProvider?.upsert(info);
+          updatePresenceContext();
+        }
+      };
+
+      let presenceDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+      context.subscriptions.push(
+        vscode.window.onDidChangeActiveTextEditor((editor) => {
+          if (presenceDebounceTimer) clearTimeout(presenceDebounceTimer);
+          // 100ms debounce — VS Code can fire the event multiple times during
+          // rapid tab cycling (open + focus). One outbound message per real
+          // intent is enough for the presence panel.
+          presenceDebounceTimer = setTimeout(() => {
+            sendPresenceUpdate(editor);
+          }, 100);
+        }),
+      );
 
       // --- Commands ---
 
@@ -770,6 +1056,11 @@ export function activate(context: vscode.ExtensionContext): void {
           branchProvider.refresh();
           // BRANCH-03: update active marker in all-branches view
           branchListProvider.setActiveBranchName(selected.label);
+          // Phase 4: re-mirror branch + re-broadcast presence with the new branch
+          // so the divergence indicator + remote members' panels stay in sync.
+          currentBranchName = selected.label;
+          presenceTreeProvider?.setCurrentBranch(selected.label);
+          sendPresenceUpdate(vscode.window.activeTextEditor);
           void vscode.window.showInformationMessage(`Switched to branch "${selected.label}".`);
         }),
       );

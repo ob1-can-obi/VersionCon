@@ -18,6 +18,13 @@ import type {
 } from '../types/events.js';
 import type { PushRecord } from '../types/push.js';
 import type { BranchInfo } from '../types/branch.js';
+import { ChatLog } from '../filesystem/ChatLog.js';
+import { PresenceMap } from '../filesystem/PresenceMap.js';
+import type {
+  ChatRecord,
+  PresenceInfo,
+  SystemEventSubKind,
+} from '../types/chat.js';
 
 /** Internal tracking for each connected member's WebSocket and status. */
 interface ConnectedMember {
@@ -66,6 +73,28 @@ export class SessionHost implements SessionEventEmitter {
    * latestPushId so reconnecting clients can seed sync state correctly.
    */
   private pushHistory: { getLatestRecord: () => { id: string } | undefined } | null = null;
+
+  /**
+   * Phase 4: Chat persistence for the active branch. Set by extension.ts via
+   * setChatLog when the active branch resolves on session start AND on every
+   * branch switch. Null until wired — the chat-message handler tolerates this.
+   */
+  private chatLog: ChatLog | null = null;
+
+  /**
+   * Phase 4: Active branch name paired with chatLog. Stamped onto outbound
+   * chat-history messages (Plan 04-04 Task 3) so joining members know which
+   * branch the replay belongs to. Null until setChatLog is called.
+   */
+  private activeBranch: string | null = null;
+
+  /**
+   * Phase 4: Presence map — memberId -> PresenceInfo. Cleared per-member on
+   * member-left (mirrors memberTracking lifecycle). Owned by the host as the
+   * single source of truth; clients keep their own derivation via
+   * SessionClient `presence-update` events.
+   */
+  private presenceMap = new PresenceMap();
 
   /** Typed event listeners. */
   private readonly listeners: Map<
@@ -221,7 +250,7 @@ export class SessionHost implements SessionEventEmitter {
       }
     }, 10_000);
 
-    ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
+    ws.on('message', async (raw: Buffer | ArrayBuffer | Buffer[]) => {
       try {
         const data = raw.toString();
 
@@ -278,6 +307,67 @@ export class SessionHost implements SessionEventEmitter {
           // for another member.
           this.memberTracking.set(memberId, [...msg.paths]);
           // Metadata only -- do not relay.
+        } else if (msg.type === 'chat-message') {
+          // T-04-04-01: trust the ws-bound memberId captured at auth time,
+          // NEVER the client-claimed msg.memberId field. This is the chat-
+          // impersonation gate — failure here lets any member spoof another.
+          // T-04-04-02: stamp host-arrival timestamp; chat ordering is the
+          // host's event-loop order, not the client clock (which may drift).
+          const cm = this.members.get(memberId);
+          const displayName = cm?.member.displayName ?? msg.memberDisplayName;
+          const stampedTs = createTimestamp();
+          const sanitized: ProtocolMessage = {
+            ...msg,
+            memberId,
+            memberDisplayName: displayName,
+            timestamp: stampedTs,
+          };
+          // Persist BEFORE broadcast — chat-log is the source of truth for
+          // future joiners' chat-history replay (Plan 04-04 Task 3).
+          if (this.chatLog) {
+            const record: ChatRecord = {
+              id: msg.recordId,
+              kind: msg.kind,
+              ...(msg.subKind !== undefined ? { subKind: msg.subKind } : {}),
+              memberId,
+              memberDisplayName: displayName,
+              body: msg.body,
+              timestamp: stampedTs,
+              ...(msg.meta !== undefined ? { meta: msg.meta } : {}),
+            };
+            try {
+              await this.chatLog.append(record);
+            } catch (err) {
+              console.error('[SessionHost] chat-log append failed', err);
+              // Continue — broadcast still proceeds so live chat keeps working
+              // even if disk write transiently fails.
+            }
+          }
+          // Broadcast to ALL members (no exclude) — sender sees own message
+          // after host echo, per RESEARCH Open Q #1.
+          this.broadcast(sanitized);
+        } else if (msg.type === 'presence-update') {
+          // T-04-04-01: server-trusted memberId override (same policy as
+          // chat-message). T-04-04-02: stamp host-arrival timestamp.
+          const cm = this.members.get(memberId);
+          const displayName = cm?.member.displayName ?? msg.displayName;
+          const stampedTs = createTimestamp();
+          const sanitized: ProtocolMessage = {
+            ...msg,
+            memberId,
+            displayName,
+            timestamp: stampedTs,
+          };
+          const info: PresenceInfo = {
+            memberId,
+            displayName,
+            branch: msg.branch,
+            activeFilePath: msg.activeFilePath,
+            lastUpdated: stampedTs,
+          };
+          this.presenceMap.upsert(info);
+          // Exclude sender — they already know their own active editor.
+          this.broadcast(sanitized, memberId);
         } else if (msg.type === 'sync-request') {
           // PUSH-09 reconnect path: respond with empty files (snapshot is
           // delivered out-of-band) plus the latest push id so the client can
@@ -669,6 +759,9 @@ export class SessionHost implements SessionEventEmitter {
     this.members.delete(memberId);
     this.bandwidthMonitor.removeMember(memberId);
     this.memberTracking.delete(memberId);
+    // Phase 4: clear presence so the departed member disappears from clients'
+    // presence panels via the existing member-left broadcast cycle.
+    this.presenceMap.removeMember(memberId);
 
     // If the host left, clear the host tracking
     if (memberId === this.hostMemberId) {

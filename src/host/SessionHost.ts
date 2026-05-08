@@ -655,12 +655,17 @@ export class SessionHost implements SessionEventEmitter {
    * regress the Phase 3 fan-out.
    *
    * Body format follows UI-SPEC §6.3 / activity tree label convention —
-   * `{hostDisplayName} pushed {N} file(s)`. The host doesn't know per-receiver
-   * `affectsLocal`, so the body uses the neutral remote-no-overlap shape;
-   * each receiver's local push-received handler still computes its own
+   * `{record.memberDisplayName} pushed {N} file(s)`. The host doesn't know
+   * per-receiver `affectsLocal`, so the body uses the neutral remote-no-overlap
+   * shape; each receiver's local push-received handler still computes its own
    * overlap and renders the activity-tree row independently.
+   *
+   * Plan 04-15 update (CR-01-NEW closure): the system event body and stamped
+   * identity now come from `record.memberDisplayName` / `record.memberId`.
+   * Returns the persisted ChatRecord so extension.ts can echo it into the
+   * host's own ChatPanel via dispatchChatReceivedLocally (CR-02-NEW closure).
    */
-  broadcastPush(record: PushRecord): void {
+  broadcastPush(record: PushRecord): ChatRecord {
     const stampedTs = createTimestamp();
     this.broadcast({
       type: 'push-notification',
@@ -673,12 +678,19 @@ export class SessionHost implements SessionEventEmitter {
       timestamp: stampedTs,
     });
     const fileCount = record.files.length;
-    const body = `${this.hostDisplayName} pushed ${fileCount} file(s)`;
-    this.appendAndBroadcastSystemEvent('push', body, stampedTs, {
-      pushId: record.id,
-      branch: record.branch,
-      files: record.files.map(f => f.relativePath),
-    });
+    const body = `${record.memberDisplayName} pushed ${fileCount} file(s)`;
+    return this.appendAndBroadcastSystemEvent(
+      'push',
+      body,
+      stampedTs,
+      {
+        pushId: record.id,
+        branch: record.branch,
+        files: record.files.map(f => f.relativePath),
+      },
+      record.memberId,
+      record.memberDisplayName,
+    );
   }
 
   /**

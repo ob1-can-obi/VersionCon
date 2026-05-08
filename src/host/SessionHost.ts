@@ -738,21 +738,34 @@ export class SessionHost implements SessionEventEmitter {
    * Broadcast a new branch creation.
    *
    * Plan 04-12: ALSO append + broadcast a `subKind: 'branch-created'` system
-   * event. Body: `{hostDisplayName} created branch '{branchName}'` per
-   * UI-SPEC §6.3 (the host process is the actor for host-initiated creates;
-   * the branch.createdBy field is a memberId, not a displayName).
+   * event. Body: `{resolvedDisplayName} created branch '{branchName}'` per
+   * UI-SPEC §6.3.
+   *
+   * Plan 04-15 update (CR-01-NEW closure): branch.createdBy is a memberId
+   * (per src/types/branch.ts), so we resolve it to a displayName via the
+   * members registry. Falls back to hostDisplayName when the memberId is
+   * not currently mapped (host-initiated creates where the host's own
+   * memberId may not yet be self-mapped, or the creator has disconnected).
+   * Returns the persisted ChatRecord (CR-02-NEW closure).
    */
-  broadcastBranchCreated(branch: BranchInfo): void {
+  broadcastBranchCreated(branch: BranchInfo): ChatRecord {
     const stampedTs = createTimestamp();
     this.broadcast({
       type: 'branch-created',
       branch,
       timestamp: stampedTs,
     });
-    const body = `${this.hostDisplayName} created branch '${branch.name}'`;
-    this.appendAndBroadcastSystemEvent('branch-created', body, stampedTs, {
-      branch: branch.name,
-    });
+    const resolvedDisplayName =
+      this.members.get(branch.createdBy)?.member.displayName ?? this.hostDisplayName;
+    const body = `${resolvedDisplayName} created branch '${branch.name}'`;
+    return this.appendAndBroadcastSystemEvent(
+      'branch-created',
+      body,
+      stampedTs,
+      { branch: branch.name },
+      branch.createdBy,
+      resolvedDisplayName,
+    );
   }
 
   /**

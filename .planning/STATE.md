@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: context exhaustion at 75% (2026-05-05)
-last_updated: "2026-05-08T02:45:52Z"
-last_activity: "2026-05-08 -- Plan 04-08 complete: PresenceTreeProvider TreeView with self-first sort + (you) suffix + $(git-compare) divergence + view registration + 13 tests (238 passing)"
+last_updated: "2026-05-08T03:08:05Z"
+last_activity: "2026-05-08 -- Plan 04-09 complete: StatusBarManager flashNoImpact/setUnreadCount + extension.ts integration glue (push-received overlap → toast/flash, presence broadcast on activeTextEditor change debounced, activity-tree dispatcher, 5 new client event listeners) + 8 new tests (246 passing)"
 progress:
   total_phases: 9
   completed_phases: 2
   total_plans: 32
-  completed_plans: 25
-  percent: 78
+  completed_plans: 26
+  percent: 81
 ---
 
 # Project State
@@ -26,32 +26,32 @@ See: .planning/PROJECT.md (updated 2026-05-04)
 ## Current Position
 
 Phase: 4 (Presence, Chat + File-Level Conflict Notifications) — EXECUTING
-Plan: 9 of 11
-Status: Executing Phase 4 — Plans 04-01..04-08 complete (8 of 11); wave-3 in flight (04-09 soft-notifications next)
-Next: Plan 04-09 (soft-notifications) — StatusBarManager flash/unread + extension.ts wiring (push-received → toast/flash, presence broadcast on tab change). Wires PresenceTreeProvider/ActivityLogProvider into the live event stream.
-Last activity: 2026-05-08 -- Plan 04-08 complete: PresenceTreeProvider TreeView with self-first sort + (you) suffix + $(git-compare) divergence + view registration + 13 tests (238 passing)
+Plan: 10 of 11
+Status: Executing Phase 4 — Plans 04-01..04-09 complete (9 of 11); wave-4 next (04-10 chat-panel)
+Next: Plan 04-10 (chat-panel) — ChatPanel WebviewPanel + bundled markdown-it/highlight.js/codicons + CSP + WorkspaceState chatHiddenBefore. Will wire host.setChatLog(chatLog, branchName) (two-arg signature) and flip chatPanelIsActive on view-state change.
+Last activity: 2026-05-08 -- Plan 04-09 complete: StatusBarManager flashNoImpact/setUnreadCount + extension.ts integration glue (push-received overlap → toast/flash, presence broadcast on activeTextEditor change debounced, activity-tree dispatcher, 5 new client event listeners) + 8 new tests (246 passing)
 
-Progress: [███████▊░░] 78%
+Progress: [████████░░] 81%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 14
-- Average duration: 4.0 min
-- Total execution time: 0.93 hours
+- Total plans completed: 15
+- Average duration: 4.2 min
+- Total execution time: 1.05 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 6 | 23 min | 3.8 min |
-| 04 | 8 | 33.3 min | 4.2 min |
+| 04 | 9 | 40.5 min | 4.5 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 04-08 (3.3 min), 04-07 (4 min), 04-06 (3 min), 04-02 (4 min), 04-03 (2 min)
-- Trend: TreeDataProvider plans run fast when the analog (BranchListProvider) is mirrored verbatim — Plan 04-08 followed Plan 04-07's pattern with zero deviations and zero rework.
+- Last 5 plans: 04-09 (7.2 min), 04-08 (3.3 min), 04-07 (4 min), 04-06 (3 min), 04-02 (4 min)
+- Trend: 04-09 was the most complex plan in Phase 4 (integration glue across StatusBarManager + extension.ts + 5 client event listeners + presence broadcast + activity-tree dispatcher); duration ~2x median because the file-name resolution audit and module-level identity-mirror plumbing required reading the entire IIFE before mutating extension.ts. Three Rule-2/3 deviations recorded inline (debounce, host-side local upsert, identity mirror fields). 8 new tests; 246 passing total.
 
 *Updated after each plan completion*
 
@@ -107,6 +107,15 @@ Recent decisions affecting current work:
 - [Plan 04-08]: Description format `$(git-compare) {branch} · {basename}` — divergent rows show BOTH the divergent branch name AND the file the member is working on, in the same row.
 - [Plan 04-08]: Self-first sort comparator branches BEFORE locale-compare — explicit short-circuit returns -1/+1 for self before falling through to localeCompare; cleaner than partition-then-concat and tested directly.
 - [Plan 04-08]: package.json edit minimal/surgical — sibling-append only (versioncon.presence after versioncon.activityLog). Co-exists with Plan 04-07's registration without disturbing existing rows.
+- [Plan 04-09]: Module-level provider singletons (presenceTreeProvider, activityLogProvider) constructed in activate() BEFORE the workspace IIFE — both wireClientEvents (module scope) and the IIFE can reference them without nullability surprises beyond the explicit `?.` chain.
+- [Plan 04-09]: Self-identity mirror fields (currentSelfMemberId / currentSelfDisplayName) added at module scope rather than reusing the IIFE's currentMemberId — the IIFE's value is the Phase 1/3 'local-user' placeholder; module mirrors are populated from authenticated client.getMemberId() at join time. Unblocks isMine detection on the activity log without refactoring placeholder fields.
+- [Plan 04-09]: Active-branch mirror (currentBranchName) updated at IIFE init AND on every switchBranch — switchBranch additionally calls sendPresenceUpdate(activeTextEditor) so remote panels' divergence indicators refresh immediately when the local user moves to a different branch.
+- [Plan 04-09]: 100ms debounce on onDidChangeActiveTextEditor → presence-update — defensive Rule 2 guard against rapid focus events (Cmd-P open + activate fires the event multiple times). One outbound message per intent without sacrificing real-time feel.
+- [Plan 04-09]: Host's local presence upsert (presenceTreeProvider.upsert(info)) is explicit — the host's broadcast EXCLUDES the sender per Plan 04-04 broadcast policy, so without local upsert the host's own row would never appear in their panel.
+- [Plan 04-09]: chat-received handler only acts on kind='user' — system events (push/revert/branch-created) ride both the chat stream AND the dedicated client events; activity-log feed routes through the dedicated events to avoid duplicate rows.
+- [Plan 04-09]: setChatLog NOT wired here — Plan 04-10 (chat panel) constructs the ChatLog instance and owns the wiring. Host's chat-history send is a no-op until then (null-guarded by Plan 04-04). No regression.
+- [Plan 04-09]: setUnreadCount precedence — sync warning suppresses the badge visually but PRESERVES the count internally; setStatus tail re-applies the overlay when the warning clears AND status is 'connected'. setSyncWarning(true/false) mirrors the boolean into syncWarningActive so flashNoImpact and applyUnreadOverlay can read it.
+- [Plan 04-09]: Task 4 (manual two-client UAT) deferred — autonomous: false. Visual UX confirmation across two VS Code Extension Development Host windows requires human eyeball verification of toast text + status bar flash; cannot be automated. Wiring verified at unit-test layer (8 new tests) + grep-shape integration check.
 
 ### Pending Todos
 
@@ -129,6 +138,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-08T02:45:52Z
-Stopped at: Completed plan 04-08 (Phase 4 wave-3 in flight; presence panel TreeView shipped — sibling to activity log)
+Last session: 2026-05-08T03:08:05Z
+Stopped at: Completed plan 04-09 (Phase 4 wave-4 next; soft notifications integration glue shipped — toast/flash/activity-tree/presence broadcast all wired end-to-end; manual UAT deferred)
 Resume file: None

@@ -22,6 +22,16 @@ export interface ChatPanelRefs {
   sendChatMessage: (body: string) => void;
   openManageChat: () => void;
   getConnectionStatus: () => ConnectionStatus;
+  /**
+   * CR-04 (Plan 04-14): Invoked when the panel's view state changes.
+   * The boolean argument is `webviewPanel.active`. Receivers typically
+   * flip a module-level chatPanelIsActive flag and clear unread counters
+   * when active === true. Lifecycle: bound to the panel's own
+   * onDidChangeViewState Disposable (in this.disposables), so it
+   * auto-disposes on panel close. Callers MUST NOT register their own
+   * onDidChangeViewState — that public setter API has been removed.
+   */
+  onPanelActivated?: (active: boolean) => void;
 }
 
 /**
@@ -57,7 +67,6 @@ export class ChatPanel {
 
   private readonly panel: vscode.WebviewPanel;
   private readonly disposables: vscode.Disposable[] = [];
-  private viewStateHandler: ((active: boolean) => void) | null = null;
 
   /**
    * Show the chat panel or reveal it if already open. ChatPanel is a
@@ -109,9 +118,14 @@ export class ChatPanel {
       this.disposables,
     );
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+    // CR-04 (Plan 04-14): Invoke refs.onPanelActivated through the panel's
+    // own Disposable (already pushed to this.disposables on the line below).
+    // Lifecycle: when the panel disposes, this Disposable disposes with it,
+    // and refs.onPanelActivated is no longer reachable. No standalone
+    // listener registration outside this constructor is needed.
     this.panel.onDidChangeViewState(
       (e) => {
-        this.viewStateHandler?.(e.webviewPanel.active);
+        this.refs.onPanelActivated?.(e.webviewPanel.active);
       },
       null,
       this.disposables,
@@ -178,15 +192,6 @@ export class ChatPanel {
   /** True iff the panel is currently the active editor tab. */
   isActive(): boolean {
     return this.panel.active;
-  }
-
-  /**
-   * Register a handler invoked whenever the panel's active state flips.
-   * Plan 04-10 Task 4 wires this to clear the unread badge + flip the
-   * module-level chatPanelIsActive flag.
-   */
-  onDidChangeViewState(handler: (active: boolean) => void): void {
-    this.viewStateHandler = handler;
   }
 
   dispose(): void {

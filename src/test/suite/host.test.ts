@@ -1232,29 +1232,44 @@ suite('Phase 4 system events in chat', () => {
 
   // -------------------- identity policy --------------------
 
-  test("system events use memberId='host' fallback when host has not self-authenticated as a member", async () => {
-    // No client connects → hostMemberId never set → memberId falls back to 'host'.
+  test("branch-created with unmapped createdBy: memberDisplayName falls back to hostDisplayName, memberId reflects branch.createdBy", async () => {
+    // Plan 04-15 update: branch.createdBy is the actor's memberId. When it's
+    // not in this.members (e.g. host-initiated creates pre-auth, or the
+    // creator has disconnected), the displayName falls back to
+    // hostDisplayName but the memberId still equals branch.createdBy — so
+    // the persisted record faithfully records who claimed to create it.
     const branch: BranchInfo = { name: 'b1', createdBy: 'x', createdAt: 1, locked: false };
     host.broadcastBranchCreated(branch);
 
     await waitFor(() => chatLog.getRecords().length === 1);
     const r = chatLog.getRecords()[0];
-    assert.strictEqual(r.memberId, 'host', "fallback 'host' marker used when hostMemberId is null");
+    assert.strictEqual(
+      r.memberId,
+      'x',
+      "memberId reflects branch.createdBy verbatim (Plan 04-15 CR-01-NEW)",
+    );
     assert.strictEqual(
       r.memberDisplayName,
       HOST_NAME,
-      'memberDisplayName always pulls from hostDisplayName (constructor arg)',
+      'memberDisplayName falls back to hostDisplayName when createdBy not in members map',
     );
   });
 
-  test('system events use this.hostMemberId once the host has self-authenticated', async () => {
-    // The first connecting client becomes the host (handleAuthRequest assigns
-    // role:'host' and stores the new member id as this.hostMemberId).
+  test("branch-created with mapped createdBy: memberDisplayName resolves via this.members map", async () => {
+    // The first connecting client becomes the host (handleAuthRequest
+    // assigns role:'host' and registers the member). Pass that authenticated
+    // member's id as branch.createdBy; the helper must resolve it to the
+    // member's displayName via this.members.
     const aliceHost = await connectClient(port, HOST_NAME);
-    // Wait for the host's id to be wired into this.hostMemberId.
+    // Wait for the host to register the auth in this.members.
     await new Promise((r) => setTimeout(r, 50));
 
-    const branch: BranchInfo = { name: 'b2', createdBy: 'x', createdAt: 1, locked: false };
+    const branch: BranchInfo = {
+      name: 'b2',
+      createdBy: aliceHost.memberId,
+      createdAt: 1,
+      locked: false,
+    };
     host.broadcastBranchCreated(branch);
 
     await waitFor(() => chatLog.getRecords().length === 1);
@@ -1262,7 +1277,12 @@ suite('Phase 4 system events in chat', () => {
     assert.strictEqual(
       r.memberId,
       aliceHost.memberId,
-      'memberId pulls from this.hostMemberId once a host has authenticated',
+      'memberId equals branch.createdBy (the actor)',
+    );
+    assert.strictEqual(
+      r.memberDisplayName,
+      HOST_NAME,
+      'displayName resolved via members map (this client connected as HOST_NAME)',
     );
 
     await aliceHost.close();
@@ -1416,5 +1436,331 @@ suite('Phase 4 system events in chat', () => {
     );
 
     await alice.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4 system event correctness (Plan 04-15 — CR-01-NEW / CR-02-NEW / CR-03-NEW)
+//
+// Closes three blockers introduced by 04-12 and 04-13:
+//   - CR-01-NEW: actor displayName misattributed to host on push/revert/branch
+//   - CR-02-NEW: host's own ChatPanel desyncs from chat-log.json (no self-echo)
+//   - CR-03-NEW: path validator over-rejects legitimate '..'-bearing filenames
+//
+// Reuses connectClient / waitFor module-scope helpers and the same
+// boot/connect harness as the existing 'Phase 4 system events in chat' suite.
+// ---------------------------------------------------------------------------
+
+suite('Phase 4 system event correctness', () => {
+  let host: SessionHost;
+  let chatLog: ChatLog;
+  let tmpDir: string;
+  let port: number;
+
+  setup(async () => {
+    tmpDir = path.join(
+      os.tmpdir(),
+      `vc-host-system-correctness-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    const branchDir = path.join(tmpDir, 'branch');
+    await fs.mkdir(branchDir, { recursive: true });
+    chatLog = new ChatLog(branchDir);
+    await chatLog.load();
+
+    const config: SessionConfig = {
+      sessionName: 'Phase4SystemCorrectness',
+      port: 0,
+      networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD,
+      inviteCode: INVITE,
+    };
+    host = new SessionHost(config, HOST_NAME);
+    host.setChatLog(chatLog, 'main');
+    port = await host.start();
+  });
+
+  teardown(async () => {
+    try { host.stop(); } catch { /* best-effort */ }
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  // ---------------- CR-01-NEW (actor displayName) ----------------
+
+  test('CR-01-NEW: broadcastPush body and stamped identity use record.memberDisplayName, not host name', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const aliceChat: ChatMessage[] = [];
+    alice.onMessage((m) => { if (m.type === 'chat-message') { aliceChat.push(m); } });
+
+    const pushRecord: PushRecord = {
+      id: 'p1',
+      memberId: 'mem-bob',
+      memberDisplayName: 'Bob',
+      message: 'fix',
+      branch: 'main',
+      files: [
+        { relativePath: 'src/foo.ts', status: 'modified', addedLines: 1, removedLines: 0 },
+      ],
+      timestamp: Date.now(),
+      reverted: false,
+    };
+
+    const returned = host.broadcastPush(pushRecord);
+
+    // Returned record assertions
+    assert.ok(returned, 'broadcastPush returns a ChatRecord');
+    assert.strictEqual(returned.body, 'Bob pushed 1 file(s)', 'body uses record.memberDisplayName');
+    assert.strictEqual(returned.memberDisplayName, 'Bob', 'stamped memberDisplayName = record.memberDisplayName');
+    assert.strictEqual(returned.memberId, 'mem-bob', 'stamped memberId = record.memberId');
+    assert.ok(!returned.body.includes(HOST_NAME), 'body does NOT contain host name');
+
+    // Wire envelope assertions
+    await waitFor(() => aliceChat.length === 1);
+    const env = aliceChat[0];
+    assert.strictEqual(env.body, 'Bob pushed 1 file(s)');
+    assert.strictEqual(env.memberDisplayName, 'Bob');
+    assert.strictEqual(env.memberId, 'mem-bob');
+    assert.ok(!env.body.includes(HOST_NAME));
+
+    await alice.close();
+  });
+
+  test('CR-01-NEW: broadcastRevert body and stamped identity use record.memberDisplayName', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const aliceChat: ChatMessage[] = [];
+    alice.onMessage((m) => { if (m.type === 'chat-message') { aliceChat.push(m); } });
+
+    const pushRecord: PushRecord = {
+      id: 'p1',
+      memberId: 'mem-bob',
+      memberDisplayName: 'Bob',
+      message: 'fix',
+      branch: 'main',
+      files: [
+        { relativePath: 'src/foo.ts', status: 'modified', addedLines: 1, removedLines: 0 },
+      ],
+      timestamp: Date.now(),
+      reverted: true,
+    };
+
+    const returned = host.broadcastRevert(pushRecord);
+
+    assert.ok(returned, 'broadcastRevert returns a ChatRecord');
+    assert.strictEqual(returned.body, 'Bob reverted 1 file(s)');
+    assert.strictEqual(returned.memberDisplayName, 'Bob');
+    assert.strictEqual(returned.memberId, 'mem-bob');
+    assert.ok(!returned.body.includes(HOST_NAME));
+
+    await waitFor(() => aliceChat.length === 1);
+    const env = aliceChat[0];
+    assert.strictEqual(env.body, 'Bob reverted 1 file(s)');
+    assert.strictEqual(env.memberDisplayName, 'Bob');
+    assert.strictEqual(env.memberId, 'mem-bob');
+    assert.ok(!env.body.includes(HOST_NAME));
+
+    await alice.close();
+  });
+
+  test('CR-01-NEW: broadcastBranchCreated resolves branch.createdBy via members map (with hostDisplayName fallback)', async () => {
+    // Connect Bob so this.members has an entry mapping bob.memberId → 'Bob'.
+    const bob = await connectClient(port, 'Bob');
+    // Wait for the host to register bob in this.members (auth-success → addMember).
+    await waitFor(() => host.getPresenceSnapshot !== undefined);
+    await new Promise((r) => setTimeout(r, 50));
+
+    // (1) Resolved-via-members path
+    const branchByBob: BranchInfo = {
+      name: 'feature-x',
+      createdBy: bob.memberId,
+      createdAt: Date.now(),
+      locked: false,
+    };
+    const resolved = host.broadcastBranchCreated(branchByBob);
+    assert.strictEqual(
+      resolved.body,
+      "Bob created branch 'feature-x'",
+      'body uses displayName resolved from members map',
+    );
+    assert.strictEqual(resolved.memberId, bob.memberId, 'stamped memberId = branch.createdBy');
+    assert.strictEqual(resolved.memberDisplayName, 'Bob', 'stamped displayName from members map');
+
+    // (2) Fallback path — createdBy not in this.members
+    const branchByGhost: BranchInfo = {
+      name: 'ghost-branch',
+      createdBy: 'unknown-mem',
+      createdAt: Date.now(),
+      locked: false,
+    };
+    const fallback = host.broadcastBranchCreated(branchByGhost);
+    assert.strictEqual(
+      fallback.memberDisplayName,
+      HOST_NAME,
+      'unmapped createdBy falls back to hostDisplayName (host-initiated path)',
+    );
+    assert.strictEqual(
+      fallback.body,
+      `${HOST_NAME} created branch 'ghost-branch'`,
+      'body uses hostDisplayName fallback',
+    );
+    assert.strictEqual(fallback.memberId, 'unknown-mem', 'stamped memberId still equals branch.createdBy');
+
+    await bob.close();
+  });
+
+  // ---------------- CR-02-NEW (host-self echo: return-and-wire-id contract) ----------------
+
+  test('CR-02-NEW: broadcastPush/Revert/BranchCreated return ChatRecord whose id matches the wire envelope.recordId', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const aliceChat: ChatMessage[] = [];
+    alice.onMessage((m) => { if (m.type === 'chat-message') { aliceChat.push(m); } });
+
+    const pushRecord: PushRecord = {
+      id: 'p-echo',
+      memberId: 'mem-bob',
+      memberDisplayName: 'Bob',
+      message: 'm',
+      branch: 'main',
+      files: [{ relativePath: 'a.ts', status: 'modified', addedLines: 1, removedLines: 0 }],
+      timestamp: Date.now(),
+      reverted: false,
+    };
+    const branchInfo: BranchInfo = {
+      name: 'echo-branch',
+      createdBy: 'mem-bob',
+      createdAt: Date.now(),
+      locked: false,
+    };
+
+    // (1) broadcastPush
+    const pushReturned = host.broadcastPush(pushRecord);
+    assert.ok(pushReturned, 'broadcastPush returns a non-undefined ChatRecord');
+    assert.strictEqual(typeof pushReturned.id, 'string');
+    assert.ok(pushReturned.id.length > 0, 'id is a non-empty string');
+    assert.strictEqual(pushReturned.kind, 'system');
+    assert.strictEqual(pushReturned.subKind, 'push');
+    await waitFor(() => aliceChat.find((m) => m.subKind === 'push') !== undefined);
+    const pushEnv = aliceChat.find((m) => m.subKind === 'push');
+    assert.ok(pushEnv);
+    assert.strictEqual(pushEnv.recordId, pushReturned.id, 'wire envelope recordId matches returned id');
+
+    // (2) broadcastRevert
+    const revertReturned = host.broadcastRevert(pushRecord);
+    assert.ok(revertReturned);
+    assert.strictEqual(revertReturned.kind, 'system');
+    assert.strictEqual(revertReturned.subKind, 'revert');
+    await waitFor(() => aliceChat.find((m) => m.subKind === 'revert') !== undefined);
+    const revertEnv = aliceChat.find((m) => m.subKind === 'revert');
+    assert.ok(revertEnv);
+    assert.strictEqual(revertEnv.recordId, revertReturned.id);
+
+    // (3) broadcastBranchCreated
+    const branchReturned = host.broadcastBranchCreated(branchInfo);
+    assert.ok(branchReturned);
+    assert.strictEqual(branchReturned.kind, 'system');
+    assert.strictEqual(branchReturned.subKind, 'branch-created');
+    await waitFor(() => aliceChat.find((m) => m.subKind === 'branch-created') !== undefined);
+    const branchEnv = aliceChat.find((m) => m.subKind === 'branch-created');
+    assert.ok(branchEnv);
+    assert.strictEqual(branchEnv.recordId, branchReturned.id);
+
+    // (4) chat-log persistence: all three returned ids appear in the persisted log,
+    //     proving caller-side echo (extension.ts dispatchChatReceivedLocally) shares
+    //     the same id used for the wire envelope and the persisted record — so
+    //     client-side dedupe + caller-side echo work without duplication.
+    await waitFor(() => chatLog.getRecords().length === 3);
+    const persistedIds = chatLog.getRecords().map((r) => r.id);
+    assert.ok(persistedIds.includes(pushReturned.id), 'push record persisted with same id');
+    assert.ok(persistedIds.includes(revertReturned.id), 'revert record persisted with same id');
+    assert.ok(persistedIds.includes(branchReturned.id), 'branch-created record persisted with same id');
+
+    await alice.close();
+  });
+
+  // ---------------- CR-03-NEW (segment-aware path validator) ----------------
+
+  test('CR-03-NEW: presence-update accepts legitimate filenames containing two consecutive periods', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const bob = await connectClient(port, 'Bob');
+    const aliceReceived: PresenceUpdate[] = [];
+    alice.onMessage((m) => { if (m.type === 'presence-update') { aliceReceived.push(m); } });
+
+    const acceptedPaths = ['src/foo..bar.ts', 'package..json', 'my..folder/index.ts'];
+
+    for (const path of acceptedPaths) {
+      bob.send({
+        type: 'presence-update',
+        timestamp: 1,
+        memberId: bob.memberId,
+        displayName: 'Bob',
+        branch: 'main',
+        activeFilePath: path,
+      });
+    }
+
+    // All three frames should reach Alice with the activeFilePath verbatim.
+    await waitFor(() => aliceReceived.length === acceptedPaths.length, 3000);
+    const observedPaths = aliceReceived.map((m) => m.activeFilePath);
+    for (const p of acceptedPaths) {
+      assert.ok(
+        observedPaths.includes(p),
+        `Alice received a presence-update with activeFilePath=${p} (verbatim, no rejection)`,
+      );
+    }
+
+    // Host's own presence map must store the verbatim final path (last write wins per memberId).
+    const snapshot = host.getPresenceSnapshot();
+    const bobEntry = snapshot.find((e: PresenceInfo) => e.memberId === bob.memberId);
+    assert.ok(bobEntry, 'bob present in host snapshot');
+    assert.strictEqual(
+      bobEntry.activeFilePath,
+      acceptedPaths[acceptedPaths.length - 1],
+      'host PresenceMap stores the most recent legitimate `..`-bearing path verbatim',
+    );
+
+    await alice.close();
+    await bob.close();
+  });
+
+  test('CR-03-NEW: presence-update still rejects directory-traversal segments (negative regression)', async () => {
+    const alice = await connectClient(port, 'Alice');
+    const bob = await connectClient(port, 'Bob');
+    const aliceReceived: PresenceUpdate[] = [];
+    alice.onMessage((m) => { if (m.type === 'presence-update') { aliceReceived.push(m); } });
+
+    const rejectedPaths = ['../../etc/passwd', 'src/../../etc/passwd'];
+
+    for (const path of rejectedPaths) {
+      bob.send({
+        type: 'presence-update',
+        timestamp: 1,
+        memberId: bob.memberId,
+        displayName: 'Bob',
+        branch: 'main',
+        activeFilePath: path,
+      });
+    }
+
+    // Allow time for the host to (silently) drop the frames.
+    await new Promise((r) => setTimeout(r, 250));
+    assert.strictEqual(
+      aliceReceived.length,
+      0,
+      'host silently dropped both directory-traversal vectors — Alice received NO presence-update',
+    );
+
+    // Sanity: a follow-up legitimate path STILL works (proves the host did not crash
+    // and the rejection branch returned cleanly).
+    bob.send({
+      type: 'presence-update',
+      timestamp: 1,
+      memberId: bob.memberId,
+      displayName: 'Bob',
+      branch: 'main',
+      activeFilePath: 'src/foo.ts',
+    });
+    await waitFor(() => aliceReceived.length === 1);
+    assert.strictEqual(aliceReceived[0].activeFilePath, 'src/foo.ts');
+
+    await alice.close();
+    await bob.close();
   });
 });

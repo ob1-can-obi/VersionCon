@@ -89,7 +89,7 @@ export class ChatPanel {
     }
     const panel = vscode.window.createWebviewPanel(
       'versioncon.chatPanel',
-      'VersionCon: Chat',
+      'Team Chat',
       vscode.ViewColumn.One,
       {
         enableScripts: true,

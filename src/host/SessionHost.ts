@@ -308,6 +308,14 @@ export class SessionHost implements SessionEventEmitter {
           this.memberTracking.set(memberId, [...msg.paths]);
           // Metadata only -- do not relay.
         } else if (msg.type === 'chat-message') {
+          // CR-03: host-side validation of body / recordId. The 64 KiB cap also
+          // exists in ChatPanel.handleMessage (Plan 04-10) but a malicious or
+          // modified client can bypass the panel and write the wire directly,
+          // so the host MUST defend in depth. Drop silently — same posture as
+          // parseMessage returning null. No error response.
+          if (typeof msg.body !== 'string' || msg.body.length === 0 || msg.body.length > 65536) return;
+          if (typeof msg.recordId !== 'string' || msg.recordId.length === 0 || msg.recordId.length > 128) return;
+
           // T-04-04-01: trust the ws-bound memberId captured at auth time,
           // NEVER the client-claimed msg.memberId field. This is the chat-
           // impersonation gate — failure here lets any member spoof another.
@@ -316,8 +324,17 @@ export class SessionHost implements SessionEventEmitter {
           const cm = this.members.get(memberId);
           const displayName = cm?.member.displayName ?? msg.memberDisplayName;
           const stampedTs = createTimestamp();
+          // CR-01 (T-04-13-01): client-authored chat-message frames are ALWAYS
+          // user kind. System events are produced by host-internal paths only
+          // (handleLocalChatMessage in Plan 04-04, broadcastPush/Revert/BranchCreated
+          // in Plan 04-12). Coerce kind/subKind/meta defensively so a malicious
+          // member cannot forge push/branch-created activity events that
+          // persist to chat-log.json and replay on every future join.
           const sanitized: ProtocolMessage = {
             ...msg,
+            kind: 'user',
+            subKind: undefined,
+            meta: undefined,
             memberId,
             memberDisplayName: displayName,
             timestamp: stampedTs,
@@ -326,14 +343,12 @@ export class SessionHost implements SessionEventEmitter {
           // future joiners' chat-history replay (Plan 04-04 Task 3).
           if (this.chatLog) {
             const record: ChatRecord = {
-              id: msg.recordId,
-              kind: msg.kind,
-              ...(msg.subKind !== undefined ? { subKind: msg.subKind } : {}),
+              id: sanitized.recordId,
+              kind: sanitized.kind,            // always 'user' on this path (CR-01)
               memberId,
               memberDisplayName: displayName,
-              body: msg.body,
+              body: sanitized.body,
               timestamp: stampedTs,
-              ...(msg.meta !== undefined ? { meta: msg.meta } : {}),
             };
             try {
               await this.chatLog.append(record);
@@ -347,6 +362,25 @@ export class SessionHost implements SessionEventEmitter {
           // after host echo, per RESEARCH Open Q #1.
           this.broadcast(sanitized);
         } else if (msg.type === 'presence-update') {
+          // CR-02 (T-04-13-02): validate activeFilePath against path traversal
+          // BEFORE upsert. PresenceMap.ts T-04-03-03 documents this as a
+          // precondition the caller MUST enforce. The client-side normalization
+          // in extension.ts (presence broadcast on onDidChangeActiveTextEditor)
+          // is a defense-in-depth pair but the wire is not trusted, so the
+          // host MUST also enforce. Drop silently on any rejection — same
+          // posture as parseMessage returning null. activeFilePath === null
+          // is the legitimate "no file open" signal and is preserved.
+          let safePath: string | null = null;
+          if (msg.activeFilePath !== null) {
+            if (typeof msg.activeFilePath !== 'string') return;
+            if (msg.activeFilePath.length > 1024) return;
+            const p = msg.activeFilePath;
+            if (p.includes('..') || p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p) || p.includes('\\')) {
+              return; // path traversal / absolute path / backslash — drop silently
+            }
+            safePath = p;
+          }
+
           // T-04-04-01: server-trusted memberId override (same policy as
           // chat-message). T-04-04-02: stamp host-arrival timestamp.
           const cm = this.members.get(memberId);
@@ -356,13 +390,14 @@ export class SessionHost implements SessionEventEmitter {
             ...msg,
             memberId,
             displayName,
+            activeFilePath: safePath,           // CR-02: validated path flows to broadcast
             timestamp: stampedTs,
           };
           const info: PresenceInfo = {
             memberId,
             displayName,
             branch: msg.branch,
-            activeFilePath: msg.activeFilePath,
+            activeFilePath: safePath,           // CR-02: validated path flows to PresenceMap
             lastUpdated: stampedTs,
           };
           this.presenceMap.upsert(info);

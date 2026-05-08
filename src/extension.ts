@@ -58,9 +58,10 @@ let activePushHistory: { getLatestRecord: () => { id: string } | undefined } | n
 // reach them.
 let presenceTreeProvider: PresenceTreeProvider | null = null;
 let activityLogProvider: ActivityLogProvider | null = null;
-// Phase 4: chat unread count + panel-active flag. Plan 04-10 (chat panel) flips
-// `chatPanelIsActive` on its onDidChangeViewState; until then this stays false
-// so chat-received events always increment unread.
+// Phase 4: chat unread count + panel-active flag. Plan 04-14 wires the
+// `onPanelActivated` callback through ChatPanelRefs to flip
+// `chatPanelIsActive`; until that fires this stays false so chat-received
+// events always increment unread.
 let unreadChatCount = 0;
 let chatPanelIsActive = false;
 // Phase 4: self identity mirrors so wireClientEvents (module-level) can build
@@ -295,18 +296,20 @@ export function activate(context: vscode.ExtensionContext): void {
           void vscode.commands.executeCommand('versioncon.manageChat');
         },
         getConnectionStatus: () => currentConnectionStatus,
-      });
-
-      // Wire the panel's view-state changes so unread badges clear when
-      // the panel becomes active. createOrShow returns void; the singleton
-      // is exposed via ChatPanel.currentPanel.
-      ChatPanel.currentPanel?.onDidChangeViewState((active) => {
-        chatPanelIsActive = active;
-        if (active) {
-          unreadChatCount = 0;
-          statusBarManager?.setUnreadCount(0);
-          activityLogProvider?.setUnread(0);
-        }
+        // CR-04 (Plan 04-14): wire unread-clear into the refs bundle so
+        // the panel's own onDidChangeViewState Disposable (lifecycle-bound
+        // to this.disposables in ChatPanel.ts) is the single owner of
+        // this handler. Replaces the previous standalone setter call,
+        // which leaked across extension reactivations because the
+        // setter return value was never disposed.
+        onPanelActivated: (active: boolean) => {
+          chatPanelIsActive = active;
+          if (active) {
+            unreadChatCount = 0;
+            statusBarManager?.setUnreadCount(0);
+            activityLogProvider?.setUnread(0);
+          }
+        },
       });
     }),
   );

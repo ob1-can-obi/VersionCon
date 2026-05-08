@@ -2,10 +2,12 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
+import * as crypto from 'crypto';
 import { WizardPanel } from './ui/WizardPanel.js';
 import { JoinPanel } from './ui/JoinPanel.js';
 import { SidebarProvider } from './ui/SidebarProvider.js';
 import { StatusBarManager } from './ui/StatusBarManager.js';
+import { ChatPanel } from './ui/ChatPanel.js';
 import { SessionHistory } from './storage/SessionHistory.js';
 import { SessionHost } from './host/SessionHost.js';
 import { SessionClient } from './client/SessionClient.js';
@@ -70,6 +72,23 @@ let currentSelfDisplayName = 'You';
 // rendering. Updated by the IIFE on init and by versioncon.switchBranch.
 let currentBranchName: string | null = null;
 
+// Phase 4 (Plan 04-10): client-side chat record cache. Clients don't read
+// chat-log.json directly — the host owns it. The webview gets state-update
+// snapshots from this in-memory array, which is reseeded on chat-history
+// (join replay) and appended on chat-received.
+const clientChatRecords: ChatRecord[] = [];
+
+// Phase 4 (Plan 04-10): module-level connection-status mirror — mirrors the
+// client.on('connection-changed') stream so ChatPanel.refs.getConnectionStatus
+// can return the live status without holding a SessionClient reference.
+let currentConnectionStatus: ConnectionStatus = 'disconnected';
+
+// Phase 4 (Plan 04-10): module-level WorkspaceState reference. The instance
+// is constructed inside the workspace IIFE, but openChat (registered in
+// activate()) needs to read getChatHiddenBefore() at panel-build time.
+// Initialized in the IIFE; remains null when no workspace folder is open.
+let workspaceStateRef: WorkspaceState | null = null;
+
 /**
  * Format the CONF-07 toast string per UI-SPEC §6.1 (locked literals):
  *   - 1 file overlap: `{name} pushed 1 file — affects: {fileBasename}: '{msg}'`
@@ -90,6 +109,20 @@ function formatPushToast(name: string, overlapping: string[], message: string): 
   }
   const firstTwo = overlapping.slice(0, 2).map(f => path.basename(f)).join(', ');
   return `${name} pushed ${N} file(s) — affects: ${firstTwo}, +${N - 2} more${msgSuffix}`;
+}
+
+/**
+ * Plan 04-10: host-only echo of the host's own chat message back into its
+ * own ChatPanel. The host does not receive its own broadcast over the wire
+ * (it IS the broadcaster), so without this echo the host would type a
+ * message and never see it appear locally. Records are stored in the
+ * shared clientChatRecords cache so subsequent setHistory snapshots include
+ * them. Skips the unread-counter increment because the host literally
+ * just typed it.
+ */
+function dispatchChatReceivedLocally(record: ChatRecord): void {
+  clientChatRecords.push(record);
+  ChatPanel.currentPanel?.postChatMessage(record);
 }
 
 /** Re-evaluate the `versioncon.activityLog.empty` context key after every entry mutation. */
@@ -166,6 +199,103 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
 
+  // --- Phase 4 (Plan 04-10): chat panel open command + manage-chat stub ---
+  // versioncon.openChat creates or reveals the singleton ChatPanel. Refs
+  // bundle the live module-state at panel-build time so the panel always
+  // sees fresh closures (sendChatMessage routing depends on host-vs-client).
+  context.subscriptions.push(
+    vscode.commands.registerCommand('versioncon.openChat', () => {
+      if (!activeClient && !activeHost) {
+        void vscode.window.showWarningMessage(
+          'Not connected. Host or join a session first.',
+        );
+        return;
+      }
+      if (!workspaceStateRef) {
+        void vscode.window.showWarningMessage(
+          'VersionCon: open a workspace folder before opening chat.',
+        );
+        return;
+      }
+      // Resolve member count from presence (other members + self if known).
+      const memberCount = (presenceTreeProvider?.getEntries() ?? []).length;
+
+      ChatPanel.createOrShow(context, {
+        selfId: currentSelfMemberId,
+        selfDisplayName: currentSelfDisplayName,
+        branch: currentBranchName ?? 'main',
+        memberCount,
+        getRecords: () => clientChatRecords.slice(),
+        getChatHiddenBefore: () => workspaceStateRef?.getChatHiddenBefore() ?? null,
+        sendChatMessage: (body: string) => {
+          if (!activeClient && !activeHost) return;
+          const recordId = crypto.randomUUID();
+          if (activeClient) {
+            // Wire path — host server-stamps memberId / timestamp on receipt
+            // and broadcasts back to all members (including the sender).
+            activeClient.sendMessage({
+              type: 'chat-message',
+              timestamp: createTimestamp(),
+              recordId,
+              kind: 'user',
+              memberId: currentSelfMemberId,
+              memberDisplayName: currentSelfDisplayName,
+              body,
+            });
+          } else if (activeHost) {
+            // Host-local path — Plan 04-04 OWNS handleLocalChatMessage.
+            // It performs chatLog.append + broadcast in one place, so the
+            // host's own message reaches all clients via the same fan-out.
+            void activeHost.handleLocalChatMessage({
+              recordId,
+              kind: 'user',
+              body,
+            });
+            // Echo into the host's own panel — the host does NOT receive
+            // its own broadcast back over the wire (it IS the broadcaster).
+            // Local Date.now() is fine here; ordering inside the host's own
+            // panel is the only thing that depends on this timestamp.
+            dispatchChatReceivedLocally({
+              id: recordId,
+              kind: 'user',
+              memberId: currentSelfMemberId,
+              memberDisplayName: currentSelfDisplayName,
+              body,
+              timestamp: Date.now(),
+            });
+          }
+        },
+        openManageChat: () => {
+          void vscode.commands.executeCommand('versioncon.manageChat');
+        },
+        getConnectionStatus: () => currentConnectionStatus,
+      });
+
+      // Wire the panel's view-state changes so unread badges clear when
+      // the panel becomes active. createOrShow returns void; the singleton
+      // is exposed via ChatPanel.currentPanel.
+      ChatPanel.currentPanel?.onDidChangeViewState((active) => {
+        chatPanelIsActive = active;
+        if (active) {
+          unreadChatCount = 0;
+          statusBarManager?.setUnreadCount(0);
+          activityLogProvider?.setUnread(0);
+        }
+      });
+    }),
+  );
+
+  // Plan 04-11 owns the manageChat QuickPick implementation. Register a
+  // placeholder command here so the package.json menu binding doesn't fire
+  // an "unknown command" error when invoked from the activity-log title bar.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('versioncon.manageChat', () => {
+      void vscode.window.showInformationMessage(
+        'VersionCon: Manage Chat (coming in Plan 04-11).',
+      );
+    }),
+  );
+
   // --- Helper: wire host events to UI ---
   function wireHostEvents(host: SessionHost, sessionName: string): void {
     activeHost = host;
@@ -184,6 +314,11 @@ export function activate(context: vscode.ExtensionContext): void {
       host.setPushHistory(activePushHistory);
     }
     statusBarManager.setStatus('connected', sessionName);
+    // Phase 4 (Plan 04-10): reflect host-session connected state into the
+    // module-level mirror so ChatPanel.refs.getConnectionStatus() returns
+    // 'connected' immediately after a host session starts.
+    currentConnectionStatus = 'connected';
+    ChatPanel.currentPanel?.setConnectionStatus('connected');
     // Phase 4: host runs as 'local-user' for permission checks; mirror that into
     // the self-identity fields used by the activity log + presence broadcasts.
     currentSelfMemberId = hostMemberId;
@@ -222,6 +357,12 @@ export function activate(context: vscode.ExtensionContext): void {
     host.on('session-ended', () => {
       activeHost = null;
       statusBarManager.setStatus('disconnected');
+      // Phase 4 (Plan 04-10): mirror disconnected status + clear chat cache;
+      // the chat panel's banner switches to "Disconnected. Messages won't
+      // send until you reconnect." per UI-SPEC §7.3.
+      currentConnectionStatus = 'disconnected';
+      clientChatRecords.length = 0;
+      ChatPanel.currentPanel?.setConnectionStatus('disconnected');
       // Phase 4: drop everyone from the presence panel + reset connected context.
       presenceTreeProvider?.clear();
       presenceTreeProvider?.setSelfMemberId(null);
@@ -247,6 +388,9 @@ export function activate(context: vscode.ExtensionContext): void {
     activeClient = client;
     const info = client.getSessionInfo();
     statusBarManager.setStatus('connected', info?.name);
+    // Phase 4 (Plan 04-10): mirror connected status for ChatPanel refs.
+    currentConnectionStatus = 'connected';
+    ChatPanel.currentPanel?.setConnectionStatus('connected');
     // Phase 4: capture self identity from the authenticated SessionClient so
     // activity-log isMine flags + presence-update broadcasts use the real id
     // (not the 'local-user' placeholder used by host-side commands).
@@ -290,6 +434,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
     client.on('connection-changed', (data: { status: ConnectionStatus; error?: string }) => {
       statusBarManager.setStatus(data.status, info?.name);
+      // Phase 4 (Plan 04-10): mirror status into module scope so the chat
+      // panel's reconnecting / disconnected banners follow the live state.
+      currentConnectionStatus = data.status;
+      ChatPanel.currentPanel?.setConnectionStatus(data.status);
       sidebarProvider.updateState({
         connectionStatus: data.status,
         error: data.status === 'disconnected' ? (data.error ?? 'Connection lost') : null,
@@ -442,31 +590,55 @@ export function activate(context: vscode.ExtensionContext): void {
       // push-received / push-reverted / branch-created already feed the activity
       // log via their dedicated client events above. We only need to surface USER
       // chat messages here as unread badges; system events are already accounted for.
+      clientChatRecords.push(record);
       if (record.kind === 'user' && !chatPanelIsActive) {
         unreadChatCount += 1;
         statusBarManager?.setUnreadCount(unreadChatCount);
         activityLogProvider?.setUnread(unreadChatCount);
       }
-      // Plan 04-10 (chat panel) will append the record to the panel here.
+      // Plan 04-10: forward to chat panel iff the panel is open.
+      ChatPanel.currentPanel?.postChatMessage(record);
     });
 
-    client.on('chat-cleared', () => {
-      // Host wiped the chat for everyone (UI-SPEC §7.3). Clear unread state and
-      // let the activity tree drop the sticky row. Plan 04-10 will also clear
-      // the chat panel.
+    client.on('chat-cleared', (data: { hostMemberId: string; hostDisplayName: string }) => {
+      // Host wiped the chat for everyone (UI-SPEC §7.3). Clear local cache,
+      // unread state, and the sticky tree row. Then forward to the panel +
+      // surface the info toast.
+      clientChatRecords.length = 0;
       unreadChatCount = 0;
       statusBarManager?.setUnreadCount(0);
       activityLogProvider?.setUnread(0);
+      ChatPanel.currentPanel?.notifyChatCleared(data.hostDisplayName);
+      void vscode.window.showInformationMessage(
+        `${data.hostDisplayName} cleared the chat for everyone.`,
+      );
     });
 
-    client.on('chat-truncated', () => {
-      // Plan 04-10 (chat panel) re-renders the trimmed dataset. No status-bar
-      // side effect required at this layer.
+    client.on('chat-truncated', (data: {
+      mode: 'keep-100-and-activity' | 'activity-only';
+      hostMemberId: string;
+      hostDisplayName: string;
+    }) => {
+      // Drop the local cache; the next chat-history event (or live messages
+      // from the host) will reseed it. Webview shows empty in the interim.
+      clientChatRecords.length = 0;
+      ChatPanel.currentPanel?.notifyChatTruncated(data.hostDisplayName, data.mode);
+      const modeText = data.mode === 'keep-100-and-activity'
+        ? 'keeping last 100 + activity'
+        : 'keeping activity only';
+      void vscode.window.showInformationMessage(
+        `${data.hostDisplayName} truncated the chat (${modeText}).`,
+      );
     });
 
-    client.on('chat-history', () => {
-      // Plan 04-10 (chat panel) installs the snapshot. Host fires this once on
-      // join after state-sync (RESEARCH Open Q #2).
+    client.on('chat-history', (data: { branch: string; records: ChatRecord[] }) => {
+      // Replace the local cache with the host's snapshot (last 100 records
+      // by Plan 04-04 contract). RESEARCH Open Q #2 ordering is
+      // auth-response → state-sync → chat-history, so we may receive this
+      // before the panel is open; the cache is still primed for next open.
+      clientChatRecords.length = 0;
+      for (const r of data.records) clientChatRecords.push(r);
+      ChatPanel.currentPanel?.setHistory(clientChatRecords.slice());
     });
   }
 
@@ -521,6 +693,11 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     statusBarManager.setStatus('disconnected');
+    // Phase 4 (Plan 04-10): mirror disconnected status into the chat panel
+    // and drop the local cache. The next session reseeds via chat-history.
+    currentConnectionStatus = 'disconnected';
+    clientChatRecords.length = 0;
+    ChatPanel.currentPanel?.setConnectionStatus('disconnected');
     sidebarProvider.updateState({
       connectionStatus: 'disconnected',
       sessionName: null,
@@ -548,6 +725,11 @@ export function activate(context: vscode.ExtensionContext): void {
     // Initialize branch manager
     const branchManager = new BranchManager(versionconDir);
     const workspaceState = new WorkspaceState();
+    // Phase 4 (Plan 04-10): bind the ExtensionContext so chatHiddenBefore is
+    // restored from per-user workspaceState; expose via module-level ref so
+    // versioncon.openChat (registered at activate scope) can read the cutoff.
+    workspaceState.bindContext(context);
+    workspaceStateRef = workspaceState;
 
     // Placeholder memberId — replaced when session is active
     let currentMemberId = 'local-user';

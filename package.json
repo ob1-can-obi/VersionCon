@@ -40,6 +40,10 @@
         {
           "id": "versioncon.branchList",
           "name": "All Branches"
+        },
+        {
+          "id": "versioncon.activityLog",
+          "name": "Activity"
         }
       ]
     },
@@ -149,6 +153,17 @@
         "command": "versioncon.refreshWorkspaceTree",
         "title": "Refresh",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "versioncon.refreshActivityLog",
+        "title": "Refresh",
+        "icon": "$(refresh)",
+        "category": "VersionCon"
+      },
+      {
+        "command": "versioncon.activityLog.openEntry",
+        "title": "Open Activity Entry",
+        "category": "VersionCon"
       }
     ],
     "menus": {
@@ -204,6 +219,11 @@
           "command": "versioncon.refreshWorkspaceTree",
           "when": "view == versioncon.workspaceTree",
           "group": "navigation@4"
+        },
+        {
+          "command": "versioncon.refreshActivityLog",
+          "when": "view == versioncon.activityLog",
+          "group": "navigation"
         }
       ]
     },
@@ -215,6 +235,16 @@
       {
         "view": "versioncon.workspaceTree",
         "contents": "No files in workspace yet.\nClick the arrow (→) on a branch file to add it here.\nStage files with (←), then push with the upload button.\n\nTip: Drag this panel to the secondary sidebar for a split view."
+      },
+      {
+        "view": "versioncon.activityLog",
+        "contents": "Not connected.\nActivity from your team will appear here once you're in a session.\n[Host Session](command:versioncon.hostSession)\n[Join Session](command:versioncon.joinSession)",
+        "when": "!versioncon.connected"
+      },
+      {
+        "view": "versioncon.activityLog",
+        "contents": "No activity yet.\nPushes, reverts, and new branches show up here as your team works.",
+        "when": "versioncon.connected && versioncon.activityLog.empty"
       }
     ]
   },

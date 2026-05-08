@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: context exhaustion at 75% (2026-05-05)
-last_updated: "2026-05-08T01:44:26Z"
-last_activity: "2026-05-08 -- Plan 04-01 complete: Phase 4 wire protocol + chat/presence types + 11 round-trip tests"
+last_updated: "2026-05-08T01:51:35Z"
+last_activity: "2026-05-08 -- Plan 04-06 complete: pure-fn computeFileOverlap + getOpenTabPaths + 12 unit tests (152 passing)"
 progress:
   total_phases: 9
   completed_phases: 2
   total_plans: 32
-  completed_plans: 18
-  percent: 56
+  completed_plans: 19
+  percent: 59
 ---
 
 # Project State
@@ -26,31 +26,31 @@ See: .planning/PROJECT.md (updated 2026-05-04)
 ## Current Position
 
 Phase: 4 (Presence, Chat + File-Level Conflict Notifications) — EXECUTING
-Plan: 2 of 11
-Status: Executing Phase 4 — Plan 04-01 complete, advancing to 04-02
-Next: Plan 04-02 (ChatLog persistence) — wave 1 contracts now in place for downstream consumers.
-Last activity: 2026-05-08 -- Plan 04-01 complete: Phase 4 wire protocol + chat/presence types + 11 round-trip tests
+Plan: 3 of 11
+Status: Executing Phase 4 — Plan 04-06 complete; 04-01 + 04-06 shipped, remaining wave-1/wave-2 plans queued
+Next: Plan 04-02 (ChatLog persistence) — wave 1 contracts in place; 04-06 utility now available for Plan 04-09 consumer.
+Last activity: 2026-05-08 -- Plan 04-06 complete: pure-fn computeFileOverlap + getOpenTabPaths + 12 unit tests (152 passing)
 
-Progress: [█████░░░░░] 56%
+Progress: [██████░░░░] 59%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 7
-- Average duration: 4.1 min
-- Total execution time: 0.48 hours
+- Total plans completed: 8
+- Average duration: 4.0 min
+- Total execution time: 0.53 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 6 | 23 min | 3.8 min |
-| 04 | 1 | 6 min | 6 min |
+| 04 | 2 | 9 min | 4.5 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 01-02 (5 min), 01-03 (5 min), 01-07 (3 min), 01-08 (3 min), 04-01 (6 min)
+- Last 5 plans: 01-03 (5 min), 01-07 (3 min), 01-08 (3 min), 04-01 (6 min), 04-06 (3 min)
 - Trend: steady
 
 *Updated after each plan completion*
@@ -76,6 +76,10 @@ Recent decisions affecting current work:
 - [Plan 04-01]: ChatRecord.meta.affectsLocal is computed client-side only — JSDoc documents non-persistence (T-04-01-03).
 - [Plan 04-01]: PresenceInfo.activeFilePath uses 'string | null' rather than 'string | undefined' so the value travels through JSON cleanly.
 - [Plan 04-01]: VALID_TYPES gate test verifies T-04-01-02 mitigation — invented chat-* types are rejected at the parser layer.
+- [Plan 04-06]: computeFileOverlap takes platform as injectable arg so darwin/linux/win32 branches all unit-test on any host OS.
+- [Plan 04-06]: pathLib selection inside the function (path.win32 vs path.posix) decouples relative-path correctness from the runtime OS — reproducible win32 tests on macOS CI.
+- [Plan 04-06]: Path normalization splits on both path.sep and backslash so synthetic win32 inputs normalize correctly when the host platform differs (deviation Rule 2 — correctness improvement, no behavior change in production).
+- [Plan 04-06]: TabInputTextDiff in getOpenTabPaths includes BOTH original and modified URIs — user clearly cares about both files visible in the diff view.
 
 ### Pending Todos
 
@@ -98,6 +102,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-08T01:44:26Z
-Stopped at: Completed plan 04-01 (Phase 4 sequential execution in progress)
+Last session: 2026-05-08T01:51:35Z
+Stopped at: Completed plan 04-06 (Phase 4 sequential execution in progress)
 Resume file: None

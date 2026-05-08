@@ -185,6 +185,30 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider('versioncon.activityLog', activityLogProvider),
   );
 
+  // First activation in this workspace: nudge the Team Sync container to the
+  // secondary (right) sidebar. VS Code does not let extensions declare an
+  // aux-bar default in package.json — viewsContainers only accepts
+  // 'activitybar' or 'panel'. Best-effort: invoke moveViewToAuxiliaryBar
+  // once, gated by workspaceState so a later drag back to the primary bar
+  // is sticky on subsequent reloads. Wrapped in try/catch because the
+  // command id is not part of the stable public API and may rename or be
+  // unavailable on older VS Code; failure must not break activation.
+  if (!context.workspaceState.get<boolean>('versioncon.movedToAux')) {
+    setTimeout(() => {
+      void (async () => {
+        try {
+          await vscode.commands.executeCommand(
+            'workbench.action.moveViewToAuxiliaryBar',
+            { viewId: 'workbench.view.extension.versioncon' },
+          );
+        } catch (err) {
+          console.error('[versioncon] moveViewToAuxiliaryBar failed', err);
+        }
+        await context.workspaceState.update('versioncon.movedToAux', true);
+      })();
+    }, 0);
+  }
+
   // --- Phase 4: starting context keys for viewsWelcome `when` clauses ---
   void vscode.commands.executeCommand('setContext', 'versioncon.connected', false);
   void vscode.commands.executeCommand('setContext', 'versioncon.activityLog.empty', true);

@@ -1330,7 +1330,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
             // Broadcast to network if session active
             if (activeHost) {
-              activeHost.broadcastPush(record);
+              // Plan 04-15 (CR-02-NEW closure): broadcastPush returns the system
+              // ChatRecord; echo it into the host's own ChatPanel since the host
+              // does NOT receive its own broadcast over the wire (mirrors line 285
+              // for user messages).
+              const systemRecord = activeHost.broadcastPush(record);
+              dispatchChatReceivedLocally(systemRecord);
             }
           } catch (err) {
             const msg = err instanceof Error ? err.message : 'Push failed';
@@ -1394,7 +1399,9 @@ export function activate(context: vscode.ExtensionContext): void {
             if (activeHost) {
               const record = pushHistory.getRecord(pushId);
               if (record) {
-                activeHost.broadcastRevert(record);
+                // Plan 04-15 (CR-02-NEW closure): echo system event into host's panel.
+                const systemRecord = activeHost.broadcastRevert(record);
+                dispatchChatReceivedLocally(systemRecord);
               }
             }
           } catch (err) {
@@ -1437,7 +1444,9 @@ export function activate(context: vscode.ExtensionContext): void {
             if (activeHost) {
               const fullRecord = pushHistory.getRecord(pushId);
               if (fullRecord) {
-                activeHost.broadcastRevert(fullRecord);
+                // Plan 04-15 (CR-02-NEW closure): echo system event into host's panel.
+                const systemRecord = activeHost.broadcastRevert(fullRecord);
+                dispatchChatReceivedLocally(systemRecord);
               }
             }
 
@@ -1473,7 +1482,9 @@ export function activate(context: vscode.ExtensionContext): void {
             void vscode.window.showInformationMessage(`Branch "${name}" created from "${activeBranch}".`);
 
             if (activeHost) {
-              activeHost.broadcastBranchCreated(info);
+              // Plan 04-15 (CR-02-NEW closure): echo system event into host's panel.
+              const systemRecord = activeHost.broadcastBranchCreated(info);
+              dispatchChatReceivedLocally(systemRecord);
             }
           } catch (err) {
             const msg = err instanceof Error ? err.message : 'Failed to create branch';

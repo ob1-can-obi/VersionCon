@@ -697,10 +697,16 @@ export class SessionHost implements SessionEventEmitter {
    * Broadcast a push revert notification to all members.
    *
    * Plan 04-12: ALSO append + broadcast a `subKind: 'revert'` system event
-   * (see broadcastPush for rationale). Body: `{hostDisplayName} reverted
-   * {N} file(s)` per UI-SPEC §6.3.
+   * (see broadcastPush for rationale). Body: `{record.memberDisplayName}
+   * reverted {N} file(s)` per UI-SPEC §6.3.
+   *
+   * Plan 04-15 update (CR-01-NEW closure): body and stamped identity come from
+   * `record.memberDisplayName` / `record.memberId` — the actor for revert is
+   * the original pusher, NOT the host (extension.ts:1440 reverts non-host
+   * members' pushes through the host process).
+   * Returns the persisted ChatRecord (CR-02-NEW closure).
    */
-  broadcastRevert(record: PushRecord): void {
+  broadcastRevert(record: PushRecord): ChatRecord {
     const stampedTs = createTimestamp();
     const filePaths = record.files.map(f => f.relativePath);
     this.broadcast({
@@ -713,12 +719,19 @@ export class SessionHost implements SessionEventEmitter {
       timestamp: stampedTs,
     });
     const fileCount = filePaths.length;
-    const body = `${this.hostDisplayName} reverted ${fileCount} file(s)`;
-    this.appendAndBroadcastSystemEvent('revert', body, stampedTs, {
-      pushId: record.id,
-      branch: record.branch,
-      files: filePaths,
-    });
+    const body = `${record.memberDisplayName} reverted ${fileCount} file(s)`;
+    return this.appendAndBroadcastSystemEvent(
+      'revert',
+      body,
+      stampedTs,
+      {
+        pushId: record.id,
+        branch: record.branch,
+        files: filePaths,
+      },
+      record.memberId,
+      record.memberDisplayName,
+    );
   }
 
   /**

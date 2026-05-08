@@ -1,6 +1,7 @@
 import { Member, ConnectionStatus, SessionConfig } from './session.js';
 import type { PushFileEntry } from './push.js';
 import type { BranchInfo } from './branch.js';
+import type { ChatRecord, PresenceInfo } from './chat.js';
 
 // All session lifecycle events
 export interface SessionEventMap {
@@ -23,6 +24,18 @@ export interface SessionEventMap {
   // compatible scaffolding for a later plan that wires sync-request/response
   // end-to-end.
   'sync-response': { latestPushId: string | null };
+  // Phase 4: Chat + Presence client events. SessionClient routes the matching
+  // wire messages into these typed events (Plan 04-05).
+  /** Fired when host broadcasts a chat-message — sender is included (no exclude) per RESEARCH Open Q #1. */
+  'chat-received': ChatRecord;
+  /** Host ran "Delete entire chat" — clients clear their panel and show a toast. */
+  'chat-cleared': { hostMemberId: string; hostDisplayName: string };
+  /** Host ran a non-destructive truncation — clients re-render with the trimmed dataset. */
+  'chat-truncated': { mode: 'keep-100-and-activity' | 'activity-only'; hostMemberId: string; hostDisplayName: string };
+  /** Host sends the last-100 + system-events snapshot to a newly authenticated client. */
+  'chat-history': { branch: string; records: ChatRecord[] };
+  /** A remote member's active editor or branch changed; client updates the presence tree. */
+  'presence-update': PresenceInfo;
 }
 
 // Typed event key

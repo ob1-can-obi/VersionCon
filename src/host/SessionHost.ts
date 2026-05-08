@@ -646,6 +646,180 @@ export class SessionHost implements SessionEventEmitter {
   }
 
   // ---------------------------------------------------------------------------
+  // Phase 4: Chat + Presence public API (Plan 04-04)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Wire the active-branch ChatLog reference so the chat-message handler can
+   * persist arriving messages and sendChatHistoryToMember can replay them.
+   * Called by extension.ts after the active branch resolves on session start
+   * AND on every branch switch. Stamps the activeBranch field used by
+   * sendChatHistoryToMember (Task 3) so chat-history messages carry the
+   * correct branch label.
+   */
+  setChatLog(chatLog: ChatLog, branchName: string): void {
+    this.chatLog = chatLog;
+    this.activeBranch = branchName;
+  }
+
+  /**
+   * Upsert the host's own presence slot. Called by extension.ts when the
+   * host's onDidChangeActiveTextEditor fires. Mirror of the path the host
+   * takes for remote presence-update messages, but the host does NOT send
+   * presence-update messages over the wire to itself; extension.ts calls
+   * this directly. Broadcasts to all OTHER members so they see the host's
+   * editor position.
+   */
+  upsertHostPresence(info: PresenceInfo): void {
+    this.presenceMap.upsert(info);
+    // Broadcast to ALL connected members (host's own presence is news to
+    // every connected client). No exclude — there is no ws to skip on the
+    // host side; host is not a connected member from the broadcast's
+    // perspective.
+    this.broadcast({
+      type: 'presence-update',
+      timestamp: createTimestamp(),
+      memberId: info.memberId,
+      displayName: info.displayName,
+      branch: info.branch,
+      activeFilePath: info.activeFilePath,
+    });
+  }
+
+  /** Returns a defensive copy of all known presence entries (Plan 04-08). */
+  getPresenceSnapshot(): PresenceInfo[] {
+    return this.presenceMap.getSnapshot();
+  }
+
+  /**
+   * Broadcast a chat-cleared message to all connected members. Called by
+   * Plan 04-11 (manage-chat QuickPick) AFTER the host runs the local
+   * `chatLog.clearAll()` — this method does NOT mutate disk. Receiving
+   * clients clear their panel and show a toast (UI-SPEC §7.3).
+   */
+  broadcastChatCleared(hostMemberId: string, hostDisplayName: string): void {
+    this.broadcast({
+      type: 'chat-cleared',
+      timestamp: createTimestamp(),
+      hostMemberId,
+      hostDisplayName,
+    });
+  }
+
+  /**
+   * Broadcast a chat-truncated message to all connected members. Called by
+   * Plan 04-11 (manage-chat QuickPick) AFTER the host runs the local
+   * `chatLog.truncateKeepLast100PlusActivity()` or
+   * `chatLog.truncateActivityOnly()`. mode discriminates the two flows
+   * for client-side toast copy.
+   */
+  broadcastChatTruncated(
+    mode: 'keep-100-and-activity' | 'activity-only',
+    hostMemberId: string,
+    hostDisplayName: string,
+  ): void {
+    this.broadcast({
+      type: 'chat-truncated',
+      timestamp: createTimestamp(),
+      mode,
+      hostMemberId,
+      hostDisplayName,
+    });
+  }
+
+  /**
+   * Send the last 100 chat-log records to a specific member as a chat-history
+   * message. Used during the auth handshake (after state-sync) so a joining
+   * member's chat panel populates with history. Per RESEARCH Open Q #2:
+   * order is auth-response → state-sync → chat-history.
+   *
+   * Fire-and-forget: failure is logged but does not propagate so the auth
+   * handshake never blocks on a chat-history send.
+   */
+  async sendChatHistoryToMember(memberId: string, branch: string): Promise<void> {
+    if (!this.chatLog) {
+      return;
+    }
+    const cm = this.members.get(memberId);
+    if (!cm || cm.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const records = this.chatLog.getRecent(100);
+    try {
+      sendMessage((d) => cm.ws.send(d), {
+        type: 'chat-history',
+        timestamp: createTimestamp(),
+        branch,
+        records,
+      });
+    } catch (err) {
+      console.error('[SessionHost] sendChatHistoryToMember failed', err);
+    }
+  }
+
+  /**
+   * Local chat-message path used by Plan 04-10 (chat panel) when the HOST
+   * is the user composing a message. Re-uses the SAME chatLog.append +
+   * broadcast path as the wire handler so the host's own messages are
+   * persisted and fanned out identically to remote messages — single
+   * source of truth for persistence and fan-out.
+   *
+   * The caller (extension.ts) supplies recordId/kind/body/meta; this method
+   * stamps a host-arrival timestamp and uses the host's own memberId +
+   * displayName (resolved from hostMemberId / hostDisplayName).
+   *
+   * Plan 04-10 Task 4 calls this from extension.ts via
+   * `activeHost.handleLocalChatMessage(msg)` — ownership of this method
+   * lives here in Plan 04-04 because the persistence path lives here.
+   */
+  async handleLocalChatMessage(msg: {
+    recordId: string;
+    kind: 'user' | 'system';
+    subKind?: SystemEventSubKind;
+    body: string;
+    meta?: { pushId?: string; branch?: string; files?: string[] };
+  }): Promise<void> {
+    const stampedTs = createTimestamp();
+    // Use the host's authenticated id + displayName. If the host has not
+    // yet authenticated as a member (hostMemberId still null), fall back to
+    // a stable host marker so persistence/broadcast still proceed — the
+    // host process is the trusted source whether or not it has self-auth'd.
+    const memberId = this.hostMemberId ?? 'host';
+    const displayName = this.hostDisplayName;
+    if (this.chatLog) {
+      const record: ChatRecord = {
+        id: msg.recordId,
+        kind: msg.kind,
+        ...(msg.subKind !== undefined ? { subKind: msg.subKind } : {}),
+        memberId,
+        memberDisplayName: displayName,
+        body: msg.body,
+        timestamp: stampedTs,
+        ...(msg.meta !== undefined ? { meta: msg.meta } : {}),
+      };
+      try {
+        await this.chatLog.append(record);
+      } catch (err) {
+        console.error('[SessionHost] handleLocalChatMessage append failed', err);
+      }
+    }
+    // Broadcast to ALL connected members (no exclude). Remote clients can't
+    // distinguish a host-local message from any other chat-message; the
+    // record shape is identical.
+    this.broadcast({
+      type: 'chat-message',
+      timestamp: stampedTs,
+      recordId: msg.recordId,
+      kind: msg.kind,
+      ...(msg.subKind !== undefined ? { subKind: msg.subKind } : {}),
+      memberId,
+      memberDisplayName: displayName,
+      body: msg.body,
+      ...(msg.meta !== undefined ? { meta: msg.meta } : {}),
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // Phase 3: Member tracking + permission relay + sync handlers
   // ---------------------------------------------------------------------------
 

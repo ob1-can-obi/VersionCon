@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+import * as childProcess from 'child_process';
 import { SessionHost } from '../host/SessionHost.js';
 import {
   getLocalIPv4,
@@ -11,7 +13,7 @@ import {
 import { generateInviteCode } from '../utils/id.js';
 import { SecretStore } from '../storage/SecretStore.js';
 import { DiscoveryManager } from '../network/discovery.js';
-import type { SessionConfig } from '../types/session.js';
+import type { HostIdentity, SessionConfig } from '../types/session.js';
 
 /**
  * Full state of the host setup wizard.
@@ -22,6 +24,7 @@ import type { SessionConfig } from '../types/session.js';
 interface WizardState {
   step: 1 | 2 | 3 | 4; // 4 = "share with team" completion screen
   sessionName: string;
+  displayName: string; // Plan 04.1-03 (Defect A closure): host's display name
   port: number;
   networkInterface: string;
   availableInterfaces: Array<{ name: string; address: string }>;
@@ -56,7 +59,7 @@ export class WizardPanel {
   private discoveryManager: DiscoveryManager | null = null;
   private readonly context: vscode.ExtensionContext;
   private readonly onSessionStartedCallback:
-    | ((host: SessionHost, sessionName: string) => void)
+    | ((host: SessionHost, sessionName: string, hostIdentity: HostIdentity) => void)
     | null;
   private readonly disposables: vscode.Disposable[] = [];
 
@@ -67,9 +70,68 @@ export class WizardPanel {
    * @param onSessionStarted - Callback invoked when a session is successfully started.
    *   Plan 06 uses this to wire sidebar updates.
    */
+  /**
+   * Resolve the host's default displayName via a four-step priority chain
+   * (Plan 04.1-03 — Defect A closure):
+   *   1. `versioncon.displayName` from workspace settings (non-empty after trim)
+   *   2. `git config user.name` (best-effort, 1s timeout, silently falls through)
+   *   3. `os.userInfo().username`
+   *   4. The literal 'Host'
+   *
+   * Defensive: any thrown error in the git lookup falls through to step 3.
+   * The workspace-folder cwd narrows git scope to the user's repo (so a
+   * machine-wide git config is honored even when a multi-repo VS Code window
+   * is open).
+   */
+  private static resolveDefaultDisplayName(): string {
+    // Step 1: workspace settings
+    const fromSettings = vscode.workspace
+      .getConfiguration('versioncon')
+      .get<string>('displayName');
+    if (fromSettings && fromSettings.trim().length > 0) {
+      return fromSettings.trim();
+    }
+
+    // Step 2: git config user.name
+    try {
+      const cwd =
+        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+      const result = childProcess.execFileSync(
+        'git',
+        ['config', 'user.name'],
+        {
+          cwd,
+          timeout: 1000,
+          encoding: 'utf-8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        },
+      );
+      const trimmed = result.trim();
+      if (trimmed.length > 0) {
+        return trimmed;
+      }
+    } catch {
+      // ENOENT (git not installed), timeout, non-zero exit, or non-git
+      // workspace — silently fall through.
+    }
+
+    // Step 3: OS username
+    try {
+      const username = os.userInfo().username;
+      if (username && username.length > 0) {
+        return username;
+      }
+    } catch {
+      // OS userInfo can throw on some sandboxes — fall through.
+    }
+
+    // Step 4: literal fallback
+    return 'Host';
+  }
+
   static async createOrShow(
     context: vscode.ExtensionContext,
-    onSessionStarted?: (host: SessionHost, sessionName: string) => void,
+    onSessionStarted?: (host: SessionHost, sessionName: string, hostIdentity: HostIdentity) => void,
   ): Promise<void> {
     // If the panel already exists, just reveal it
     if (WizardPanel.currentPanel) {
@@ -92,6 +154,7 @@ export class WizardPanel {
     const initialState: WizardState = {
       step: 1,
       sessionName: '',
+      displayName: WizardPanel.resolveDefaultDisplayName(),
       port: freePort,
       networkInterface: primaryInterface,
       availableInterfaces: interfaces,
@@ -129,7 +192,9 @@ export class WizardPanel {
     panel: vscode.WebviewPanel,
     context: vscode.ExtensionContext,
     initialState: WizardState,
-    onSessionStarted: ((host: SessionHost, sessionName: string) => void) | null,
+    onSessionStarted:
+      | ((host: SessionHost, sessionName: string, hostIdentity: HostIdentity) => void)
+      | null,
   ) {
     this.panel = panel;
     this.context = context;
@@ -319,7 +384,7 @@ export class WizardPanel {
 
     switch (this.state.step) {
       case 1: {
-        // Validate session name
+        // Validate session name (existing — preserved)
         const sessionName =
           typeof payload.sessionName === 'string'
             ? payload.sessionName.trim()
@@ -335,7 +400,51 @@ export class WizardPanel {
           this.sendStateUpdate();
           return;
         }
+
+        // Plan 04.1-03 (Defect A closure): validate display name.
+        const displayName =
+          typeof payload.displayName === 'string'
+            ? payload.displayName.trim()
+            : '';
+        if (displayName.length === 0) {
+          this.state.error = 'Display name is required.';
+          this.sendStateUpdate();
+          return;
+        }
+        if (displayName.length > 64) {
+          this.state.error =
+            'Display name must be 64 characters or fewer.';
+          this.sendStateUpdate();
+          return;
+        }
+        // Reject control characters (U+0000-U+001F and U+007F DEL) — they
+        // would render as garbage in chat / presence and could be used to
+        // craft visually-deceptive names. Same posture as plan 04-13's body
+        // validation for chat-message frames.
+        if (/[\u0000-\u001F\u007F]/.test(displayName)) {
+          this.state.error =
+            'Display name cannot contain control characters.';
+          this.sendStateUpdate();
+          return;
+        }
+
         this.state.sessionName = sessionName;
+        this.state.displayName = displayName;
+
+        // Persist to workspace settings so the next session in this workspace
+        // pre-fills with the user's prior choice. Workspace scope (NOT global)
+        // — different workspaces can have different identities.
+        void vscode.workspace
+          .getConfiguration('versioncon')
+          .update(
+            'displayName',
+            displayName,
+            vscode.ConfigurationTarget.Workspace,
+          )
+          .then(undefined, () => {
+            /* settings update failures are non-fatal */
+          });
+
         this.state.step = 2;
         break;
       }
@@ -422,12 +531,19 @@ export class WizardPanel {
         inviteCode: this.state.inviteCode,
       };
 
-      // Create and start SessionHost
-      const hostDisplayName =
-        vscode.workspace
-          .getConfiguration('versioncon')
-          .get<string>('displayName') ?? 'Host';
-      this.sessionHost = new SessionHost(config, hostDisplayName);
+      // Plan 04.1-03 (Defect A + B closure): pre-allocate the host's identity
+      // BEFORE constructing SessionHost. memberId + hostAuthSecret are random
+      // UUIDs (122 bits each). The displayName comes from the wizard step 1
+      // input (Plan 04.1-03 added that field). The triple is passed to the
+      // SessionHost constructor (Plan 04.1-02 widened the signature) AND
+      // forwarded to the onSessionStarted callback so extension.ts can mirror
+      // memberId for admin gates.
+      const hostIdentity: HostIdentity = {
+        memberId: crypto.randomUUID(),
+        displayName: this.state.displayName,
+        hostAuthSecret: crypto.randomUUID(),
+      };
+      this.sessionHost = new SessionHost(config, hostIdentity);
       const actualPort = await this.sessionHost.start();
 
       // Update state to show share screen
@@ -453,11 +569,14 @@ export class WizardPanel {
       // Push updated state to webview (share screen)
       this.sendStateUpdate();
 
-      // Call the onSessionStarted callback (Plan 06 integration point)
+      // Call the onSessionStarted callback (Plan 06 integration point).
+      // Plan 04.1-03: pass the pre-allocated hostIdentity so extension.ts can
+      // store it at module scope (activeHostIdentity) for forward-compat.
       if (this.onSessionStartedCallback && this.sessionHost) {
         this.onSessionStartedCallback(
           this.sessionHost,
           this.state.sessionName,
+          hostIdentity,
         );
       }
     } catch (err) {

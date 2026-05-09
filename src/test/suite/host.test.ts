@@ -2004,3 +2004,515 @@ suite('Phase 4.1 host pre-registration', () => {
     await alice.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 4.1 cross-cutting regression (Plan 04.1-04)
+//
+// End-to-end regression coverage for Phase 4.1 (host-identity-and-creation-
+// wizard): proves both defects are closed and Phase 4 closures (CR-01-NEW,
+// CR-02-NEW, CR-03-NEW from plan 04-15; CR-01/CR-02/CR-03 from plan 04-13)
+// are preserved under the new HostIdentity model.
+//
+// Test layout:
+//   1. Wizard contract (Defect A) — source-grep on WizardPanel.ts
+//   2. Defect B race protection (live integration with HostIdentity)
+//   3. CR-01-NEW preservation for broadcastPush
+//   4. CR-01-NEW preservation for broadcastRevert
+//   5. CR-01-NEW preservation for broadcastBranchCreated (members-map + fallback)
+//   6. CR-02-NEW preservation (return-and-echo contract via record.id)
+//   7. CR-03-NEW preservation (segment-aware path validator)
+//   8. Secret hygiene — hostAuthSecret never in chatLog.getRecords() JSON
+//   9. Secret hygiene — hostAuthSecret never in wire envelopes (push-notification, chat-message)
+//  10. Length-mismatch attack — wrong-length secret does not crash, role:'member'
+//  11. IIFE admin-bypass invariant — extension.ts hostMemberId stays 'local-user' (Plan 04.1-03 T4 pin)
+// ---------------------------------------------------------------------------
+
+suite('Phase 4.1 cross-cutting regression', () => {
+  // -------------------------------------------------------------------------
+  // Test 1 — Wizard contract (Defect A): source-grep on WizardPanel.ts.
+  // Per STATE.md decisions table '[Plan 04-11]: UI-SPEC literal verification
+  // via source-grep tests', wizard webview behavior is verified at the
+  // source level (the webview itself requires multi-window UAT).
+  // -------------------------------------------------------------------------
+  test('Defect A — WizardPanel.ts implements default-resolution chain (settings → git → os → Host)', () => {
+    // Lazy import — fs/sync is OK for source-introspection tests.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fsSync = require('fs') as typeof import('fs');
+    const wizardPath = path.resolve(process.cwd(), 'src/ui/WizardPanel.ts');
+    assert.ok(fsSync.existsSync(wizardPath), `WizardPanel.ts not found at ${wizardPath}`);
+    const src = fsSync.readFileSync(wizardPath, 'utf-8');
+
+    // The four steps of the default-resolution chain.
+    assert.match(src, /resolveDefaultDisplayName/, 'helper method declared');
+    assert.match(src, /vscode\.workspace[\s\S]{0,200}getConfiguration\('versioncon'\)[\s\S]{0,200}\.get<string>\('displayName'\)/,
+      'step 1: workspace settings lookup');
+    assert.match(src, /execFileSync\(\s*['"]git['"]\s*,\s*\[\s*['"]config['"]\s*,\s*['"]user\.name['"]\s*\]/,
+      'step 2: git config user.name lookup with execFileSync (no shell)');
+    assert.match(src, /os\.userInfo\(\)/, 'step 3: os.userInfo() fallback');
+    assert.match(src, /return ['"]Host['"]/, "step 4: literal 'Host' fallback");
+
+    // Validation rules.
+    assert.match(src, /Display name is required/, 'non-empty validation');
+    assert.match(src, /Display name must be 64 characters/, '64-char cap validation');
+    assert.match(src, /Display name cannot contain control characters/, 'control-char rejection');
+
+    // Persistence.
+    assert.match(src, /ConfigurationTarget\.Workspace/, 'workspace-scoped settings persistence');
+
+    // HostIdentity allocation in handleWizardComplete.
+    assert.match(src, /memberId:\s*crypto\.randomUUID\(\)/, 'memberId allocated via crypto.randomUUID');
+    assert.match(src, /hostAuthSecret:\s*crypto\.randomUUID\(\)/, 'hostAuthSecret allocated via crypto.randomUUID');
+    assert.match(src, /new SessionHost\(config,\s*hostIdentity\)/, 'SessionHost constructed with HostIdentity');
+
+    // Negative — old defect path is gone.
+    assert.doesNotMatch(src, /new SessionHost\(config,\s*hostDisplayName\)/,
+      'old hostDisplayName-string call site removed (Defect A closed)');
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 2 — Defect B race protection (integration). Boot host with a
+  // freshly-allocated HostIdentity (mirroring what WizardPanel does at
+  // runtime). Connect a remote BEFORE any loopback host client. Assert
+  // role:'member'.
+  // -------------------------------------------------------------------------
+  test('Defect B — remote that connects FIRST never gets host role under HostIdentity model', async () => {
+    const hostIdentity = makeHostIdentity('LocalHostUser');
+    const config: SessionConfig = {
+      sessionName: 'Phase4.1CrossCutting',
+      port: 0,
+      networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD,
+      inviteCode: INVITE,
+    };
+    const host = new SessionHost(config, hostIdentity);
+    const port = await host.start();
+
+    // Connect a remote BEFORE any loopback. Pre-Phase-4.1 this would have
+    // been first-authenticated and gotten role:'host'.
+    const remote = await connectClient(port, 'RemoteAttacker');
+    const members = host.getMembers();
+    const remoteMember = members.find(m => m.id === remote.memberId);
+    assert.ok(remoteMember, 'remote member is in the members list');
+    assert.strictEqual(remoteMember!.role, 'member',
+      'first-to-authenticate remote receives role:member under HostIdentity model');
+
+    await remote.close();
+    host.stop();
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 3 — CR-01-NEW preservation for broadcastPush.
+  // -------------------------------------------------------------------------
+  test('CR-01-NEW preserved — broadcastPush body uses record.memberDisplayName under HostIdentity model', async () => {
+    const hostIdentity = makeHostIdentity('TheHost');
+    const tmpDir = path.join(os.tmpdir(), `vc-04-1-04-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const branchDir = path.join(tmpDir, 'branch');
+    await fs.mkdir(branchDir, { recursive: true });
+    const chatLog = new ChatLog(branchDir);
+    await chatLog.load();
+    const config: SessionConfig = {
+      sessionName: 'Phase4.1CC',
+      port: 0,
+      networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD,
+      inviteCode: INVITE,
+    };
+    const host = new SessionHost(config, hostIdentity);
+    host.setChatLog(chatLog, 'main');
+    const port = await host.start();
+
+    const alice = await connectClient(port, 'Alice');
+
+    const pushRecord: PushRecord = {
+      id: 'p-cc-01',
+      memberId: 'mem-bob',
+      memberDisplayName: 'Bob',
+      message: 'fix',
+      branch: 'main',
+      files: [{ relativePath: 'src/foo.ts', status: 'modified', addedLines: 1, removedLines: 0 } as PushFileEntry],
+      timestamp: Date.now(),
+      reverted: false,
+    };
+    const returned = host.broadcastPush(pushRecord);
+    assert.strictEqual(returned.body, 'Bob pushed 1 file(s)');
+    assert.strictEqual(returned.memberDisplayName, 'Bob');
+    assert.strictEqual(returned.memberId, 'mem-bob');
+    assert.ok(!returned.body.includes(hostIdentity.displayName),
+      "host's pre-allocated displayName must not leak into push body");
+    assert.ok(!returned.body.includes(hostIdentity.memberId),
+      "host's pre-allocated memberId must not leak into push body");
+
+    await alice.close();
+    host.stop();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 4 — CR-01-NEW preservation for broadcastRevert.
+  // -------------------------------------------------------------------------
+  test('CR-01-NEW preserved — broadcastRevert body uses record.memberDisplayName under HostIdentity model', async () => {
+    const hostIdentity = makeHostIdentity('TheHost');
+    const tmpDir = path.join(os.tmpdir(), `vc-04-1-04r-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const branchDir = path.join(tmpDir, 'branch');
+    await fs.mkdir(branchDir, { recursive: true });
+    const chatLog = new ChatLog(branchDir);
+    await chatLog.load();
+    const config: SessionConfig = {
+      sessionName: 'Phase4.1CCRevert', port: 0, networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD, inviteCode: INVITE,
+    };
+    const host = new SessionHost(config, hostIdentity);
+    host.setChatLog(chatLog, 'main');
+    const port = await host.start();
+    const alice = await connectClient(port, 'Alice');
+
+    const pushRecord: PushRecord = {
+      id: 'p-cc-revert', memberId: 'mem-bob', memberDisplayName: 'Bob',
+      message: 'revert', branch: 'main',
+      files: [{ relativePath: 'src/foo.ts', status: 'modified', addedLines: 1, removedLines: 0 } as PushFileEntry],
+      timestamp: Date.now(), reverted: true,
+    };
+    const returned = host.broadcastRevert(pushRecord);
+    assert.strictEqual(returned.body, 'Bob reverted 1 file(s)');
+    assert.strictEqual(returned.memberDisplayName, 'Bob');
+    assert.strictEqual(returned.memberId, 'mem-bob');
+    assert.ok(!returned.body.includes(hostIdentity.displayName),
+      "host's pre-allocated displayName must not leak into revert body");
+
+    await alice.close();
+    host.stop();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 5 — CR-01-NEW preservation for broadcastBranchCreated.
+  // -------------------------------------------------------------------------
+  test('CR-01-NEW preserved — broadcastBranchCreated resolves createdBy via members + hostIdentity fallback', async () => {
+    const hostIdentity = makeHostIdentity('TheHost');
+    const tmpDir = path.join(os.tmpdir(), `vc-04-1-04b-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const branchDir = path.join(tmpDir, 'branch');
+    await fs.mkdir(branchDir, { recursive: true });
+    const chatLog = new ChatLog(branchDir);
+    await chatLog.load();
+    const config: SessionConfig = {
+      sessionName: 'Phase4.1CCBranch', port: 0, networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD, inviteCode: INVITE,
+    };
+    const host = new SessionHost(config, hostIdentity);
+    host.setChatLog(chatLog, 'main');
+    const port = await host.start();
+
+    const alice = await connectClient(port, 'Alice');
+    // Wait for Alice to appear in host.members.
+    await waitFor(() => host.getMembers().some(m => m.id === alice.memberId));
+
+    // Path A: createdBy resolves via members map.
+    const branchAlice: BranchInfo = {
+      name: 'feature-x', createdBy: alice.memberId, createdAt: Date.now(), locked: false,
+    };
+    const returnedA = host.broadcastBranchCreated(branchAlice);
+    assert.strictEqual(returnedA.body, "Alice created branch 'feature-x'",
+      "createdBy resolved via members map → 'Alice'");
+    assert.strictEqual(returnedA.memberDisplayName, 'Alice');
+
+    // Path B: createdBy is unknown — fallback to hostIdentity.displayName.
+    const branchUnknown: BranchInfo = {
+      name: 'feature-y', createdBy: 'unknown-mem-id', createdAt: Date.now(), locked: false,
+    };
+    const returnedB = host.broadcastBranchCreated(branchUnknown);
+    assert.strictEqual(returnedB.body, `${hostIdentity.displayName} created branch 'feature-y'`,
+      'unknown createdBy falls back to host displayName from HostIdentity');
+    assert.strictEqual(returnedB.memberDisplayName, hostIdentity.displayName);
+
+    await alice.close();
+    host.stop();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 6 — CR-02-NEW preservation. broadcastPush/Revert/BranchCreated
+  // return non-undefined ChatRecord with stable id; chatLog.getRecords()
+  // contains the same id. The host-self echo at extension.ts call sites
+  // depends on this contract.
+  // -------------------------------------------------------------------------
+  test('CR-02-NEW preserved — broadcast helpers return ChatRecord with stable id matching chat-log record', async () => {
+    const hostIdentity = makeHostIdentity('TheHost');
+    const tmpDir = path.join(os.tmpdir(), `vc-04-1-04echo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const branchDir = path.join(tmpDir, 'branch');
+    await fs.mkdir(branchDir, { recursive: true });
+    const chatLog = new ChatLog(branchDir);
+    await chatLog.load();
+    const config: SessionConfig = {
+      sessionName: 'Phase4.1CCEcho', port: 0, networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD, inviteCode: INVITE,
+    };
+    const host = new SessionHost(config, hostIdentity);
+    host.setChatLog(chatLog, 'main');
+    const port = await host.start();
+    const alice = await connectClient(port, 'Alice');
+
+    const pushRecord: PushRecord = {
+      id: 'p-cc-echo', memberId: 'mem-bob', memberDisplayName: 'Bob',
+      message: 'fix', branch: 'main',
+      files: [{ relativePath: 'src/foo.ts', status: 'modified', addedLines: 1, removedLines: 0 } as PushFileEntry],
+      timestamp: Date.now(), reverted: false,
+    };
+    const returned = host.broadcastPush(pushRecord);
+    assert.ok(returned, 'broadcastPush returned ChatRecord');
+    assert.ok(typeof returned.id === 'string' && returned.id.length > 0, 'returned.id is non-empty string');
+
+    await waitFor(() => chatLog.getRecords().some(r => r.id === returned.id));
+    const matched = chatLog.getRecords().find(r => r.id === returned.id);
+    assert.ok(matched, 'chat-log contains the record with the returned id');
+    assert.strictEqual(matched!.body, returned.body, 'persisted body matches returned body');
+    assert.strictEqual(matched!.memberDisplayName, returned.memberDisplayName);
+
+    await alice.close();
+    host.stop();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 7 — CR-03-NEW preservation. Segment-aware path validator accepts
+  // legitimate '..'-bearing filenames and rejects true directory traversal.
+  // -------------------------------------------------------------------------
+  test('CR-03-NEW preserved — presence-update accepts foo..bar.ts and rejects ../../etc/passwd', async () => {
+    const hostIdentity = makeHostIdentity('TheHost');
+    const config: SessionConfig = {
+      sessionName: 'Phase4.1CCPath', port: 0, networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD, inviteCode: INVITE,
+    };
+    const host = new SessionHost(config, hostIdentity);
+    const port = await host.start();
+    const alice = await connectClient(port, 'Alice');
+    const bob = await connectClient(port, 'Bob');
+
+    // Positive: 'src/foo..bar.ts' must be accepted.
+    const accepted = new Promise<ProtocolMessage>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('positive path timeout')), 500);
+      alice.onMessage((m) => {
+        if (m.type === 'presence-update' && (m as PresenceUpdate).activeFilePath === 'src/foo..bar.ts') {
+          clearTimeout(timer); resolve(m);
+        }
+      });
+    });
+    bob.send({
+      type: 'presence-update', timestamp: Date.now(),
+      memberId: bob.memberId, displayName: 'Bob', branch: 'main',
+      activeFilePath: 'src/foo..bar.ts',
+    });
+    const acceptedFrame = await accepted;
+    assert.strictEqual((acceptedFrame as PresenceUpdate).activeFilePath, 'src/foo..bar.ts',
+      'segment-aware validator accepts legitimate two-period filename');
+
+    // Negative: '../../etc/passwd' must be silently dropped — Alice never sees it.
+    let traversalReceived = false;
+    alice.onMessage((m) => {
+      if (m.type === 'presence-update' && (m as PresenceUpdate).activeFilePath === '../../etc/passwd') {
+        traversalReceived = true;
+      }
+    });
+    bob.send({
+      type: 'presence-update', timestamp: Date.now(),
+      memberId: bob.memberId, displayName: 'Bob', branch: 'main',
+      activeFilePath: '../../etc/passwd',
+    });
+    await new Promise(r => setTimeout(r, 250));
+    assert.strictEqual(traversalReceived, false,
+      'segment-aware validator silently drops directory-traversal segment');
+
+    await alice.close();
+    await bob.close();
+    host.stop();
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 8 — Secret hygiene: hostAuthSecret never appears in chat-log.json.
+  // After broadcasting push/revert/branch-created system events, serialize
+  // chatLog.getRecords() and assert the secret string is absent.
+  // -------------------------------------------------------------------------
+  test('Secret hygiene — hostAuthSecret never persisted in chat-log records', async () => {
+    const hostIdentity = makeHostIdentity('TheHost');
+    const tmpDir = path.join(os.tmpdir(), `vc-04-1-04hyg-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const branchDir = path.join(tmpDir, 'branch');
+    await fs.mkdir(branchDir, { recursive: true });
+    const chatLog = new ChatLog(branchDir);
+    await chatLog.load();
+    const config: SessionConfig = {
+      sessionName: 'Phase4.1CCHyg', port: 0, networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD, inviteCode: INVITE,
+    };
+    const host = new SessionHost(config, hostIdentity);
+    host.setChatLog(chatLog, 'main');
+    const port = await host.start();
+    const alice = await connectClient(port, 'Alice');
+
+    // Push + revert + branch-created.
+    const pushRecord: PushRecord = {
+      id: 'p-hyg', memberId: 'mem-bob', memberDisplayName: 'Bob',
+      message: 'hyg', branch: 'main',
+      files: [{ relativePath: 'src/foo.ts', status: 'modified', addedLines: 1, removedLines: 0 } as PushFileEntry],
+      timestamp: Date.now(), reverted: false,
+    };
+    host.broadcastPush(pushRecord);
+    host.broadcastRevert(pushRecord);
+    host.broadcastBranchCreated({ name: 'feature-hyg', createdBy: hostIdentity.memberId, createdAt: Date.now(), locked: false });
+
+    // Wait for chatLog to capture all three.
+    await waitFor(() => chatLog.getRecords().length >= 3);
+
+    const serialized = JSON.stringify(chatLog.getRecords());
+    assert.ok(!serialized.includes(hostIdentity.hostAuthSecret),
+      'hostAuthSecret never appears in any persisted ChatRecord (T-04.1-01-02 mitigation)');
+
+    await alice.close();
+    host.stop();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 9 — Secret hygiene: hostAuthSecret never broadcast on the wire.
+  // Alice receives push-notification + chat-message envelopes; assert
+  // neither serialized JSON contains the secret.
+  // -------------------------------------------------------------------------
+  test('Secret hygiene — hostAuthSecret never appears in wire envelopes (push-notification, chat-message)', async () => {
+    const hostIdentity = makeHostIdentity('TheHost');
+    const tmpDir = path.join(os.tmpdir(), `vc-04-1-04wire-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const branchDir = path.join(tmpDir, 'branch');
+    await fs.mkdir(branchDir, { recursive: true });
+    const chatLog = new ChatLog(branchDir);
+    await chatLog.load();
+    const config: SessionConfig = {
+      sessionName: 'Phase4.1CCWire', port: 0, networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD, inviteCode: INVITE,
+    };
+    const host = new SessionHost(config, hostIdentity);
+    host.setChatLog(chatLog, 'main');
+    const port = await host.start();
+    const alice = await connectClient(port, 'Alice');
+
+    const collected: ProtocolMessage[] = [];
+    alice.onMessage((m) => { collected.push(m); });
+
+    const pushRecord: PushRecord = {
+      id: 'p-wire', memberId: 'mem-bob', memberDisplayName: 'Bob',
+      message: 'wire', branch: 'main',
+      files: [{ relativePath: 'src/foo.ts', status: 'modified', addedLines: 1, removedLines: 0 } as PushFileEntry],
+      timestamp: Date.now(), reverted: false,
+    };
+    host.broadcastPush(pushRecord);
+
+    // Wait for the two expected wire frames (push-notification, chat-message).
+    await waitFor(() =>
+      collected.some(m => m.type === 'push-notification') &&
+      collected.some(m => m.type === 'chat-message'));
+
+    const wireDump = JSON.stringify(collected);
+    assert.ok(!wireDump.includes(hostIdentity.hostAuthSecret),
+      'hostAuthSecret never appears in any wire envelope received by a member (T-04.1-01-02 wire hygiene)');
+
+    await alice.close();
+    host.stop();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 10 — Length-mismatch attack. A wrong-length hostAuthSecret must
+  // not crash the server (length pre-check before timingSafeEqual); role
+  // must be 'member'. T-04.1-02-01 mitigation evidence.
+  // -------------------------------------------------------------------------
+  test('Defect B — wrong-length hostAuthSecret does not crash server, role:member', async () => {
+    const hostIdentity = makeHostIdentity('TheHost');
+    const config: SessionConfig = {
+      sessionName: 'Phase4.1CCLen', port: 0, networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD, inviteCode: INVITE,
+    };
+    const host = new SessionHost(config, hostIdentity);
+    const port = await host.start();
+
+    // Send auth-request with a clearly-wrong-length secret via raw ws.
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const listeners = new Set<(m: ProtocolMessage) => void>();
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+    ws.on('message', (raw: Buffer) => {
+      try {
+        const msg = JSON.parse(raw.toString()) as ProtocolMessage;
+        for (const fn of listeners) { try { fn(msg); } catch { /* ignore */ } }
+      } catch { /* malformed */ }
+    });
+
+    ws.send(JSON.stringify({
+      type: 'auth-request', timestamp: Date.now(),
+      inviteCode: INVITE, displayName: 'Attacker',
+      hostAuthSecret: 'short',  // 5 chars — UUID is 36 chars; length mismatch
+    }));
+
+    const authResp = await new Promise<ProtocolMessage>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('auth timeout')), 2000);
+      const handler = (m: ProtocolMessage): void => {
+        if (m.type === 'auth-response') { clearTimeout(timer); resolve(m); }
+      };
+      listeners.add(handler);
+    });
+    if (authResp.type !== 'auth-response') throw new Error('typing');
+    assert.ok(authResp.accepted, 'auth still accepted (invite code is the auth gate, not secret)');
+
+    const members = host.getMembers();
+    const member = members.find(m => m.id === authResp.memberId);
+    assert.ok(member, 'authenticated member present in members list');
+    assert.strictEqual(member!.role, 'member',
+      'wrong-length secret → role:member without server crash (length pre-check works)');
+
+    ws.close();
+    host.stop();
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 11 — IIFE admin-bypass invariant. Plan 04.1-03 T4 explicitly KEEPS
+  // `let hostMemberId = 'local-user'` in extension.ts so the IIFE admin-bypass
+  // at lines ~1282, ~1687, ~1768 (currentMemberId !== hostMemberId) resolves
+  // to false on the host's own local commands. SessionHost.this.hostMemberId
+  // is the pre-allocated UUID (post-04.1-02 — the wire-side identity); the
+  // extension.ts hostMemberId is a SEPARATE placeholder used only for the
+  // IIFE bypass. The two are intentionally decoupled. This test pins that
+  // invariant so future refactors cannot silently break the host's local
+  // push/branch permissions.
+  // -------------------------------------------------------------------------
+  test('Test 11 — IIFE admin-bypass invariant: extension.ts hostMemberId placeholder remains "local-user"', () => {
+    // Local lazy-require: `fsSync` is declared inside each test() closure
+    // (Test 1 also does this) so the synchronous fs API is in scope here.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fsSync = require('fs') as typeof import('fs');
+    const extPath = path.resolve(process.cwd(), 'src/extension.ts');
+    assert.ok(fsSync.existsSync(extPath), `extension.ts not found at ${extPath}`);
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+
+    // The IIFE admin-bypass at lines ~1282, ~1687, ~1768 uses (currentMemberId !== hostMemberId)
+    // to grant the host bypass on local push/branch commands. Both sides MUST be 'local-user'
+    // for the bypass to resolve to false on the host's own commands.
+    //
+    // SessionHost.this.hostMemberId is the pre-allocated UUID (post-04.1-02). That UUID is the
+    // wire-side host identity. The extension.ts hostMemberId is a SEPARATE placeholder used only
+    // for the IIFE bypass. Plan 04.1-03 T4 explicitly preserves this decoupling.
+    //
+    // If a future change updates `let hostMemberId = 'local-user'` to `hostMemberId = hostIdentity.memberId`,
+    // the IIFE bypass breaks: currentMemberId (still 'local-user') !== hostMemberId (UUID) → true →
+    // host's own push/branch commands are gated by canPush/canCreateBranch and may be denied.
+
+    assert.match(
+      src,
+      /let hostMemberId\s*=\s*['"]local-user['"]/,
+      'extension.ts must declare `let hostMemberId = \'local-user\'` (line ~49). The IIFE admin-bypass invariant pins this placeholder; do NOT change to hostIdentity.memberId without also updating the IIFE.',
+    );
+
+    // Reinforce: line 580 reset must also stick to 'local-user'
+    assert.match(
+      src,
+      /hostMemberId\s*=\s*['"]local-user['"]/g,
+      'extension.ts must reset hostMemberId to \'local-user\' on session-end (line ~580). Same invariant as above.',
+    );
+  });
+});

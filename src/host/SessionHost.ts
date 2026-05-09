@@ -10,7 +10,7 @@ import {
   createTimestamp,
 } from '../network/protocol.js';
 import type { ProtocolMessage } from '../network/protocol.js';
-import type { Member, SessionConfig } from '../types/session.js';
+import type { HostIdentity, Member, SessionConfig } from '../types/session.js';
 import type {
   SessionEventEmitter,
   SessionEvent,
@@ -53,7 +53,25 @@ export class SessionHost implements SessionEventEmitter {
   private readonly bandwidthMonitor: BandwidthMonitor;
   private readonly config: SessionConfig;
   private readonly hostDisplayName: string;
-  private hostMemberId: string | null = null;
+  /**
+   * Phase 4.1 (Plan 04.1-02 — Defect B closure): pre-allocated host memberId.
+   * Set in the constructor from HostIdentity BEFORE start() binds the
+   * WebSocket listener, closing the "first-authenticated wins host role"
+   * race surfaced during Phase 4 multi-window UAT. Overwritten at auth-time
+   * with the loopback connection's ws-authed memberId once the host's local
+   * SessionClient (plan 04.1-03) authenticates with the matching
+   * hostAuthSecret. Reset to null on host disconnect (existing 04-04
+   * removeMember behavior preserved).
+   */
+  private hostMemberId: string | null;
+  /**
+   * Phase 4.1 (Plan 04.1-02 — Defect B closure): host loopback secret.
+   * The auth-request handler grants role:'host' iff the requesting client's
+   * msg.hostAuthSecret (constant-time-compared) matches this value. Only
+   * the host process's loopback SessionClient knows this secret; remote
+   * clients omit the field and receive role:'member' regardless of timing.
+   */
+  private readonly hostAuthSecret: string;
 
   /**
    * Map of memberId -> tracked file paths. Populated from tracked-paths-update
@@ -102,9 +120,21 @@ export class SessionHost implements SessionEventEmitter {
     Set<(data: never) => void>
   > = new Map();
 
-  constructor(config: SessionConfig, hostDisplayName: string) {
+  /**
+   * Construct a SessionHost.
+   *
+   * Phase 4.1 (Plan 04.1-02): the second arg is now a pre-allocated
+   * HostIdentity (memberId + displayName + hostAuthSecret) — closes Defect B
+   * (host-by-construction, not host-by-race). The wizard / extension.ts
+   * loopback wiring is responsible for generating the triple via
+   * `crypto.randomUUID()` for memberId and hostAuthSecret, and the
+   * user-confirmed value from the wizard for displayName.
+   */
+  constructor(config: SessionConfig, hostIdentity: HostIdentity) {
     this.config = config;
-    this.hostDisplayName = hostDisplayName;
+    this.hostDisplayName = hostIdentity.displayName;
+    this.hostMemberId = hostIdentity.memberId;
+    this.hostAuthSecret = hostIdentity.hostAuthSecret;
     this.authHandler = new AuthHandler(config.inviteCode);
     this.bandwidthMonitor = new BandwidthMonitor();
   }

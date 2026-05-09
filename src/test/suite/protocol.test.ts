@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import {
   parseMessage,
+  type AuthRequest,
   type ChatMessage,
   type ChatCleared,
   type ChatTruncated,
@@ -192,5 +193,74 @@ suite('Phase 4 protocol', () => {
     // (e.g. 'chat-bogus', 'chat-admin') from passing dispatch.
     const fake = { type: 'chat-bogus', timestamp: 1 };
     assert.strictEqual(parseMessage(JSON.stringify(fake)), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4.1 (Plan 04.1-01): AuthRequest gains optional hostAuthSecret field.
+//
+// The field is populated ONLY by the host's loopback SessionClient (plan
+// 04.1-03 wires it). Plan 04.1-02 reads it server-side to gate role:'host'.
+// This suite asserts the wire-shape contract — backwards-compat (omitted
+// field round-trips) and forward-compat (set field round-trips).
+// ---------------------------------------------------------------------------
+
+suite('AuthRequest hostAuthSecret round-trip (Phase 4.1)', () => {
+  test('round-trips without hostAuthSecret (backwards-compat)', () => {
+    const original: AuthRequest = {
+      type: 'auth-request',
+      timestamp: 1234567890,
+      inviteCode: 'ABCDEFGH',
+      displayName: 'Alice',
+    };
+    const serialized = JSON.stringify(original);
+    const parsed = parseMessage(serialized);
+    assert.ok(parsed, 'parseMessage returned non-null');
+    assert.strictEqual(parsed!.type, 'auth-request');
+    const auth = parsed as AuthRequest;
+    assert.strictEqual(auth.inviteCode, 'ABCDEFGH');
+    assert.strictEqual(auth.displayName, 'Alice');
+    assert.strictEqual(auth.hostAuthSecret, undefined,
+      'hostAuthSecret omitted by sender remains undefined after parse');
+  });
+
+  test('round-trips WITH hostAuthSecret (forward-compat)', () => {
+    const secret = 'secret-uuid-abc-123';
+    const original: AuthRequest = {
+      type: 'auth-request',
+      timestamp: 1234567890,
+      inviteCode: 'ABCDEFGH',
+      displayName: 'HostUser',
+      hostAuthSecret: secret,
+    };
+    const serialized = JSON.stringify(original);
+    const parsed = parseMessage(serialized);
+    assert.ok(parsed, 'parseMessage returned non-null');
+    assert.strictEqual(parsed!.type, 'auth-request');
+    const auth = parsed as AuthRequest;
+    assert.strictEqual(auth.inviteCode, 'ABCDEFGH');
+    assert.strictEqual(auth.displayName, 'HostUser');
+    assert.strictEqual(auth.hostAuthSecret, secret,
+      'hostAuthSecret round-trips verbatim through JSON.stringify -> parseMessage');
+  });
+
+  test('parseMessage tolerates malformed hostAuthSecret type without throwing (server-side validation deferred to plan 04.1-02)', () => {
+    // The wire is untrusted; a malicious client could send hostAuthSecret as
+    // a non-string. parseMessage's job is only to JSON.parse + return the
+    // message; type-narrowing happens at the consumer. This test pins that
+    // contract: parse succeeds, type discriminator preserved, downstream
+    // (plan 04.1-02 handleAuthRequest) is responsible for typeof checks.
+    const malformed = JSON.stringify({
+      type: 'auth-request',
+      timestamp: 1234567890,
+      inviteCode: 'ABCDEFGH',
+      displayName: 'Attacker',
+      hostAuthSecret: { evil: 'object' },
+    });
+    const parsed = parseMessage(malformed);
+    assert.ok(parsed, 'parseMessage returns non-null on type-valid frames');
+    assert.strictEqual(parsed!.type, 'auth-request');
+    // We do NOT assert hostAuthSecret value here — plan 04.1-02 enforces
+    // typeof === 'string' before trusting it for role:'host' assignment.
   });
 });

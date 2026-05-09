@@ -528,10 +528,31 @@ export class SessionHost implements SessionEventEmitter {
     const newMemberId = crypto.randomUUID();
     setMemberId(newMemberId);
 
-    // Determine role: first authenticated member is the host
-    const role = this.hostMemberId === null ? 'host' as const : 'member' as const;
-    if (role === 'host') {
-      this.hostMemberId = newMemberId;
+    // Phase 4.1 (Plan 04.1-02 — Defect B closure): role:'host' is granted ONLY
+    // to a connection that proves possession of the pre-allocated
+    // hostAuthSecret via timingSafeEqual. Remote clients omit the field (or
+    // send a guess); they always get role:'member' regardless of timing.
+    // The loopback host client (plan 04.1-03 wires this in extension.ts)
+    // sends the secret in its auth-request and is the only path to host role.
+    let role: 'host' | 'member' = 'member';
+    const claimedSecret = msg.hostAuthSecret;
+    if (
+      typeof claimedSecret === 'string' &&
+      claimedSecret.length === this.hostAuthSecret.length
+    ) {
+      // Length-equal precondition for crypto.timingSafeEqual (throws otherwise).
+      // Both buffers UTF-8 encoded so binary-equality is byte-equality.
+      const a = Buffer.from(claimedSecret, 'utf-8');
+      const b = Buffer.from(this.hostAuthSecret, 'utf-8');
+      if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+        role = 'host';
+        // Re-point this.hostMemberId to the loopback's ws-authed memberId so
+        // existing admin gates (handleKickRequest at line 574,
+        // handleRegenerateInvite at line 596) resolve against the live
+        // connection's id. The pre-allocated value from the constructor was
+        // a placeholder until this moment.
+        this.hostMemberId = newMemberId;
+      }
     }
 
     const member: Member = {

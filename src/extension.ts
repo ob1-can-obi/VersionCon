@@ -11,7 +11,7 @@ import { ChatPanel } from './ui/ChatPanel.js';
 import { SessionHistory } from './storage/SessionHistory.js';
 import { SessionHost } from './host/SessionHost.js';
 import { SessionClient } from './client/SessionClient.js';
-import type { ConnectionStatus } from './types/session.js';
+import type { ConnectionStatus, HostIdentity } from './types/session.js';
 import { FileSystemLayer } from './filesystem/FileSystemLayer.js';
 import { BranchTreeProvider } from './ui/BranchTreeProvider.js';
 import { BranchListProvider } from './ui/BranchListProvider.js';
@@ -47,6 +47,27 @@ const syncTracker = new SyncTracker();
 // when a session starts. Defaults to 'local-user' (matches the placeholder
 // currentMemberId) so the local single-user case always passes host-only checks.
 let hostMemberId = 'local-user';
+/**
+ * Phase 4.1 (Plan 04.1-03): pre-allocated host identity from the wizard.
+ * Carries the memberId + displayName + hostAuthSecret triple. Set by
+ * wireHostEvents on host-session start, cleared on session-ended. Used
+ * by future loopback SessionClient wiring (out of scope for this plan)
+ * and as a stable handle to the host's pre-allocated identity for any
+ * post-Phase-4.1 features that need it.
+ *
+ * The hostAuthSecret on this struct is sensitive — it is the gate that
+ * elevates a connection to role:'host'. Treat as private to the host
+ * process; never log, never serialize to chat-log.json or presence.
+ *
+ * IMPORTANT (IIFE admin-bypass invariant): the existing `hostMemberId`
+ * placeholder at line 49 REMAINS 'local-user'. The IIFE admin gates
+ * (currentMemberId !== hostMemberId) rely on both sides being 'local-user'
+ * for the host to bypass permission checks on its own local commands. The
+ * pre-allocated UUID lives ONLY on `activeHostIdentity.memberId` and on
+ * SessionHost.this.hostMemberId (wire-side). The two identities are
+ * intentionally decoupled — pinned by plan 04.1-04 Test 11.
+ */
+let activeHostIdentity: HostIdentity | null = null;
 // Phase 3: module-level references so wireHostEvents can wire late-arriving
 // services into a freshly-created SessionHost. Set by the async IIFE after
 // permissions/pushHistory are loaded.
@@ -571,8 +592,14 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   // --- Helper: wire host events to UI ---
-  function wireHostEvents(host: SessionHost, sessionName: string): void {
+  function wireHostEvents(host: SessionHost, sessionName: string, hostIdentity: HostIdentity): void {
     activeHost = host;
+    // Plan 04.1-03: store the wizard-allocated HostIdentity at module scope
+    // for forward-compat (future loopback SessionClient wiring will read
+    // hostAuthSecret from here). hostMemberId below INTENTIONALLY remains
+    // 'local-user' — see the activeHostIdentity declaration block for the
+    // IIFE admin-bypass invariant rationale.
+    activeHostIdentity = hostIdentity;
     // Host is always the first member -- track the host's local member ID for
     // permission checks (canPushToBranch, canCreateBranch host-bypass).
     // The host's local commands run with currentMemberId = 'local-user', which
@@ -637,6 +664,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
     host.on('session-ended', () => {
       activeHost = null;
+      // Plan 04.1-03: drop the pre-allocated HostIdentity reference so the
+      // hostAuthSecret is not retained beyond the live session.
+      activeHostIdentity = null;
       statusBarManager.setStatus('disconnected');
       // Phase 4 (Plan 04-10): mirror disconnected status + clear chat cache;
       // the chat panel's banner switches to "Disconnected. Messages won't
@@ -926,9 +956,12 @@ export function activate(context: vscode.ExtensionContext): void {
   // --- Commands ---
   context.subscriptions.push(
     vscode.commands.registerCommand('versioncon.hostSession', () => {
-      void WizardPanel.createOrShow(context, (host: SessionHost, sessionName: string) => {
-        wireHostEvents(host, sessionName);
-      });
+      void WizardPanel.createOrShow(
+        context,
+        (host: SessionHost, sessionName: string, hostIdentity: HostIdentity) => {
+          wireHostEvents(host, sessionName, hostIdentity);
+        },
+      );
     }),
   );
 

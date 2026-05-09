@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
@@ -12,7 +13,7 @@ import type {
   ChatHistory,
   PresenceUpdate,
 } from '../../network/protocol.js';
-import type { SessionConfig } from '../../types/session.js';
+import type { HostIdentity, SessionConfig } from '../../types/session.js';
 import type { PushRecord, PushFileEntry } from '../../types/push.js';
 import type { BranchInfo } from '../../types/branch.js';
 
@@ -72,6 +73,19 @@ suite('AuthHandler', () => {
 const INVITE = 'ABCDEFGH';
 const HOST_NAME = 'HostUser';
 const MAX_PAYLOAD = 1_000_000;
+
+/**
+ * Phase 4.1 helper: synthesize a fresh HostIdentity for each test's
+ * SessionHost. Each call produces a unique memberId + hostAuthSecret
+ * so tests cannot accidentally leak a secret across host instances.
+ */
+function makeHostIdentity(displayName: string = HOST_NAME): HostIdentity {
+  return {
+    memberId: crypto.randomUUID(),
+    displayName,
+    hostAuthSecret: crypto.randomUUID(),
+  };
+}
 
 interface TestClient {
   ws: WebSocket;
@@ -191,7 +205,7 @@ suite('Phase 4 host relay', () => {
       maxPayloadBytes: MAX_PAYLOAD,
       inviteCode: INVITE,
     };
-    host = new SessionHost(config, HOST_NAME);
+    host = new SessionHost(config, makeHostIdentity(HOST_NAME));
     host.setChatLog(chatLog, 'main');
     port = await host.start();
   });
@@ -654,7 +668,7 @@ suite('Phase 4 host input validation', () => {
       maxPayloadBytes: MAX_PAYLOAD,
       inviteCode: INVITE,
     };
-    host = new SessionHost(config, HOST_NAME);
+    host = new SessionHost(config, makeHostIdentity(HOST_NAME));
     host.setChatLog(chatLog, 'main');
     port = await host.start();
   });
@@ -982,7 +996,7 @@ suite('Phase 4 system events in chat', () => {
       maxPayloadBytes: MAX_PAYLOAD,
       inviteCode: INVITE,
     };
-    host = new SessionHost(config, HOST_NAME);
+    host = new SessionHost(config, makeHostIdentity(HOST_NAME));
     host.setChatLog(chatLog, 'main');
     port = await host.start();
   });
@@ -1345,7 +1359,7 @@ suite('Phase 4 system events in chat', () => {
       maxPayloadBytes: MAX_PAYLOAD,
       inviteCode: INVITE,
     };
-    const noLogHost = new SessionHost(cfg, HOST_NAME);
+    const noLogHost = new SessionHost(cfg, makeHostIdentity(HOST_NAME));
     const noLogPort = await noLogHost.start();
     try {
       const alice = await connectClient(noLogPort, 'Alice');
@@ -1474,7 +1488,7 @@ suite('Phase 4 system event correctness', () => {
       maxPayloadBytes: MAX_PAYLOAD,
       inviteCode: INVITE,
     };
-    host = new SessionHost(config, HOST_NAME);
+    host = new SessionHost(config, makeHostIdentity(HOST_NAME));
     host.setChatLog(chatLog, 'main');
     port = await host.start();
   });
@@ -1762,5 +1776,231 @@ suite('Phase 4 system event correctness', () => {
 
     await alice.close();
     await bob.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4.1 host pre-registration (Plan 04.1-02 — Defect B closure)
+//
+// Closes the "first authenticated WebSocket wins host role" race in
+// SessionHost.ts:501-505. After this plan, the host's memberId and
+// displayName + a hostAuthSecret are pre-allocated by the wizard
+// (plan 04.1-03) before SessionHost is constructed. role:'host' is
+// granted ONLY to a connection that proves possession of the secret
+// via timingSafeEqual; remote clients without the secret always get
+// role:'member' regardless of timing.
+// ---------------------------------------------------------------------------
+
+suite('Phase 4.1 host pre-registration', () => {
+  let host: SessionHost;
+  let port: number;
+  let hostIdentity: HostIdentity;
+
+  setup(async () => {
+    hostIdentity = makeHostIdentity(HOST_NAME);
+    const config: SessionConfig = {
+      sessionName: 'Phase4.1Test',
+      port: 0,
+      networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD,
+      inviteCode: INVITE,
+    };
+    host = new SessionHost(config, hostIdentity);
+    port = await host.start();
+  });
+
+  teardown(async () => {
+    try { host.stop(); } catch { /* best-effort */ }
+  });
+
+  test('host loopback auth with correct hostAuthSecret gets role:host (Defect B happy path)', async () => {
+    // Connect with hostAuthSecret set in auth-request — mirrors what
+    // plan 04.1-03's loopback client will do.
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const listeners = new Set<(m: ProtocolMessage) => void>();
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+    ws.on('message', (raw: Buffer) => {
+      try {
+        const msg = JSON.parse(raw.toString()) as ProtocolMessage;
+        for (const fn of listeners) { try { fn(msg); } catch { /* ignore */ } }
+      } catch { /* malformed — ignore */ }
+    });
+
+    ws.send(JSON.stringify({
+      type: 'auth-request',
+      timestamp: Date.now(),
+      inviteCode: INVITE,
+      displayName: HOST_NAME,
+      hostAuthSecret: hostIdentity.hostAuthSecret, // <-- the gate
+    }));
+
+    const authResp = await new Promise<ProtocolMessage>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('auth timeout')), 2000);
+      const handler = (m: ProtocolMessage): void => {
+        if (m.type === 'auth-response') { clearTimeout(timer); resolve(m); }
+      };
+      listeners.add(handler);
+    });
+    assert.strictEqual(authResp.type, 'auth-response');
+    if (authResp.type !== 'auth-response') throw new Error('typing');
+    assert.ok(authResp.accepted, 'host loopback accepted');
+
+    // Find the auth'd member in host.getMembers() and assert role.
+    const members = host.getMembers();
+    const hostMember = members.find(m => m.id === authResp.memberId);
+    assert.ok(hostMember, 'host member present in members list');
+    assert.strictEqual(hostMember!.role, 'host', 'role:host granted on correct secret');
+
+    ws.close();
+  });
+
+  test('remote auth WITHOUT hostAuthSecret gets role:member (Defect B race protection)', async () => {
+    const remote = await connectClient(port, 'RemoteAttacker');
+    // No hostAuthSecret in the auth-request — connectClient does not set it.
+    const members = host.getMembers();
+    const remoteMember = members.find(m => m.id === remote.memberId);
+    assert.ok(remoteMember, 'remote member present in members list');
+    assert.strictEqual(remoteMember!.role, 'member',
+      'role:member assigned to remote without secret — race protection');
+    await remote.close();
+  });
+
+  test('remote auth WITH WRONG hostAuthSecret gets role:member (Defect B secret mismatch)', async () => {
+    // Send a wrong-secret auth-request via raw ws (connectClient does
+    // not pass hostAuthSecret — we need the lower-level harness here).
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const listeners = new Set<(m: ProtocolMessage) => void>();
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+    ws.on('message', (raw: Buffer) => {
+      try {
+        const msg = JSON.parse(raw.toString()) as ProtocolMessage;
+        for (const fn of listeners) { try { fn(msg); } catch { /* ignore */ } }
+      } catch { /* malformed — ignore */ }
+    });
+
+    ws.send(JSON.stringify({
+      type: 'auth-request',
+      timestamp: Date.now(),
+      inviteCode: INVITE,
+      displayName: 'Attacker',
+      hostAuthSecret: 'wrong-secret-of-different-length',  // wrong, length-mismatched
+    }));
+
+    const authResp = await new Promise<ProtocolMessage>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('auth timeout')), 2000);
+      const handler = (m: ProtocolMessage): void => {
+        if (m.type === 'auth-response') { clearTimeout(timer); resolve(m); }
+      };
+      listeners.add(handler);
+    });
+    assert.strictEqual(authResp.type, 'auth-response');
+    if (authResp.type !== 'auth-response') throw new Error('typing');
+    assert.ok(authResp.accepted, 'auth still accepted (secret check is role-only, not auth gate)');
+
+    const members = host.getMembers();
+    const attackerMember = members.find(m => m.id === authResp.memberId);
+    assert.ok(attackerMember, 'attacker member present');
+    assert.strictEqual(attackerMember!.role, 'member',
+      'role:member on wrong secret — no host hijack via length-mismatched guess');
+
+    ws.close();
+  });
+
+  test('remote auth that connects FIRST is still role:member (Defect B race window closed)', async () => {
+    // The setup() above already started the host. Connect a remote BEFORE
+    // any loopback client. Pre-Phase-4.1 semantics: this remote would have
+    // been first-authenticated and gotten role:host. Post-Phase-4.1: the
+    // pre-allocated this.hostMemberId is non-null from the constructor, so
+    // the OLD branch `this.hostMemberId === null ? 'host' : 'member'`
+    // would still produce 'member' — but that branch is gone. The NEW
+    // branch is secret-only, so this remote (no secret) is 'member'.
+    const firstRemote = await connectClient(port, 'FirstToConnect');
+    const members = host.getMembers();
+    const firstMember = members.find(m => m.id === firstRemote.memberId);
+    assert.ok(firstMember, 'first remote present');
+    assert.strictEqual(firstMember!.role, 'member',
+      'first-to-authenticate remote gets role:member — host-by-construction not host-by-race');
+    await firstRemote.close();
+  });
+
+  test('after loopback host authenticates, kickMember (host-only admin) works for ws-authed host id', async () => {
+    // Connect loopback host first (with secret), then a remote.
+    const hostWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    const hostListeners = new Set<(m: ProtocolMessage) => void>();
+    await new Promise<void>((resolve, reject) => {
+      hostWs.once('open', () => resolve());
+      hostWs.once('error', reject);
+    });
+    hostWs.on('message', (raw: Buffer) => {
+      try {
+        const msg = JSON.parse(raw.toString()) as ProtocolMessage;
+        for (const fn of hostListeners) { try { fn(msg); } catch { /* ignore */ } }
+      } catch { /* malformed */ }
+    });
+    hostWs.send(JSON.stringify({
+      type: 'auth-request',
+      timestamp: Date.now(),
+      inviteCode: INVITE,
+      displayName: HOST_NAME,
+      hostAuthSecret: hostIdentity.hostAuthSecret,
+    }));
+    const hostAuth = await new Promise<ProtocolMessage>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('host auth timeout')), 2000);
+      const handler = (m: ProtocolMessage): void => {
+        if (m.type === 'auth-response') { clearTimeout(timer); resolve(m); }
+      };
+      hostListeners.add(handler);
+    });
+    if (hostAuth.type !== 'auth-response' || !hostAuth.accepted) throw new Error('host auth failed');
+
+    const remote = await connectClient(port, 'RemoteVictim');
+    const targetId = remote.memberId;
+
+    // Loopback host sends kick-member frame.
+    hostWs.send(JSON.stringify({
+      type: 'kick-member',
+      timestamp: Date.now(),
+      targetMemberId: targetId,
+    }));
+
+    // Remote should receive member-kicked and ws should close.
+    const kicked = await remote.waitFor('member-kicked', 2000);
+    assert.strictEqual(kicked.type, 'member-kicked', 'remote received kick');
+
+    hostWs.close();
+    await remote.close();
+  });
+
+  test('CR-01-NEW preservation: broadcastPush with remote PushRecord still uses record.memberDisplayName, not host name', async () => {
+    // Regression guard for plan 04-15 closure under the new host
+    // pre-registration model. The actor identity for system events
+    // continues to flow from PushRecord, NOT from this.hostDisplayName.
+    const alice = await connectClient(port, 'Alice');
+
+    const pushRecord: PushRecord = {
+      id: 'p-04-1-02',
+      memberId: 'mem-bob',
+      memberDisplayName: 'Bob',
+      message: 'fix',
+      branch: 'main',
+      files: [{ relativePath: 'src/foo.ts', status: 'modified', addedLines: 1, removedLines: 0 } as PushFileEntry],
+      timestamp: Date.now(),
+      reverted: false,
+    };
+    const returned = host.broadcastPush(pushRecord);
+    assert.strictEqual(returned.body, 'Bob pushed 1 file(s)',
+      "body uses record.memberDisplayName ('Bob'), NOT HOST_NAME — plan 04-15 closure preserved");
+    assert.strictEqual(returned.memberDisplayName, 'Bob');
+    assert.strictEqual(returned.memberId, 'mem-bob');
+    assert.ok(!returned.body.includes(HOST_NAME),
+      'host displayName must not leak into the system-event body');
+
+    await alice.close();
   });
 });

@@ -39,10 +39,34 @@ interface BaseMessage {
 }
 
 // --- Client -> Host ---
+/**
+ * Authenticate with a session host.
+ *
+ * The host validates the inviteCode (constant-time compare) and, when
+ * `hostAuthSecret` is present, ALSO validates it against the host's
+ * pre-allocated secret to assign role:'host'. The secret is populated ONLY
+ * by the host's own loopback SessionClient (Phase 4.1, plan 04.1-03). All
+ * remote joiners omit the field and receive role:'member' regardless of
+ * timing — closing the "first-authenticated WebSocket wins host role" race
+ * surfaced during Phase 4 multi-window UAT.
+ *
+ * Backwards-compat: pre-Phase-4.1 hosts that don't read this field will
+ * silently ignore it; pre-Phase-4.1 clients omit it (undefined = JSON omits
+ * the property entirely).
+ */
 export interface AuthRequest extends BaseMessage {
   type: 'auth-request';
   inviteCode: string;
   displayName: string;
+  /**
+   * Host-loopback secret. Set ONLY by the host's own loopback SessionClient
+   * (the local UI client of the wizard creator). Plan 04.1-02's
+   * handleAuthRequest assigns role:'host' iff this matches the host's
+   * pre-allocated `hostAuthSecret` AND the requesting connection's
+   * `claimedMemberId` matches the pre-allocated `hostMemberId`. Remote
+   * clients omit the field and always get role:'member'.
+   */
+  hostAuthSecret?: string;
 }
 
 export interface KickMemberRequest extends BaseMessage {

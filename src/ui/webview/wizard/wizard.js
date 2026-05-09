@@ -67,6 +67,12 @@
   }
 
   function renderStep1(state) {
+    // Plan 04.1-03 (Defect A closure): step 1 collects sessionName + displayName.
+    // Both are upfront-identity concerns; the Next button is disabled until
+    // BOTH are non-empty after trim.
+    const nameOk = !!(state.sessionName && state.sessionName.trim());
+    const dispOk = !!(state.displayName && state.displayName.trim());
+    const nextDisabled = !nameOk || !dispOk;
     return `
       <div class="wizard-header"><h1>Create Session</h1></div>
       <div class="form-group">
@@ -74,9 +80,15 @@
         <input type="text" id="session-name" placeholder="My Team Session"
                value="${escapeHtml(state.sessionName)}" maxlength="100">
       </div>
+      <div class="form-group">
+        <label for="display-name">Your Display Name</label>
+        <input type="text" id="display-name"
+               placeholder="Your name (defaults to git config or OS username)"
+               value="${escapeHtml(state.displayName || '')}" maxlength="64">
+      </div>
       <div class="button-row">
         <div></div>
-        <button class="btn btn-primary" id="btn-next" ${!state.sessionName ? 'disabled' : ''}>Next</button>
+        <button class="btn btn-primary" id="btn-next" ${nextDisabled ? 'disabled' : ''}>Next</button>
       </div>
     `;
   }
@@ -140,23 +152,39 @@
   }
 
   function attachListeners(state) {
-    // Session name input - enable/disable next button
+    // Plan 04.1-03: step 1 has TWO inputs (sessionName + displayName).
+    // Next is disabled until both are non-empty after trim.
     const nameInput = document.getElementById('session-name');
+    const dispInput = document.getElementById('display-name');
+    function updateNextDisabled() {
+      const btn = document.getElementById('btn-next');
+      if (!btn) return;
+      const nameOk = !!(nameInput && nameInput.value.trim());
+      const dispOk = !!(dispInput && dispInput.value.trim());
+      btn.disabled = !(nameOk && dispOk);
+    }
     if (nameInput) {
-      nameInput.addEventListener('input', () => {
-        const btn = document.getElementById('btn-next');
-        if (btn) btn.disabled = !nameInput.value.trim();
-      });
+      nameInput.addEventListener('input', updateNextDisabled);
       nameInput.focus();
     }
+    if (dispInput) {
+      dispInput.addEventListener('input', updateNextDisabled);
+    }
+    updateNextDisabled();
 
     // Next button
     const btnNext = document.getElementById('btn-next');
     if (btnNext) {
       btnNext.addEventListener('click', () => {
         if (state.step === 1) {
-          const val = document.getElementById('session-name')?.value || '';
-          vscode.postMessage({ type: 'wizard-next', payload: { sessionName: val } });
+          const sessionName =
+            document.getElementById('session-name')?.value || '';
+          const displayName =
+            document.getElementById('display-name')?.value || '';
+          vscode.postMessage({
+            type: 'wizard-next',
+            payload: { sessionName, displayName },
+          });
         } else if (state.step === 2) {
           const port = parseInt(document.getElementById('port')?.value || '0', 10);
           const networkInterface = document.getElementById('interface')?.value || '';

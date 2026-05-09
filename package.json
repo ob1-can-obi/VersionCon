@@ -287,7 +287,17 @@
         "contents": "You're the only one here.\nShare your session to invite teammates.",
         "when": "versioncon.connected && versioncon.presence.alone"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "VersionCon",
+      "properties": {
+        "versioncon.displayName": {
+          "type": "string",
+          "default": "",
+          "description": "Your display name shown to other team members in the chat, presence panel, and activity log. Set per-workspace by the host setup wizard; can be edited here at any time."
+        }
+      }
+    }
   },
   "scripts": {
     "build": "node esbuild.config.mjs",

@@ -157,6 +157,24 @@ export class SessionHost implements SessionEventEmitter {
   private reviewCommentTimestamps = new Map<string, number[]>();
 
   /**
+   * Phase 6 (Plan 06-02): per-reviewId write chain for serializing concurrent
+   * review-* mutations. ReviewStore.upsertRequest does a whole-file rewrite
+   * keyed by pushId; without serialization, two handlers (e.g. two rapid
+   * review-comment frames) can each read the same baseline snapshot via
+   * reviewStore.getAll() and then upsertRequest each lands the SAME baseline-
+   * plus-their-own-comment, dropping one comment.
+   *
+   * The chain is a Promise<void> per reviewId — each handler awaits the
+   * previous link before reading the parent snapshot, mutating, and writing
+   * back. Once the chain resolves, the entry is GC'd (the Map key is removed
+   * when the last enqueued op resolves and finds itself still the chain head).
+   *
+   * Rule 1 bug discovered during Task 2 rate-limit test (30 rapid comments
+   * collapsed to 1 because each handler's getAll() saw the empty baseline).
+   */
+  private reviewWriteChain = new Map<string, Promise<void>>();
+
+  /**
    * Phase 5 Plan 05-05 (SC-5): host-side AST analyzer. Constructed once per
    * session start by extension.ts (host path only) and injected via
    * setAstAnalyzer. Null when the analyzer is absent (test setups,
@@ -475,22 +493,20 @@ export class SessionHost implements SessionEventEmitter {
           // (true directory traversal) but accepts filenames whose basename
           // contains '..' as a substring (e.g. 'src/foo..bar.ts',
           // 'package..json').
+          // Phase 6 (Plan 06-02): shared validator extracted to
+          // this.validateRelativePath so review-comment can reuse the gate.
+          // Plan 04-15 (CR-03-NEW closure) behavior preserved: segment-aware
+          // traversal detection rejects '..' segment, absolute paths, Windows
+          // drive prefixes, and backslashes. Empty + null distinction matters
+          // — null is the legitimate "no file open" signal and must NOT pass
+          // through validateRelativePath (which rejects empty strings).
           let safePath: string | null = null;
           if (msg.activeFilePath !== null) {
-            if (typeof msg.activeFilePath !== 'string') return;
-            if (msg.activeFilePath.length > 1024) return;
-            const p = msg.activeFilePath;
-            // Plan 04-15 (CR-03-NEW closure): segment-aware traversal detection.
-            // The prior substring check on the dot-dot sequence over-rejected
-            // legitimate filenames whose basename contained two consecutive
-            // periods (e.g. 'src/foo..bar.ts', 'package..json'). Splitting on
-            // the path separator and checking for the exact `..` segment
-            // narrows the check to true directory traversal.
-            const segments = p.split('/');
-            if (segments.includes('..') || p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p) || p.includes('\\')) {
-              return; // path traversal / absolute path / backslash — drop silently
+            const validated = this.validateRelativePath(msg.activeFilePath);
+            if (validated === null) {
+              return; // path traversal / absolute / backslash / empty — drop silently
             }
-            safePath = p;
+            safePath = validated;
           }
 
           // T-04-04-01: server-trusted memberId override (same policy as
@@ -580,6 +596,114 @@ export class SessionHost implements SessionEventEmitter {
             memberId,
             displayName,
           );
+        } else if (msg.type === 'review-comment') {
+          // T-06-01 + T-06-03 + T-06-04 (partial) — author override,
+          // rate-limit, 500-cap, path-traversal gate.
+          //
+          // Frame-level shape checks run synchronously before the per-review
+          // serializer kicks in — malformed frames must not enqueue a no-op
+          // onto the chain (would block legitimate concurrent comments).
+          if (!this.reviewStore) return;
+          if (!msg.comment || typeof msg.comment !== 'object') return;
+          if (typeof msg.reviewId !== 'string' || msg.reviewId.length === 0) return;
+          if (typeof msg.comment.body !== 'string'
+              || msg.comment.body.length === 0
+              || msg.comment.body.length > 16_384) return;
+          const safePath = this.validateRelativePath(msg.comment.filePath);
+          if (safePath === null) return;
+          if (typeof msg.comment.line !== 'number'
+              || !Number.isInteger(msg.comment.line)
+              || msg.comment.line < 1
+              || msg.comment.line > 1_000_000) return;
+
+          const cmComment = this.members.get(memberId);
+          if (!cmComment) return;
+          const displayNameComment = cmComment.member.displayName;
+
+          // Capture frame-level values for the serialized op (avoid closures
+          // over `msg` which has narrow-after-await pitfalls). Capture
+          // memberId into a string-typed local so TS sees the narrowed type
+          // inside the async callback (memberId itself remains `string | null`
+          // in the enclosing closure for the auth-timeout path).
+          const reviewId = msg.reviewId;
+          const commentBody = msg.comment.body;
+          const commentLine = msg.comment.line;
+          const commentIdIn = msg.comment.id;
+          const senderId: string = memberId;
+
+          // Per-review write chain — Rule 1 fix for concurrent comment writes
+          // overwriting each other's baseline. See enqueueReviewWrite docs.
+          await this.enqueueReviewWrite(reviewId, async () => {
+            const reviewStore = this.reviewStore;
+            if (!reviewStore) return;
+            const allReviews = reviewStore.getAll();
+            const parent = allReviews.find(r => r.id === reviewId);
+            if (!parent) return;
+            const stampedTsComment = createTimestamp();
+
+            // T-06-03 hard cap (per-review) — read-then-check INSIDE the
+            // serialized section so the 501st concurrent comment is correctly
+            // rejected.
+            if (parent.comments.length >= SessionHost.REVIEW_COMMENT_CAP) {
+              sendMessage((d) => cmComment.ws.send(d), {
+                type: 'error',
+                code: 'REVIEW_COMMENT_CAP',
+                message: `Review has reached the ${SessionHost.REVIEW_COMMENT_CAP}-comment cap.`,
+                timestamp: stampedTsComment,
+              });
+              return;
+            }
+            // T-06-03 rate-limit (per-member sliding 60s window) — also
+            // INSIDE the serialized section because checkReviewCommentRate
+            // mutates state and concurrent callers from the same member
+            // would otherwise race.
+            if (!this.checkReviewCommentRate(senderId, stampedTsComment)) {
+              sendMessage((d) => cmComment.ws.send(d), {
+                type: 'error',
+                code: 'REVIEW_RATE_LIMIT',
+                message: `You can post at most ${SessionHost.REVIEW_COMMENT_RATE_PER_MIN} review comments per minute.`,
+                timestamp: stampedTsComment,
+              });
+              return;
+            }
+
+            const sanitizedComment = {
+              id: typeof commentIdIn === 'string' && commentIdIn.length > 0
+                ? commentIdIn : crypto.randomUUID(),
+              reviewId: parent.id,
+              authorMemberId: senderId,
+              authorDisplayName: displayNameComment,
+              filePath: safePath,
+              line: commentLine,
+              body: commentBody,
+              createdAt: stampedTsComment,
+            };
+            const updated: ReviewRequest = {
+              ...parent,
+              comments: [...parent.comments, sanitizedComment],
+            };
+            try {
+              await reviewStore.upsertRequest(updated);
+            } catch (err) {
+              console.error('[SessionHost] review-comment persist failed', err);
+              return;
+            }
+            this.broadcast({
+              type: 'review-comment',
+              timestamp: stampedTsComment,
+              reviewId: parent.id,
+              comment: sanitizedComment,
+            });
+            const shortIdComment = parent.pushId.substring(0, 7);
+            this.appendAndBroadcastSystemEvent(
+              'review-comment',
+              `${displayNameComment} commented on push ${shortIdComment} (${safePath}:${commentLine})`,
+              stampedTsComment,
+              { pushId: parent.pushId, branch: parent.branch },
+              senderId,
+              displayNameComment,
+            );
+          });
         } else if (msg.type === 'sync-request') {
           // PUSH-09 reconnect path: respond with empty files (snapshot is
           // delivered out-of-band) plus the latest push id so the client can
@@ -1024,6 +1148,87 @@ export class SessionHost implements SessionEventEmitter {
    *   dispatchChatReceivedLocally — the host does NOT receive its own broadcast,
    *   mirroring the same echo pattern as handleLocalChatMessage at extension.ts:285.
    */
+
+  /**
+   * Phase 6 (Plan 06-02): shared relative-path validator used by review-comment
+   * (file anchor) AND presence-update (active file). Returns the safe path,
+   * or null on rejection. Identical logic to the prior inline check at
+   * presence-update — extracted so review-comment doesn't duplicate it.
+   *
+   * Rejection set (matches CR-03-NEW from Plan 04-15):
+   *   - not a string / empty / >1024 chars
+   *   - any path SEGMENT equal to '..' (true directory traversal — filenames
+   *     containing '..' as a substring like 'foo..bar.ts' are still accepted)
+   *   - starts with '/' (absolute posix)
+   *   - matches Windows drive prefix /^[A-Za-z]:[\\/]/
+   *   - contains a backslash anywhere
+   */
+  private validateRelativePath(p: unknown): string | null {
+    if (typeof p !== 'string') return null;
+    if (p.length === 0 || p.length > 1024) return null;
+    const segments = p.split('/');
+    if (
+      segments.includes('..') ||
+      p.startsWith('/') ||
+      /^[A-Za-z]:[\\/]/.test(p) ||
+      p.includes('\\')
+    ) {
+      return null;
+    }
+    return p;
+  }
+
+  /**
+   * Phase 6 (Plan 06-02): serialize a review mutation against the per-review
+   * write chain so concurrent review-* handlers don't drop each other's
+   * writes. The caller's `op` runs strictly after any previously-enqueued
+   * op for the same reviewId; failures in `op` are swallowed (logged by the
+   * op itself) so a single failure does not poison the chain for subsequent
+   * mutations.
+   *
+   * Returns the Promise the op resolves to, so callers (e.g. the
+   * review-comment handler) can await observable persistence completion
+   * before broadcasting + emitting the system event.
+   */
+  private enqueueReviewWrite(reviewId: string, op: () => Promise<void>): Promise<void> {
+    const prior = this.reviewWriteChain.get(reviewId) ?? Promise.resolve();
+    const next = prior.then(() => op()).catch((err) => {
+      console.error('[SessionHost] enqueueReviewWrite op failed', err);
+    });
+    this.reviewWriteChain.set(reviewId, next);
+    // GC: when `next` resolves AND it's still the chain head, drop the entry
+    // so the Map doesn't grow unbounded as reviews come and go.
+    void next.then(() => {
+      if (this.reviewWriteChain.get(reviewId) === next) {
+        this.reviewWriteChain.delete(reviewId);
+      }
+    });
+    return next;
+  }
+
+  /**
+   * Phase 6 T-06-03 mitigation: sliding-window rate-limit for review-comments
+   * per member. Returns true if the comment is allowed; false if the member
+   * has exceeded REVIEW_COMMENT_RATE_PER_MIN comments in the last 60s window.
+   *
+   * Mutates the per-member timestamp array: prunes entries older than 60s,
+   * then appends `nowMs` if the comment is allowed. The pruned array is
+   * persisted back regardless so the map doesn't grow unbounded — same
+   * posture as AuthHandler.rateLimitState (T-01-03).
+   */
+  private checkReviewCommentRate(memberId: string, nowMs: number): boolean {
+    const windowStart = nowMs - 60_000;
+    let stamps = this.reviewCommentTimestamps.get(memberId) ?? [];
+    stamps = stamps.filter(t => t > windowStart);
+    if (stamps.length >= SessionHost.REVIEW_COMMENT_RATE_PER_MIN) {
+      this.reviewCommentTimestamps.set(memberId, stamps);
+      return false;
+    }
+    stamps.push(nowMs);
+    this.reviewCommentTimestamps.set(memberId, stamps);
+    return true;
+  }
+
   private appendAndBroadcastSystemEvent(
     subKind: SystemEventSubKind,
     body: string,

@@ -74,6 +74,18 @@ export class ReviewStore {
    * Persist a ReviewRequest. Writes the WHOLE file (no diff). Updates the
    * in-memory index. Last write wins (mutation flows through this method
    * for both first-write and updates).
+   *
+   * Atomicity: no .tmp+rename. Same posture as PushHistory + ChatLog (a
+   * mid-write crash could leave a half-written JSON file on disk, which
+   * load() would catch via the corrupt-JSON skip path). Upgrading all
+   * three persistence modules to atomic .tmp+rename is tracked as a
+   * Phase 4 STRIDE register item (T-04-02-04) — when that lands,
+   * ReviewStore upgrades together with PushHistory + ChatLog.
+   *
+   * Caller responsibility: req.id, req.pushId, req.branch, req.openedAt,
+   * req.authorMemberId, req.authorDisplayName MUST be set before calling.
+   * ReviewStore is dumb persistence — Wave 2 host handler is the gate
+   * that constructs ReviewRequest objects with host-trusted fields.
    */
   async upsertRequest(req: ReviewRequest): Promise<void> {
     const dir = path.join(this.versionconDir, 'branches', req.branch, 'reviews');

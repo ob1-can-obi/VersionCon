@@ -211,17 +211,16 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 Plans:
 - [ ] TBD (promote with /gsd-review-backlog when ready)
 
-### Phase 999.2: Wizard step 2 Next button stays disabled with all Network Configuration fields populated (BACKLOG)
+### Phase 999.2: Wizard step 2 Next button stays disabled (CLOSED — f7fa415)
 
-**Goal:** [Captured for future planning] — On wizard step 2 (Network Configuration), the Next button remains disabled even when Port, Network Interface, and Max Payload Size are all populated with valid values. Phase 1 wizard plumbing bug — predates Phase 4.1 — surfaced during Phase 4.1 UAT on 2026-05-10. Fix likely in `wizard.js` step-2 validation predicate or the `wizard-validate` postMessage round-trip not firing on the dropdown's change event.
-**Requirements:** TBD
-**Plans:** 0 plans
+**Status:** CLOSED 2026-05-10 by inline fix during Phase 4 multi-window UAT. Closed before promotion to a planned phase because the bug was a single-line guard that blocked active UAT.
 
-**Repro:** Run `versioncon.hostSession` → complete step 1 with valid Session Name + Display Name → land on step 2. All three fields are populated with sensible defaults (Port 50361, Interface `en0 (192.168.0.68)`, Max Payload 50). Next button visually disabled (greyed out). Clicking it does nothing. Back button works.
-**Screenshot evidence:** Captured during 4.1 UAT 2026-05-10.
-**Affected code:** Phase 1 wizard step-2 logic — `src/ui/webview/wizard/wizard.js` (step-2 validation / Next-gating) and possibly `src/ui/WizardPanel.ts` `handleWizardValidate` for step 2.
-**Surfaced:** 2026-05-10 during Phase 4.1 UAT Test 1 (wizard step 1 displayName pre-fill verification). User advanced past step 1 successfully, hit the wall on step 2. Outside Phase 4.1 scope (4.1 only touches step 1 + host pre-registration).
-**Suggested home:** small dedicated phase OR fold into the deferred Phase 1 plans 01-04/01-05/01-05b/01-06 when those resume.
+**Root cause:** `src/ui/webview/wizard/wizard.js` attachListeners() called `updateNextDisabled()` unconditionally after every render. On step 2 the step-1 inputs (`#session-name`, `#display-name`) don't exist, so `nameOk`/`dispOk` both evaluated false and the shared `#btn-next` element got its `disabled` attribute set to `true` on every step beyond 1.
 
-Plans:
-- [ ] TBD (promote with /gsd-review-backlog when ready)
+**Fix:** Short-circuit `updateNextDisabled()` when `nameInput` or `dispInput` is null — leaves the step-2+ rendered HTML's already-enabled Next button untouched. Commit `f7fa415`.
+
+**Regression coverage:** +3 source-grep tests in `src/test/suite/wizardValidation.test.ts` under suite `Backlog 999.2 — wizard step-2 Next button stays enabled`.
+
+**Original repro:** Run `versioncon.hostSession` → step 1 with valid Session Name + Display Name → step 2 (Network Configuration). All three fields populated with sensible defaults (Port 50361, Interface `en0 (192.168.0.68)`, Max Payload 50). Pre-fix: Next disabled (greyed out), click no-op. Post-fix: Next enabled, advances to step 3.
+
+**Surfaced:** 2026-05-10 during Phase 4.1 UAT Test 1 + Phase 4 multi-window UAT Test 2.

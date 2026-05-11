@@ -17,7 +17,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: Push, Sync + Branch Management** - Explicit push with diff, push history, revert, branch creation, admin/member permissions (6/6 plans done; 6/6 SCs satisfied by code, visual UAT deferred — see 03-VERIFICATION.md and 03-HUMAN-UAT.md)
 - [x] **Phase 4: Presence, Chat + File-Level Conflict Notifications** - Real-time presence, in-app chat, push activity log, soft conflict alerts (15/15 plans done; UAT 2026-05-11 found 3 blockers all closed inline — commit a420eb5; 350 tests passing; visual UAT deferred per Phase 3 precedent)
 - [x] **Phase 4.1 (INSERTED): Host Identity + Creation Wizard** - Wizard prompts host for displayName; session creator is host by construction (not first WebSocket auth) (4/4 plans done; UAT 3/3 pass; UAT Test 3 gap closed by quick task 260510-sdm)
-- [ ] **Phase 4.3 (INSERTED): Git-Style Commands + File Explorer Workflow + Cloud Bridge** - Hide `.versioncon/` from VS Code File Explorer; git-style command aliases; workspace-diff-driven push/pull (no drag required); status-bar "N local changes" indicator; one-way export to a real Git remote (host-only) so v2-of-project starts with `git pull` + fresh session
+- [x] **Phase 4.3 (INSERTED): Git-Style Commands + File Explorer Workflow + Cloud Bridge** - Hide `.versioncon/` from VS Code File Explorer; git-style command aliases; workspace-diff-driven push/pull (no drag required); status-bar "N local changes" indicator; one-way export to a real Git remote (host-only) so v2-of-project starts with `git pull` + fresh session (5/5 plans done; 14 commits 9e20df0..69ffeaf; 350 → 439 passing, +89 new tests)
 - [ ] **Phase 5: Dependency-Aware Conflict Detection (AST)** - AST child process, per-language parsers, function-level conflict attribution, smart push summary
 - [ ] **Phase 6: Inline Code Review** - Diff + approve flow, line comments, mandatory review gate, review threads in chat
 - [ ] **Phase 7: Cloud Mode + Relay Server** - Relay deployment, JWT auth, CloudTransport, same UX as LAN over internet
@@ -148,7 +148,12 @@ Plans:
   6. Drag-and-drop split-pane stays — power users keep that workflow. The new commands ARE the default surface, but nothing removed.
   7. README and PROJECT.md updated to document the full lifecycle: create project locally → LAN collab via VersionCon → push to cloud git → next version via pull + fresh session.
   8. All existing tests still pass; new commands ship with regression coverage following the source-grep + integration-test pattern from prior phases.
-**Plans:** TBD (planned via /gsd-plan-phase 4.3)
+**Plans:** 5 plans complete (autonomous run 2026-05-11). +89 tests (350 → 439).
+- [x] 04.3-01-PLAN.md — Wave 1: hide `.versioncon/` via `files.exclude` injection + 7 git-style command aliases (`vc push`/`pull`/`checkout`/`branch`/`log`/`diff`/`merge`)
+- [x] 04.3-02-PLAN.md — Wave 2: WorkspaceDiffer service + `versioncon.push` (auto-stage workspace diff) + `versioncon.pull` (branch → workspace, reuses PUSH-11 conflict prompt)
+- [x] 04.3-03-PLAN.md — Wave 3: LocalChangesStatusBar UI + FileSystemWatcher debounce + `versioncon.diff` QuickPick + vscode.diff preview
+- [x] 04.3-04-PLAN.md — Wave 4: GitBridge service (shell-safe spawn) + `versioncon.exportToGitRemote` + `versioncon.importFromGitRemote` + admin-permission gate + `VersionCon: Git Bridge` Output channel
+- [x] 04.3-05-PLAN.md — Wave 5: README Lifecycle Tour + VersionCon-for-Git-Users quick-ref table; PROJECT.md mirror
 **UI hint**: yes (status bar item, files.exclude injection)
 **Scope guardrails**:
 - Do NOT remove the split-pane drag-and-drop UI — it stays as a power-user surface.

@@ -154,6 +154,14 @@ None yet.
 |---|-------------|------|--------|-----------|
 | 260510-sdm | Phase 4.1 UAT gap (Test 3): surface displayName validation errors in wizard step 1 — relaxed wizard.js maxlength 64→256, added paste handler preserving control chars; +4 source-grep tests | 2026-05-10 | b8515d4 | [260510-sdm-phase-4-1-uat-gap-test-3-surface-display](./quick/260510-sdm-phase-4-1-uat-gap-test-3-surface-display/) |
 
+### Phases Completed
+
+| Phase | Description | Date | Plans | Commits | Tests Added |
+|-------|-------------|------|-------|---------|-------------|
+| 4 | Presence, Chat + File-Level Conflict Notifications | 2026-05-11 | 15 | (across many) | 337+ |
+| 4.1 | Host Identity + Creation Wizard (INSERTED) | 2026-05-09 | 4 | (across waves) | +20 |
+| 4.3 | Git-Style Commands + File Explorer Workflow + Cloud Bridge (INSERTED) | 2026-05-11 | 5 | 9e20df0..69ffeaf (14 commits) | +89 (350→439) |
+
 ## Deferred Items
 
 Items acknowledged and carried forward from previous milestone close:
@@ -164,7 +172,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-11T05:42:00Z
-Stopped at: Closed all 3 Phase 4 UAT blocker gaps inline (commit a420eb5). 999.3 (peer presence propagation) — client locally upserts self after wire send, SessionHost emits SessionEvent on incoming peer presence so wireHostEvents can refresh host's tree, member-left cleanup wired. 999.4 (displayName "You" fallback) — wireHostEvents now mirrors hostIdentity.displayName into currentSelfDisplayName. 999.5 (joiner onboarding, partial) — informational notification + revealFileInOS action; full directory-location picker still deferred. +6 source-grep regression tests; 350 passing. Phase 4 multi-window UAT Tests 2-6 now unblocked — retest via /gsd-verify-work 4 (will need full Extension Host reload).
+Last session: 2026-05-11T07:13:00Z
+Stopped at: Autonomous run completed Phase 4 closure + Phase 4.3 full execution. Phase 4 marked done (UAT deferred per Phase 3 precedent — 3 blocker gaps closed inline a420eb5). Phase 4.3 inserted, planned, and executed: 5 waves, 14 commits (9e20df0..69ffeaf), +89 tests (350 → 439). Shipped: `.versioncon/` hidden from File Explorer via auto-injected files.exclude; 7 git-style command aliases (vc push/pull/checkout/branch/log/diff/merge); workspace-diff-driven push/pull (no drag required); LocalChangesStatusBar with FileSystemWatcher debounce; vscode.diff QuickPick preview; GitBridge service with shell-safe spawn + admin-gated exportToGitRemote/importFromGitRemote; README Lifecycle Tour + VersionCon-for-Git-Users quick-ref. Phase 5 (AST conflict detection) is next.
 Resume file: None
-Last activity: 2026-05-11 - Closed 999.3 + 999.4 + 999.5 inline (a420eb5); Phase 4 UAT unblocked
+Last activity: 2026-05-11 - Phase 4.3 complete autonomously; ready for Phase 5 planning

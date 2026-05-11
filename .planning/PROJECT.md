@@ -120,6 +120,37 @@ Teams collaborate on code without merge conflict pain — dependency-aware track
 - **Performance**: Dependency analysis must be fast enough to run on every push without blocking the workflow
 - **UX**: No terminal commands required — everything through the visual UI
 
+## Lifecycle Tour
+
+VersionCon v1 covers the full lifecycle from "empty folder" to "shipped to GitHub and starting v2." Each stage uses commands surfaced by phases shipped to date:
+
+1. **Create.** Host runs `versioncon.hostSession` (Phase 1). Wizard collects displayName + invite code (Phase 4.1). `.versioncon/branches/main/` initialized (Phase 3). `.versioncon/` hidden from File Explorer (Phase 4.3).
+2. **Join.** Teammates run `versioncon.joinSession` (Phase 1). Sidebar + member presence wire up (Phase 4).
+3. **Edit + Push.** Workspace-diff push (Phase 4.3 — `versioncon.push` auto-stages when nothing drag-staged). Status bar shows `N local changes` (Phase 4.3). Confirmation modal + per-file diff preview (Phase 3). Push broadcasts via SessionHost (Phase 4).
+4. **Pull.** `versioncon.pull` copies branch → workspace with PUSH-11 conflict prompt (Phase 4.3 reusing Phase 3 modal).
+5. **Sync after teammate push.** `versioncon.sync` resolves the SyncTracker out-of-sync set (Phase 3).
+6. **Ship to cloud.** Host runs `versioncon.exportToGitRemote` (Phase 4.3) — git init/add/commit/remote/push via spawn-with-shell:false. Admin-gated. Output to `VersionCon: Git Bridge` channel.
+7. **Start v2.** Host runs `versioncon.importFromGitRemote` (Phase 4.3) — clones a real Git remote into a fresh VersionCon branch. BranchManager.registerExternalBranch records metadata.
+
+See `README.md` for the full user-facing walkthrough (Alice/Bob narrative + Command Palette specifics).
+
+## VersionCon-for-Git-Users vocabulary
+
+Phase 4.3 introduced git-style command aliases so users coming from git have a familiar entry surface without duplicating logic. The aliases (`versioncon.cmd.<verb>`) are pure pass-throughs to canonical command ids — adding behavior to any verb MUST happen on the canonical id, never the alias module (see `src/commands/aliases.ts` JSDoc).
+
+| Git verb | Canonical command | Alias | Notes |
+|----------|-------------------|-------|-------|
+| push     | versioncon.push                  | cmd.push     | Workspace-diff auto-stage when un-staged |
+| pull     | versioncon.pull                  | cmd.pull     | New in Phase 4.3 — distinct from versioncon.sync |
+| checkout | versioncon.switchBranch          | cmd.checkout | |
+| branch   | versioncon.createBranch          | cmd.branch   | |
+| log      | versioncon.showPushHistory       | cmd.log      | |
+| diff     | versioncon.diff                  | cmd.diff     | Workspace-wide; versioncon.previewDiff is per-file |
+| merge    | versioncon.mergeBranch           | cmd.merge    | |
+| export   | versioncon.exportToGitRemote     | (none)       | Host-only, admin-gated |
+| import   | versioncon.importFromGitRemote   | (none)       | Host-only, admin-gated |
+| sync     | versioncon.sync                  | (none)       | Existing PUSH-10/11 sync resolution |
+
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
@@ -129,6 +160,9 @@ Teams collaborate on code without merge conflict pain — dependency-aware track
 | Dependency-aware conflict detection | Core differentiator — git is line-based and dumb, VersionCon understands code semantics | — Pending |
 | LAN + Cloud from day one | Design networking layer to handle both — same protocol, different transport | — Pending |
 | Branch as source of truth, workspace as scratch | Simple safety model — branch is read-only until push, workspace is disposable | — Pending |
+| Git-style command aliases (Phase 4.3) | User feedback during Phase 4 UAT 2026-05-11 — git vocabulary lowers onboarding friction without changing the underlying model | — Pending validation |
+| Workspace-diff push/pull (Phase 4.3) | Drag-and-drop split-pane felt mandatory; workspace-diff lets users push from the native File Explorer | — Pending validation |
+| Cloud git bridge (Phase 4.3) | Phase 4 UAT: "Alice will push final branch to cloud or wherever they want to use the code." Closes the LAN-to-cloud lifecycle loop. | — Pending validation |
 | AI agent API/protocol | Forward-looking — AI coding tools should understand the collaboration system | — Pending |
 
 ## Evolution

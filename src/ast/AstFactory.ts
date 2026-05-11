@@ -7,6 +7,14 @@
  * registry through {@link registerAdapter} to wire real adapters without
  * changing this file's public signature.
  *
+ * Adapter-registration policy (Wave 2 — Plan 05-02): each adapter module owns
+ * its own registerAdapter() call at module-import time. The Wave 4 worker
+ * explicitly imports `src/ast/adapters/javascript.js` etc., which triggers
+ * the registration as a side effect. This keeps THIS file free of any
+ * tree-sitter / web-tree-sitter imports — the host process can safely
+ * import AstFactory.ts to call `detectLanguageFromPath`/`getAdapter` without
+ * pulling in the heavyweight grammar runtime (SC-2: host stays responsive).
+ *
  * SC-3 fallback contract: when {@link getAdapter} returns null, the caller
  * (Wave 4 worker) MUST route to the file-level fallback adapter rather than
  * crashing. Wave 3 implements that fallback in `src/ast/adapters/fallback.ts`.

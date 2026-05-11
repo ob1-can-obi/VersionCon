@@ -16,6 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 2: Split-Pane UI + File System Layer** - Two-pane webview, drag-and-drop, stateless webview protocol, filesystem-as-truth
 - [x] **Phase 3: Push, Sync + Branch Management** - Explicit push with diff, push history, revert, branch creation, admin/member permissions (6/6 plans done; 6/6 SCs satisfied by code, visual UAT deferred — see 03-VERIFICATION.md and 03-HUMAN-UAT.md)
 - [ ] **Phase 4: Presence, Chat + File-Level Conflict Notifications** - Real-time presence, in-app chat, push activity log, soft conflict alerts
+- [x] **Phase 4.1 (INSERTED): Host Identity + Creation Wizard** - Wizard prompts host for displayName; session creator is host by construction (not first WebSocket auth) (4/4 plans done; UAT 3/3 pass; UAT Test 3 gap closed by quick task 260510-sdm)
 - [ ] **Phase 5: Dependency-Aware Conflict Detection (AST)** - AST child process, per-language parsers, function-level conflict attribution, smart push summary
 - [ ] **Phase 6: Inline Code Review** - Diff + approve flow, line comments, mandatory review gate, review threads in chat
 - [ ] **Phase 7: Cloud Mode + Relay Server** - Relay deployment, JWT auth, CloudTransport, same UX as LAN over internet
@@ -93,7 +94,7 @@ Plans:
   3. Push events, revert events, and branch events are automatically posted to the chat timeline so the activity history is always visible
   4. When a teammate pushes changes to a file the user has open, the user receives a soft non-blocking notification (not a modal) identifying what changed and who pushed it
   5. When a push does not affect the user's workspace at all, the user sees a green "no impact" status and continues working without interruption
-**Plans:** 11/11 plans complete (Phase 4 feature-complete; verifier + multi-host UAT pending — Bonjour service-name collision per backlog 999.1 blocks single-machine UAT)
+**Plans:** 14/15 plans complete (Phase 4 feature-complete; gap-closure-v2 04-15 in flight to close 3 NEW blockers — CR-01-NEW actor mis-attribution, CR-02-NEW host-self echo, CR-03-NEW segment-aware path validator — surfaced by 04-VERIFICATION.md re-verification 2026-05-08)
 Plans:
 - [x] 04-01-protocol-and-types-PLAN.md — Wire protocol + ChatRecord/PresenceInfo types + round-trip tests
 - [x] 04-02-chat-log-PLAN.md — ChatLog persistence (mirror PushHistory) + 3 truncation modes + tests
@@ -106,7 +107,32 @@ Plans:
 - [x] 04-09-soft-notifications-PLAN.md — StatusBarManager flash/unread + extension.ts wiring (push-received → toast/flash, presence broadcast on tab change)
 - [x] 04-10-chat-panel-PLAN.md — ChatPanel WebviewPanel + bundled markdown-it/highlight.js/codicons + CSP + WorkspaceState chatHiddenBefore
 - [x] 04-11-manage-chat-PLAN.md — versioncon.manageChat QuickPick + 4 modal confirms + host gating + export
+- [x] 04-12-system-events-in-chat-PLAN.md — Gap closure (SC-3): broadcastPush/Revert/BranchCreated also append+broadcast kind:'system' ChatRecord into chat-log.json; +13 system-event tests
+- [x] 04-13-host-input-validation-PLAN.md — Gap closure (CR-01/02/03): coerce client-frame kind to 'user', validate presence-update activeFilePath, cap chat body 64KiB / recordId 128 chars; +10 input-validation tests
+- [x] 04-14-chat-panel-lifecycle-PLAN.md — Gap closure (CR-04): remove ChatPanel public onDidChangeViewState setter; bind onPanelActivated through refs; lifecycle-managed via this.disposables; +4 lifecycle tests
+- [x] 04-15-gap-closure-v2-PLAN.md — Gap closure v2 (CR-01-NEW/02-NEW/03-NEW): broadcastPush/Revert/BranchCreated stamp actor identity from PushRecord/BranchInfo; appendAndBroadcastSystemEvent returns ChatRecord for host-self echo at 4 extension.ts call sites; presence-update validator uses segment-aware traversal detection (segments.includes('..')); +6 regression tests
 **UI hint**: yes
+
+### Phase 4.1 (INSERTED): Host Identity + Creation Wizard
+**Goal**: Two architectural fixes to v1 session creation that surfaced during Phase 4 multi-window UAT (2026-05-08): (1) the Create Session wizard must explicitly prompt the host for their display name with sensible defaults (git config user.name → OS username → 'Host'), validation, and persistence — currently `WizardPanel.ts:426-429` reads `versioncon.displayName` from settings.json silently and falls back to the literal 'Host'; (2) the session creator must be the host by construction, not by "first WebSocket auth wins" race — currently `SessionHost.ts:501-502` assigns role:'host' to the first authenticating client, so a teammate joining via the invite before the creator's own loopback client can hijack the host role of the creator's session.
+**Depends on**: Phase 4 (must not regress CR-01-NEW closure from plan 04-15 — actor displayName threading is preserved; this phase only changes WHERE the host's identity is set, not HOW it flows through broadcasts)
+**Requirements**: NET-01, NET-02 (refines existing Phase 1 work — wizard now collects displayName + host-by-construction)
+**Success Criteria** (what must be TRUE):
+  1. Creating a session opens a wizard step that prompts the user for their display name. Default is git `user.name`, falling back to OS username, falling back to 'Host'. The user can edit and confirm. The chosen value flows into `new SessionHost(config, hostDisplayName)` and is reflected verbatim in the host's MEMBERS row, in chat-message envelopes for host-authored messages, and in system-event bodies (push/revert/branch-create) when the host is the actor.
+  2. When ANY remote member authenticates over WebSocket — regardless of timing — they are assigned role:'member', never role:'host'. The session creator's pre-set hostMemberId is bound at `SessionHost.start()` BEFORE the WebSocket listener accepts connections; the "first authenticated wins" comment + branch in SessionHost.ts is removed.
+  3. Reverts of remote members' pushes still attribute the action to the original pusher (`record.memberDisplayName`), preserving the CR-01-NEW closure from plan 04-15. Host identity now being set at `.start()` rather than at first auth must not regress this — the actor identity threaded into `appendAndBroadcastSystemEvent` continues to come from the PushRecord, not from `this.hostDisplayName`.
+  4. All existing 317 Phase 4 tests still pass without modification. New tests cover (a) wizard rendering of the displayName step + non-empty / length-cap validation, (b) host self-registration race protection — assert `hostMemberId !== null` immediately after `start()` returns, (c) "remote auth never gets host role" — assert that the FIRST connection from a non-loopback origin (or any origin once host is pre-registered) returns role:'member'.
+**Out of scope** (deferred to backlog or later phase):
+  - Multi-host / host migration (transferring host role if creator drops)
+  - Persistent member identities across reconnects
+  - Cross-window identity carry-over between EDH instances
+**Plans:** 4 plans (planned 2026-05-08 via /gsd-plan-phase 4.1)
+Plans:
+- [x] 04.1-01-PLAN.md — Wave 1: Types + protocol (HostIdentity interface in src/types/session.ts; AuthRequest.hostAuthSecret? optional field; +3 round-trip tests)
+- [x] 04.1-02-PLAN.md — Wave 2: SessionHost host pre-registration — constructor accepts HostIdentity, hostMemberId set in constructor, handleAuthRequest gates role:host on crypto.timingSafeEqual of hostAuthSecret; 5 test call sites updated; +5 race-protection tests (Defect B closure)
+- [x] 04.1-03-PLAN.md — Wave 2 (parallel with 02): Wizard step 1 collects displayName with default chain (settings → git → os → Host), validation (≤64 chars, no control chars), workspace-scoped persistence; package.json declares versioncon.displayName; HostIdentity allocated and threaded through onSessionStarted callback; extension.ts wireHostEvents accepts hostIdentity (Defect A closure)
+- [x] 04.1-04-PLAN.md — Wave 3: Cross-cutting regression suite — 10 tests covering Defect A wizard contract (source-grep), Defect B race protection, Phase 4 closure preservation (CR-01-NEW/CR-02-NEW/CR-03-NEW under HostIdentity model), secret hygiene assertions, length-mismatch attack guard
+**UI hint**: yes (wizard step changes)
 
 ### Phase 5: Dependency-Aware Conflict Detection (AST)
 **Goal**: Conflict notifications upgrade from file-level to function-level — users are told exactly which symbol changed, who changed it, and on which line they call it
@@ -181,6 +207,21 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 **Affected code:** Phase 1/2 discovery/networking layer (likely `src/network/` or `src/discovery/`).
 **Surfaced:** 2026-05-07 during Phase 3 (03-06) visual UAT. Blocked the single-machine two-host UAT setup; visual UAT for SC 5 / SC 6 was deferred as a result. This bug will block any future single-machine UAT for LAN-dependent features.
 **Suggested home:** small dedicated phase OR rolled into Phase 4 (presence/chat) as a prerequisite.
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.2: Wizard step 2 Next button stays disabled with all Network Configuration fields populated (BACKLOG)
+
+**Goal:** [Captured for future planning] — On wizard step 2 (Network Configuration), the Next button remains disabled even when Port, Network Interface, and Max Payload Size are all populated with valid values. Phase 1 wizard plumbing bug — predates Phase 4.1 — surfaced during Phase 4.1 UAT on 2026-05-10. Fix likely in `wizard.js` step-2 validation predicate or the `wizard-validate` postMessage round-trip not firing on the dropdown's change event.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+**Repro:** Run `versioncon.hostSession` → complete step 1 with valid Session Name + Display Name → land on step 2. All three fields are populated with sensible defaults (Port 50361, Interface `en0 (192.168.0.68)`, Max Payload 50). Next button visually disabled (greyed out). Clicking it does nothing. Back button works.
+**Screenshot evidence:** Captured during 4.1 UAT 2026-05-10.
+**Affected code:** Phase 1 wizard step-2 logic — `src/ui/webview/wizard/wizard.js` (step-2 validation / Next-gating) and possibly `src/ui/WizardPanel.ts` `handleWizardValidate` for step 2.
+**Surfaced:** 2026-05-10 during Phase 4.1 UAT Test 1 (wizard step 1 displayName pre-fill verification). User advanced past step 1 successfully, hit the wall on step 2. Outside Phase 4.1 scope (4.1 only touches step 1 + host pre-registration).
+**Suggested home:** small dedicated phase OR fold into the deferred Phase 1 plans 01-04/01-05/01-05b/01-06 when those resume.
 
 Plans:
 - [ ] TBD (promote with /gsd-review-backlog when ready)

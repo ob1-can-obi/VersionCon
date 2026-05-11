@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Completed plan 04-11 (Phase 4 feature-complete — versioncon.manageChat full QuickPick implementation, 4 modal confirms, two-layer host gating, per-user clear-my-view, dual-path export, ChatLog wired into extension.ts; 22 new tests, 284 passing total). All 11 Phase 4 plans done; awaiting verifier + multi-host UAT.
-last_updated: "2026-05-08T05:19:45.380Z"
-last_activity: 2026-05-08 -- Phase 04 execution started
+last_updated: "2026-05-09T09:41:02.254Z"
+last_activity: 2026-05-09 -- Phase 04.1 execution started
 progress:
   total_phases: 9
-  completed_phases: 2
-  total_plans: 35
-  completed_plans: 28
-  percent: 80
+  completed_phases: 3
+  total_plans: 36
+  completed_plans: 32
+  percent: 89
 ---
 
 # Project State
@@ -21,15 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-04)
 
 **Core value:** Teams collaborate on code without merge conflict pain — dependency-aware tracking means you only stop coding when changes genuinely affect what you're working on.
-**Current focus:** Phase 04 — presence-chat-file-level-conflict-notifications
+**Current focus:** Phase 04.1 — host-identity-and-creation-wizard
 
 ## Current Position
 
-Phase: 04 (presence-chat-file-level-conflict-notifications) — EXECUTING
-Plan: 1 of 14
-Status: Executing Phase 04
-Next: Phase 4 close-out (verifier run + ROADMAP "Complete" marker once UAT path resolves) → Phase 2 (Split-Pane UI) or Phase 5 (Dependency-Aware Conflict Detection / AST) per execution-order rule.
-Last activity: 2026-05-08 -- Phase 04 execution started
+Phase: 04.1 (host-identity-and-creation-wizard) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 04.1
+Next: /gsd-execute-phase 4.1 — Wave 1: 04.1-01 (types + protocol). Wave 2 parallel: 04.1-02 (host pre-registration) ∥ 04.1-03 (wizard displayName + plumbing). Wave 3: 04.1-04 (regression suite, 11 tests). After 4.1 ships, resume Phase 4 multi-window UAT (Tests 2-6 in 04-UAT.md).
+Last activity: 2026-05-09 -- Phase 04.1 execution started
 
 Progress: [█████████░] 88%
 
@@ -132,6 +132,10 @@ Recent decisions affecting current work:
 - [Plan 04-11]: ChatLog wiring landed in extension.ts in this plan, not Plan 04-10 — Plan 04-09 deferred to 04-10, but 04-10's host chat-message handler null-guarded chatLog so the wiring never landed. Plan 04-11 needs activeChatLog for clearAll/truncate*/exportToFile to do anything meaningful, so it became a Rule 2 deviation here.
 - [Plan 04-11]: UI-SPEC literal verification via source-grep tests — extension.ts read as a string, modal copy + button labels asserted against UI-SPEC §6.5 + §6.4. Catches future drift away from the spec without needing a VS Code extension host to mount the QuickPick. Pattern reusable for any future spec'd UI strings.
 
+### Roadmap Evolution
+
+- Phase 4.1 inserted after Phase 4 on 2026-05-08 (URGENT) — Host Identity + Creation Wizard. Surfaced during Phase 4 multi-window UAT: (1) Wizard does not prompt for hostDisplayName (WizardPanel.ts:426-429 reads versioncon.displayName silently, defaults to literal 'Host'); (2) "first authenticated WebSocket connection wins" host designation (SessionHost.ts:501-502) lets a remote joiner hijack the host role from the session creator. Both are v1-blocking architectural defects.
+
 ### Pending Todos
 
 None yet.
@@ -143,6 +147,12 @@ None yet.
 - [Phase 7]: Cloud relay operational model (hosting platform, cost model, self-host option) is not yet decided — needs decision before Phase 7 planning
 - [Phase 8]: VS Code MCP API is new (2025) — McpStdioServerDefinition vs McpHttpServerDefinition tradeoffs need research during Phase 8 planning
 
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260510-sdm | Phase 4.1 UAT gap (Test 3): surface displayName validation errors in wizard step 1 — relaxed wizard.js maxlength 64→256, added paste handler preserving control chars; +4 source-grep tests | 2026-05-10 | b8515d4 | [260510-sdm-phase-4-1-uat-gap-test-3-surface-display](./quick/260510-sdm-phase-4-1-uat-gap-test-3-surface-display/) |
+
 ## Deferred Items
 
 Items acknowledged and carried forward from previous milestone close:
@@ -153,6 +163,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-08T03:41:36Z
-Stopped at: Completed plan 04-11 (Phase 4 feature-complete — versioncon.manageChat full QuickPick implementation, 4 modal confirms, two-layer host gating, per-user clear-my-view, dual-path export, ChatLog wired into extension.ts; 22 new tests, 284 passing total). All 11 Phase 4 plans done; awaiting verifier + multi-host UAT.
+Last session: 2026-05-10T01:34:24Z
+Stopped at: Completed quick task 260510-sdm (Phase 4.1 UAT Test 3 gap closure — relaxed wizard.js maxlength 64→256 and added control-char-preserving paste handler so handleWizardNext's >64-char and control-char error literals are now reachable from the live UI; +4 source-grep regression tests; 341 passing total). Phase 4.1 UAT now 3/3 pass.
 Resume file: None
+Last activity: 2026-05-10 - Completed quick task 260510-sdm: Phase 4.1 UAT gap (Test 3) - surface displayName validation errors

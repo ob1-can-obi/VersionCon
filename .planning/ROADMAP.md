@@ -171,7 +171,14 @@ Plans:
   3. Dependency analysis works for Python, JavaScript/TypeScript, Java, and C++ codebases; for all other languages, the system falls back to file-level and line-level detection (not silence)
   4. Files larger than 500KB and paths matching node_modules/dist are skipped automatically — conflict detection never hangs on generated or minified files
   5. The smart push summary upgrades from "files changed" to "dependency impact + affected teammates," showing which symbols each teammate depends on before the push lands
-**Plans**: TBD
+**Plans:** 5 plans (planned 2026-05-10 via /gsd-plan-phase 5)
+Plans:
+- [ ] 05-01-PLAN.md — Wave 1: Types + skipPolicy + AstFactory scaffold; ChatRecord.meta extended with affectedSymbols + unsupportedLanguages
+- [ ] 05-02-PLAN.md — Wave 2: JavaScript + TypeScript adapters (tier-1); WASM grammars vendored + esbuild copy hook
+- [ ] 05-03-PLAN.md — Wave 2 (parallel): Python adapter + FallbackAdapter; Java/C++ register-but-fallback stubs (SC-3 architectural completeness)
+- [ ] 05-04-PLAN.md — Wave 3: forked AstWorker + AstAnalyzer parent coordinator (T-05-01 re-fork, T-05-02 5s timeout, T-05-03 path validation); joinImpact pure fn
+- [ ] 05-05-PLAN.md — Wave 4: SessionHost.broadcastPush wires AstAnalyzer; chat-message-amend wire type; ChatPanel + ActivityLogProvider smart-summary rendering
+**UI hint**: yes (smart-push-summary label upgrade across ActivityLog + ChatPanel)
 
 ### Phase 6: Inline Code Review
 **Goal**: Users can request a formal review of their changes before they merge, reviewers can approve or request changes with inline comments, and admins can make review mandatory for merges to main

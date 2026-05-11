@@ -27,6 +27,7 @@ import { createTimestamp } from './network/protocol.js';
 import { ActivityLogProvider } from './ui/ActivityLogProvider.js';
 import { PresenceTreeProvider } from './ui/PresenceTreeProvider.js';
 import { computeFileOverlap, getOpenTabPaths } from './utils/fileOverlap.js';
+import { registerGitStyleAliases } from './commands/aliases.js';
 import type { PresenceInfo } from './types/chat.js';
 import type { ChatRecord } from './types/chat.js';
 
@@ -244,6 +245,13 @@ export function activate(context: vscode.ExtensionContext): void {
       activityLogProvider?.refresh();
     }),
   );
+
+  // --- Phase 4.3 (SC-2): git-style command aliases (pure pass-throughs) ---
+  // Adds versioncon.cmd.push/pull/checkout/branch/log/diff/merge as thin
+  // wrappers calling executeCommand on the canonical handler. One site, one
+  // call — all routing lives in src/commands/aliases.ts. DO NOT add new
+  // behavior to the aliases; behavior changes happen in the canonical command.
+  registerGitStyleAliases(context);
 
   // --- Phase 4: activity-tree row click dispatcher (UI-SPEC §3.2) ---
   // ActivityLogProvider declares `versioncon.activityLog.openEntry` as the click

@@ -185,6 +185,41 @@
         "title": "Manage Chat",
         "icon": "$(gear)",
         "category": "VersionCon"
+      },
+      {
+        "command": "versioncon.cmd.push",
+        "title": "VersionCon: Push",
+        "category": "VersionCon"
+      },
+      {
+        "command": "versioncon.cmd.pull",
+        "title": "VersionCon: Pull",
+        "category": "VersionCon"
+      },
+      {
+        "command": "versioncon.cmd.checkout",
+        "title": "VersionCon: Checkout",
+        "category": "VersionCon"
+      },
+      {
+        "command": "versioncon.cmd.branch",
+        "title": "VersionCon: Branch",
+        "category": "VersionCon"
+      },
+      {
+        "command": "versioncon.cmd.log",
+        "title": "VersionCon: Log",
+        "category": "VersionCon"
+      },
+      {
+        "command": "versioncon.cmd.diff",
+        "title": "VersionCon: Diff",
+        "category": "VersionCon"
+      },
+      {
+        "command": "versioncon.cmd.merge",
+        "title": "VersionCon: Merge",
+        "category": "VersionCon"
       }
     ],
     "menus": {

@@ -72,3 +72,46 @@ suite('Phase 4.1 UAT Test 3 — displayName validation reachability', () => {
       'payload shape { sessionName, displayName } preserved so handleWizardNext case 1 still receives displayName');
   });
 });
+
+// -----------------------------------------------------------------------------
+// Backlog 999.2 closure — wizard step-2 Next button must stay enabled.
+//
+// Surfaced during Phase 4.1 UAT 2026-05-10 and again during Phase 4 multi-window
+// UAT 2026-05-10. Root cause: attachListeners() called updateNextDisabled()
+// unconditionally after every render. On step 2 the step-1 inputs (#session-name,
+// #display-name) don't exist, so nameOk/dispOk both evaluated false, and the
+// shared #btn-next element got its `disabled` attribute set to true on every
+// step beyond 1. Fix: short-circuit updateNextDisabled() when nameInput or
+// dispInput is null (i.e. not on step 1), leaving the rendered HTML's
+// already-enabled Next button untouched on later steps.
+// -----------------------------------------------------------------------------
+suite('Backlog 999.2 — wizard step-2 Next button stays enabled', () => {
+  const wizardJsPath = path.resolve(process.cwd(), 'src/ui/webview/wizard/wizard.js');
+
+  test('updateNextDisabled short-circuits when step-1 inputs are absent', () => {
+    const src = fsSync.readFileSync(wizardJsPath, 'utf-8');
+    assert.match(src, /function updateNextDisabled\(\)\s*\{[\s\S]{0,600}?if\s*\(\s*!nameInput\s*\|\|\s*!dispInput\s*\)\s*return;/,
+      'updateNextDisabled() returns early when step-1 inputs are missing (no false disabling on step 2+)');
+  });
+
+  test('step-2 Next button rendered without disabled attribute', () => {
+    const src = fsSync.readFileSync(wizardJsPath, 'utf-8');
+    // Locate renderStep2 body and assert the Next button literal does NOT carry a disabled attribute.
+    const step2Match = src.match(/function renderStep2\(state\)\s*\{[\s\S]*?return `([\s\S]*?)`;\s*\}/);
+    assert.ok(step2Match, 'renderStep2 template literal extractable');
+    const step2Body = step2Match[1];
+    assert.match(step2Body, /id="btn-next"[^>]*>Next</, 'step 2 renders Next button');
+    assert.doesNotMatch(step2Body, /id="btn-next"[^>]*\bdisabled\b/,
+      'step 2 Next button has no disabled attribute at render time');
+  });
+
+  test('step-1 Next-button gating logic still present (no regression)', () => {
+    const src = fsSync.readFileSync(wizardJsPath, 'utf-8');
+    assert.match(src, /const nameOk = !!nameInput\.value\.trim\(\);/,
+      'step-1 sessionName non-empty check preserved');
+    assert.match(src, /const dispOk = !!dispInput\.value\.trim\(\);/,
+      'step-1 displayName non-empty check preserved');
+    assert.match(src, /btn\.disabled = !\(nameOk && dispOk\);/,
+      'step-1 Next button still gated on both fields being non-empty');
+  });
+});

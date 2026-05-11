@@ -163,8 +163,13 @@
     function updateNextDisabled() {
       const btn = document.getElementById('btn-next');
       if (!btn) return;
-      const nameOk = !!(nameInput && nameInput.value.trim());
-      const dispOk = !!(dispInput && dispInput.value.trim());
+      // Backlog 999.2 fix: only step 1 gates Next on session-name + display-name presence.
+      // Step 2+ render Next without a disabled attribute and must stay enabled — without
+      // this guard, the listener fired on every render and disabled Next on every step
+      // (nameInput/dispInput are null off step 1, so nameOk/dispOk evaluated to false).
+      if (!nameInput || !dispInput) return;
+      const nameOk = !!nameInput.value.trim();
+      const dispOk = !!dispInput.value.trim();
       btn.disabled = !(nameOk && dispOk);
     }
     if (nameInput) {

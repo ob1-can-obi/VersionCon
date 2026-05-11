@@ -630,6 +630,10 @@ export function activate(context: vscode.ExtensionContext): void {
     // Phase 4: host runs as 'local-user' for permission checks; mirror that into
     // the self-identity fields used by the activity log + presence broadcasts.
     currentSelfMemberId = hostMemberId;
+    // Phase 4 UAT fix (999.4): mirror the wizard-allocated displayName too,
+    // otherwise the host's PresenceInfo carries the literal default 'You' and
+    // every panel renders rows with name="You".
+    currentSelfDisplayName = hostIdentity.displayName;
     presenceTreeProvider?.setSelfMemberId(currentSelfMemberId);
     void vscode.commands.executeCommand(
       'setContext', 'versioncon.connected', true,
@@ -673,6 +677,24 @@ export function activate(context: vscode.ExtensionContext): void {
         members: buildHostSidebarMembers(),
         bandwidthStats: host.getBandwidthStats(),
       });
+    });
+
+    // Phase 4 UAT fix (999.3b): when a remote member sends presence-update,
+    // SessionHost upserts the info into PresenceMap AND emits 'presence-update'
+    // so the host's own PresenceTreeProvider can render the peer's row.
+    // Mirrors the client-side wireClientEvents listener.
+    host.on('presence-update', (info: PresenceInfo) => {
+      presenceTreeProvider?.upsert(info);
+      updatePresenceContext();
+    });
+
+    // Phase 4 UAT fix (999.3): when a member leaves, drop their presence row
+    // from the host's panel (the broadcast-out to other clients is already
+    // handled by SessionHost's member-left broadcast path, but the host's own
+    // tree needs explicit cleanup).
+    host.on('member-left', (data: { memberId: string }) => {
+      presenceTreeProvider?.removeMember(data.memberId);
+      updatePresenceContext();
     });
 
     host.on('session-ended', () => {
@@ -739,6 +761,38 @@ export function activate(context: vscode.ExtensionContext): void {
       })),
       bandwidthStats: null,
     });
+
+    // Phase 4 UAT fix (999.5): joiner onboarding. The joiner's workspace may
+    // be brand new (no .versioncon/ at all) — BranchManager.initialize() will
+    // have just created an empty .versioncon/branches/<branch>/, and the
+    // BRANCH FILES panel will show the "No branch files found" viewsWelcome
+    // empty state with no hint about what to do next. Surface a one-time
+    // notification per session that explains where files live and offers a
+    // reveal-in-explorer action so the user can orient themselves.
+    void (async () => {
+      const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!wsRoot) return;
+      const branch = currentBranchName ?? 'main';
+      const versionconPath = path.join(wsRoot, '.versioncon');
+      const branchPath = path.join(versionconPath, 'branches', branch);
+      const sessionLabel = info?.name ? `'${info.name}'` : 'the session';
+      const sessionNameSafe = info?.name ?? 'this session';
+      const action = await vscode.window.showInformationMessage(
+        `Joined ${sessionLabel}. Branch files for '${branch}' live at ${branchPath}. ` +
+        `Push files from your workspace to share them with the team.`,
+        'Open .versioncon Folder',
+        'Dismiss',
+      );
+      if (action === 'Open .versioncon Folder') {
+        try {
+          await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(versionconPath));
+        } catch {
+          // revealFileInOS may not be available in headless test runs — fall back to a no-op.
+        }
+      }
+      // Mark sessionNameSafe used so unused-var lint stays quiet across compilers.
+      void sessionNameSafe;
+    })();
 
     client.on('member-joined', () => {
       sidebarProvider.updateState({
@@ -1191,6 +1245,20 @@ export function activate(context: vscode.ExtensionContext): void {
             branch,
             activeFilePath,
           });
+          // Phase 4 UAT fix (999.3a): the host broadcasts presence-update with
+          // sender-excluded (Plan 04-04 policy), so the client never receives
+          // its own presence back. Without a local upsert here, the joiner's
+          // own row would never appear in their own PRESENCE panel. Mirrors
+          // the host-side explicit upsert at the activeHost branch below.
+          const selfInfo: PresenceInfo = {
+            memberId: currentSelfMemberId,
+            displayName: currentSelfDisplayName,
+            branch,
+            activeFilePath,
+            lastUpdated: createTimestamp(),
+          };
+          presenceTreeProvider?.upsert(selfInfo);
+          updatePresenceContext();
         } else if (activeHost) {
           const info: PresenceInfo = {
             memberId: currentSelfMemberId,

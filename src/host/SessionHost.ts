@@ -452,6 +452,12 @@ export class SessionHost implements SessionEventEmitter {
             lastUpdated: stampedTs,
           };
           this.presenceMap.upsert(info);
+          // Phase 4 UAT fix (999.3b): notify the host process so the host's
+          // own PresenceTreeProvider can upsert this peer's row. Without this
+          // emit, the host upserts into PresenceMap (correct) and broadcasts
+          // to other clients (correct) but the host's UI never learns about
+          // peer presence — Alice's PRESENCE panel only ever saw her own row.
+          this.emit('presence-update', info);
           // Exclude sender — they already know their own active editor.
           this.broadcast(sanitized, memberId);
         } else if (msg.type === 'sync-request') {

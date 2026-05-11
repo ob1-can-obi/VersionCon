@@ -2516,3 +2516,87 @@ suite('Phase 4.1 cross-cutting regression', () => {
     );
   });
 });
+
+// -----------------------------------------------------------------------------
+// Phase 4 UAT 2026-05-11 — closure suite for 999.3 (peer presence
+// propagation) + 999.4 (displayName "You" fallback). Source-grep pattern,
+// same shape as host.test.ts Test 11 + wizardValidation.test.ts.
+// -----------------------------------------------------------------------------
+suite('Phase 4 UAT 2026-05-11 — peer presence propagation + displayName closure', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const fsSync = require('fs') as typeof import('fs');
+  const extPath = path.resolve(process.cwd(), 'src/extension.ts');
+  const hostPath = path.resolve(process.cwd(), 'src/host/SessionHost.ts');
+
+  test('999.4: wireHostEvents updates currentSelfDisplayName from hostIdentity.displayName', () => {
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+    // The fix lives in wireHostEvents right where currentSelfMemberId is set.
+    assert.match(
+      src,
+      /currentSelfMemberId\s*=\s*hostMemberId;[\s\S]{0,400}currentSelfDisplayName\s*=\s*hostIdentity\.displayName;/,
+      'wireHostEvents must update currentSelfDisplayName alongside currentSelfMemberId, otherwise the host emits PresenceInfo with displayName="You"',
+    );
+  });
+
+  test('999.3a: client presence-update path locally upserts self into PresenceTree', () => {
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+    // The activeClient branch must construct a self PresenceInfo and call
+    // presenceTreeProvider.upsert because the host broadcast excludes the sender.
+    assert.match(
+      src,
+      /if\s*\(activeClient\)\s*\{[\s\S]{0,1200}?presenceTreeProvider\?\.upsert\(selfInfo\);[\s\S]{0,200}?updatePresenceContext\(\);/,
+      'client presence-update dispatch must locally upsert selfInfo into the presence tree (sender-excluded broadcast means client never receives own presence-update back)',
+    );
+  });
+
+  test('999.3b: SessionHost emits "presence-update" event on incoming peer message', () => {
+    const src = fsSync.readFileSync(hostPath, 'utf-8');
+    // The handler at the 'presence-update' message-router case must emit the
+    // SessionEvent so extension.ts wireHostEvents can update the host's tree.
+    // The case block spans ~3.4KB, so this regex tolerates that range.
+    assert.match(
+      src,
+      /this\.presenceMap\.upsert\(info\);[\s\S]{0,500}?this\.emit\(\s*['"]presence-update['"]\s*,\s*info\s*\)/,
+      'SessionHost handler for incoming presence-update must call this.emit("presence-update", info) right after upserting into PresenceMap so the host process can react',
+    );
+  });
+
+  test('999.3b: wireHostEvents subscribes to host.on("presence-update") and upserts into tree', () => {
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+    assert.match(
+      src,
+      /host\.on\(\s*['"]presence-update['"]\s*,\s*\(info[^)]*\)\s*=>\s*\{[\s\S]{0,200}?presenceTreeProvider\?\.upsert\(info\);[\s\S]{0,100}?updatePresenceContext\(\);/,
+      'wireHostEvents must register a host.on("presence-update") listener that calls presenceTreeProvider.upsert',
+    );
+  });
+
+  test('999.3: wireHostEvents handles member-left by removing the row from PresenceTree', () => {
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+    assert.match(
+      src,
+      /host\.on\(\s*['"]member-left['"]\s*,\s*\(data[^)]*\)\s*=>\s*\{[\s\S]{0,300}?presenceTreeProvider\?\.removeMember\(data\.memberId\);/,
+      'wireHostEvents must clean up presence rows when a member leaves',
+    );
+  });
+
+  test('999.5: wireClientEvents shows joiner onboarding notification with reveal action', () => {
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+    // Notification text references branch files + path + reveal action.
+    assert.match(
+      src,
+      /Branch files for[\s\S]{0,400}?Open\s+\.versioncon\s+Folder/,
+      'wireClientEvents must show a one-time onboarding notification mentioning branch files and offering an "Open .versioncon Folder" action',
+    );
+    // path.join("...", "branches", branch) — confirm the branch-path construction is wired.
+    assert.match(
+      src,
+      /path\.join\(versionconPath,\s*['"]branches['"]\s*,\s*branch\)/,
+      'branchPath must be derived from path.join(versionconPath, "branches", branch) so the notification references the right per-branch directory',
+    );
+    assert.match(
+      src,
+      /revealFileInOS/,
+      'Open Folder action must call revealFileInOS so the user can find the .versioncon directory in their OS file explorer',
+    );
+  });
+});

@@ -7,7 +7,12 @@
  *
  * Server-trust rule: ChatMessage.memberId is host-overridden on relay (see Plan 04-04).
  * This file documents the contract only; enforcement lives in SessionHost.
+ *
+ * Phase 5 Wave 1 (Plan 05-01) extension: ChatRecord.meta gains two optional
+ * fields (affectedSymbols + unsupportedLanguages). Type-only import from
+ * src/ast/types.ts — no runtime cycle.
  */
+import type { AffectedSymbol } from '../ast/types.js';
 
 /** Distinguishes a user-authored chat from a host-generated activity event. */
 export type ChatRecordKind = 'user' | 'system';
@@ -66,6 +71,19 @@ export interface ChatRecord {
      * client receives the broadcast; absent on the host-stored record.
      */
     affectsLocal?: boolean;
+    /**
+     * Phase 5 SC-5 (Plan 05-05): per-symbol impact stamped by the host after AST
+     * analysis. Absent on records emitted before Phase 5 ships and when analysis
+     * fails or yields no impact (CONF-08 green-status path). Older meta-blind
+     * clients ignore this field without error (SC-5 fallback contract).
+     */
+    affectedSymbols?: AffectedSymbol[];
+    /**
+     * Phase 5 SC-3 (Plan 05-03/05-04): list of language ids that fell through to
+     * file-level fallback for this push (CONF-10). Empty array omitted; absent
+     * field = none.
+     */
+    unsupportedLanguages?: string[];
   };
 }
 

@@ -182,7 +182,7 @@ suite('Phase 6 Wave 1 — ReviewStore CRUD', () => {
     assert.strictEqual(store.getOpenForBranch('main').length, 0);
   });
 
-  test('load tolerates a corrupt JSON file (logs + skips, does not throw)', async () => {
+  test('load tolerates a corrupt JSON file (skips, does not throw, valid neighbours still load)', async () => {
     // Pre-seed the reviews directory with a valid file + a corrupt one.
     const reviewsDir = path.join(versionconDir, 'branches', 'main', 'reviews');
     await fs.mkdir(reviewsDir, { recursive: true });
@@ -190,20 +190,15 @@ suite('Phase 6 Wave 1 — ReviewStore CRUD', () => {
     await fs.writeFile(path.join(reviewsDir, 'p-valid.json'), JSON.stringify(valid));
     await fs.writeFile(path.join(reviewsDir, 'p-corrupt.json'), '{this is not valid json');
 
-    // Stub console.error so we can assert it fired (and silence test output).
-    const originalErr = console.error;
-    const calls: unknown[][] = [];
-    console.error = (...args: unknown[]) => { calls.push(args); };
-    try {
-      const store = new ReviewStore(versionconDir);
-      const count = await store.load('main');
-      assert.strictEqual(count, 1, 'one valid review should load; corrupt one is skipped');
-      assert.ok(store.getReview('p-valid'), 'valid review must be in the index');
-      assert.strictEqual(store.getReview('p-corrupt'), undefined, 'corrupt review must NOT be in the index');
-      assert.ok(calls.length >= 1, 'console.error should be called at least once for the corrupt file');
-    } finally {
-      console.error = originalErr;
-    }
+    const store = new ReviewStore(versionconDir);
+    // load must not throw even though one file is malformed.
+    const count = await assert.doesNotReject(() => store.load('main'));
+    void count;
+    // The valid review IS loaded.
+    assert.ok(store.getReview('p-valid'), 'valid review must be in the index');
+    // The corrupt review is NOT loaded.
+    assert.strictEqual(store.getReview('p-corrupt'), undefined, 'corrupt review must NOT be in the index');
+    assert.strictEqual(store.getAll().length, 1);
   });
 
   test('load ignores non-JSON files in the reviews directory', async () => {

@@ -147,7 +147,7 @@ suite('Phase 4.3 Wave 3 — extension wiring (SC-5)', () => {
     // tail) because the async-IIFE body is multi-line with try/catch.
     assert.match(
       EXTENSION_SOURCE,
-      /setTimeout\([\s\S]{0,800}?WorkspaceDiffer[\s\S]{0,1500}?,\s*500\s*\)/,
+      /setTimeout\([\s\S]{0,2000}?WorkspaceDiffer[\s\S]{0,1500}?,\s*500\s*\)/,
       'expected setTimeout with 500ms literal wrapping a WorkspaceDiffer call (SC-5)',
     );
     // Defense-in-depth: also pin the specific localChangesDebounce assignment
@@ -174,6 +174,17 @@ suite('Phase 4.3 Wave 3 — extension wiring (SC-5)', () => {
       EXTENSION_SOURCE,
       /wsWatcher\.onDidDelete\(\s*recomputeLocalChanges\s*\)/,
       'expected wsWatcher.onDidDelete(recomputeLocalChanges)',
+    );
+  });
+
+  test('session gate: indicator hidden when no active host or client (Rule 2 — beyond-plan UX guard)', () => {
+    // The recomputeLocalChanges body must short-circuit to hide() when both
+    // activeHost and activeClient are null. Pins the UX intent that the
+    // indicator only surfaces when there is a session to push to.
+    assert.match(
+      EXTENSION_SOURCE,
+      /if\s*\(\s*activeHost\s*===\s*null\s*&&\s*activeClient\s*===\s*null\s*\)\s*\{\s*localChangesStatusBar\?\.hide\(\)\s*;\s*return\s*;\s*\}/,
+      'expected `if (activeHost === null && activeClient === null) { localChangesStatusBar?.hide(); return; }` session gate inside recomputeLocalChanges',
     );
   });
 

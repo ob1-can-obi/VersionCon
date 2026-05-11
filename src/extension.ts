@@ -2869,6 +2869,18 @@ export function activate(context: vscode.ExtensionContext): void {
         localChangesDebounce = setTimeout(() => {
           void (async () => {
             try {
+              // Session-gate (Rule 2 — beyond-plan UX correctness). When there
+              // is no active host or client, the "local changes vs. branch"
+              // concept is meaningless to the user — there is no peer to push
+              // to. Hide the indicator instead of broadcasting a stale count.
+              // The diff itself would still be well-defined (branchDir is a
+              // local directory), but the UX intent of SC-5 is "show me when
+              // I have work to share with my session"; no session = nothing
+              // to share.
+              if (activeHost === null && activeClient === null) {
+                localChangesStatusBar?.hide();
+                return;
+              }
               const differ = new WorkspaceDiffer();
               const diff = await differ.diff(
                 workspaceFolder.uri.fsPath,

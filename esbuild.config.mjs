@@ -1,7 +1,30 @@
 import * as esbuild from 'esbuild';
-import { mkdir, copyFile } from 'node:fs/promises';
+import { mkdir, copyFile, readdir } from 'node:fs/promises';
 
 const isWatch = process.argv.includes('--watch');
+
+/**
+ * Phase 5 Plan 05-04 (Wave 4): mirror src/test/fixtures/*.js into
+ * dist/test/fixtures/ so AstAnalyzer unit tests can resolve them via
+ * path.resolve(__dirname, '../fixtures/...') at runtime. tsc does not emit
+ * raw .js inputs (allowJs is off project-wide), so we copy them here.
+ *
+ * Best-effort: if src/test/fixtures/ does not exist yet (first build before
+ * Plan 05-04 lands), the readdir throws ENOENT — we swallow it and return.
+ */
+async function copyTestFixtures() {
+  await mkdir('dist/test/fixtures', { recursive: true });
+  let entries = [];
+  try {
+    entries = await readdir('src/test/fixtures');
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith('.js')) continue;
+    await copyFile(`src/test/fixtures/${entry}`, `dist/test/fixtures/${entry}`);
+  }
+}
 
 // Phase 4 Plan 04-10: copy webview-side static assets (HTML template, CSS,
 // codicon font + CSS) into dist/ so they sit alongside the bundled JS and the
@@ -45,6 +68,11 @@ const chatAssetsPlugin = {
         await copyTreeSitterGrammars();
       } catch (err) {
         console.error('[esbuild] copyTreeSitterGrammars failed:', err);
+      }
+      try {
+        await copyTestFixtures();
+      } catch (err) {
+        console.error('[esbuild] copyTestFixtures failed:', err);
       }
     });
   },
@@ -146,6 +174,7 @@ if (isWatch) {
   // Initial copy in case watchers don't fire onEnd before the user edits.
   await copyChatAssets();
   await copyTreeSitterGrammars();
+  await copyTestFixtures();
   console.log('Watching...');
 } else {
   await Promise.all([extCtx.rebuild(), chatCtx.rebuild(), workerCtx.rebuild()]);
@@ -153,6 +182,7 @@ if (isWatch) {
   // assets are present even if the plugin failed silently.
   await copyChatAssets();
   await copyTreeSitterGrammars();
+  await copyTestFixtures();
   await extCtx.dispose();
   await chatCtx.dispose();
   await workerCtx.dispose();

@@ -157,6 +157,17 @@ const chatCtx = await esbuild.context({
 // runtime node_modules lookup. The Wasm files it loads (grammars + the
 // runtime engine itself) live in dist/vendor/tree-sitter/, copied by
 // copyTreeSitterGrammars() above.
+//
+// `define: { "import.meta.url": ... }`: web-tree-sitter's emscripten loader
+// uses import.meta.url to derive its scriptDirectory + to feed createRequire
+// (https://emscripten.org/docs/api_reference/module.html). When esbuild
+// bundles ESM source to CJS, import.meta.url is stubbed to undefined; the
+// emscripten loader then throws "argument 'filename' must be ... Received
+// undefined" before it gets to load any Wasm. We alias import.meta.url to
+// the runtime `__filename` (the absolute path to dist/ast-worker.js) — that
+// gives emscripten a real file:// URL it can pass into createRequire and
+// derive scriptDirectory from. Discovered during Plan 05-04 Task 4
+// integration testing (Rule 3 fix — auto-resolve a blocker).
 const workerCtx = await esbuild.context({
   entryPoints: ['src/ast/worker.ts'],
   bundle: true,
@@ -167,6 +178,17 @@ const workerCtx = await esbuild.context({
   target: 'node18',
   sourcemap: true,
   minify: !isWatch,
+  define: {
+    'import.meta.url': '__importMetaUrl',
+  },
+  banner: {
+    // Construct a real file:// URL from __filename so web-tree-sitter's
+    // emscripten loader can call createRequire(import.meta.url) without
+    // exploding. `require('url').pathToFileURL(__filename).href` gives us
+    // the right shape — but we cache it in a stable global rather than
+    // call pathToFileURL N times.
+    js: "const __importMetaUrl = require('url').pathToFileURL(__filename).href;",
+  },
 });
 
 if (isWatch) {

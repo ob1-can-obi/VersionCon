@@ -1,10 +1,15 @@
 # Vendored binaries
 
-## tree-sitter grammars (Phase 5 Wave 2 — Plan 05-02)
+## tree-sitter grammars (Phase 5 Waves 2 + 3 — Plans 05-02, 05-03)
 
-Three language-grammar WebAssembly modules live under `tree-sitter/`. The Wave 4
+Four language-grammar WebAssembly modules live under `tree-sitter/`. The Wave 4
 AST worker (forked Node child process) loads them at runtime via
 `Language.load()` from web-tree-sitter@0.26.8.
+
+Wave 2 (Plan 05-02) vendored javascript / typescript / tsx. Wave 3 (Plan 05-03)
+adds python. Java + C++ intentionally have NO vendored grammar in v1 — those
+languages route through the line-level FallbackAdapter
+(`src/ast/adapters/fallback.ts`, SC-3); a real grammar lands in Phase 5.1.
 
 We vendor the binaries (rather than depending on the grammar npm packages at
 runtime) so that:
@@ -20,6 +25,7 @@ runtime) so that:
 | `javascript.wasm` | `tree-sitter-javascript`           | 0.23.1  | 14  | `4a378293fe7853cbee2836023be072dafa0e53b3b5edb245920838ca834ed121` |
 | `typescript.wasm` | `tree-sitter-typescript` (TS)      | 0.23.2  | 14  | `778025db5a8be0e70f8ccc3671e486dfeddd048c25d9e8a70c26de2e1bf6f97d` |
 | `tsx.wasm`        | `tree-sitter-typescript` (TSX)     | 0.23.2  | 14  | `79e5da75ea62855a0cd67177685f0164eac87d5f630b3cbe1e0a099751ad30f8` |
+| `python.wasm`     | `tree-sitter-python`                | 0.23.6  | 14  | `8c93692fb368e288a5824cee55773c9b3602804f513bda48c97661e52e9c2da2` |
 
 The web-tree-sitter runtime engine WASM (`web-tree-sitter.wasm`, ~196KB) is NOT
 vendored — it ships with the runtime npm package and esbuild copies it from
@@ -28,12 +34,23 @@ vendored — it ships with the runtime npm package and esbuild copies it from
 ### Re-vendoring procedure
 
 ```bash
-npm install --no-save tree-sitter-javascript@<version> tree-sitter-typescript@<version>
+npm install --no-save tree-sitter-javascript@<version> tree-sitter-typescript@<version> tree-sitter-python@<version>
 cp node_modules/tree-sitter-javascript/tree-sitter-javascript.wasm src/vendor/tree-sitter/javascript.wasm
 cp node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm src/vendor/tree-sitter/typescript.wasm
 cp node_modules/tree-sitter-typescript/tree-sitter-tsx.wasm        src/vendor/tree-sitter/tsx.wasm
-npm uninstall tree-sitter-javascript tree-sitter-typescript
+cp node_modules/tree-sitter-python/tree-sitter-python.wasm         src/vendor/tree-sitter/python.wasm
+npm uninstall tree-sitter-javascript tree-sitter-typescript tree-sitter-python
 shasum -a 256 src/vendor/tree-sitter/*.wasm  # update this README
+```
+
+Path B (tarball extract, when the npm package omits a prebuilt WASM — same
+pattern used to vendor `python.wasm` on 2026-05-10):
+
+```bash
+mkdir /tmp/tspy && cd /tmp/tspy
+npm pack tree-sitter-python@<version>
+tar -xzf tree-sitter-python-*.tgz
+cp package/tree-sitter-python.wasm <repo>/src/vendor/tree-sitter/python.wasm
 ```
 
 Verify each file's first 4 bytes are the Wasm magic (`0061736d`) before

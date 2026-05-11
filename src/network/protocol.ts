@@ -3,6 +3,11 @@ import type { PushFileEntry } from '../types/push.js';
 import type { BranchInfo } from '../types/branch.js';
 import type { ChatRecord, SystemEventSubKind } from '../types/chat.js';
 import type { AffectedSymbol } from '../ast/types.js';
+import type {
+  ReviewRequest,
+  ReviewComment as ReviewCommentType,
+  ReviewVoteRecord,
+} from '../types/review.js';
 
 // --- Message type discriminator ---
 export type MessageType =
@@ -32,6 +37,11 @@ export type MessageType =
   | 'chat-cleared'
   | 'chat-truncated'
   | 'chat-history'
+  | 'review-opened'
+  | 'review-comment'
+  | 'review-vote'
+  | 'review-resolved'
+  | 'review-state-sync'
   | 'presence-update';
 
 // --- Base ---
@@ -321,6 +331,79 @@ export interface PresenceUpdate extends BaseMessage {
   activeFilePath: string | null;
 }
 
+// --- Phase 6: Review messages (Plan 06-01 contract; Plan 06-02 host emits; Plan 06-03 client routes) ---
+
+/**
+ * Author opens a review on a specific push. Wave 2 host overrides
+ * `review.authorMemberId` / `authorDisplayName` from the ws-authenticated
+ * member context (T-06-01 mitigation, mirroring T-04-01-01). Host also
+ * stamps `review.openedAt` from createTimestamp() before broadcast.
+ *
+ * If a ReviewRequest already exists for the same pushId, the host CLOSES
+ * the prior request with status:'abandoned' (locked decision: re-pushing
+ * supersedes; opening a review on a superseded push is the supersede signal).
+ */
+export interface ReviewOpened extends BaseMessage {
+  type: 'review-opened';
+  review: ReviewRequest;
+}
+
+/**
+ * Reviewer leaves a line-level comment. Wave 2 host overrides
+ * `comment.authorMemberId` / `authorDisplayName` (T-06-01) and stamps
+ * `comment.createdAt`. Rate-limit + 500-comment cap apply in the Wave 2
+ * handler (T-06-03 mitigation).
+ */
+export interface ReviewCommentMessage extends BaseMessage {
+  type: 'review-comment';
+  reviewId: string;
+  comment: ReviewCommentType;
+}
+
+/**
+ * Reviewer approves / requests changes / leaves a commented-only marker.
+ * Wave 2 host overrides `vote.reviewerMemberId` / `reviewerDisplayName`
+ * (T-06-01) and stamps `vote.votedAt`. Latest vote per-reviewer wins
+ * (Wave 2 dedupes the votes[] array by reviewerMemberId before persist).
+ */
+export interface ReviewVoteMessage extends BaseMessage {
+  type: 'review-vote';
+  reviewId: string;
+  vote: ReviewVoteRecord;
+}
+
+/**
+ * Review is closed. Permission gate (Wave 2 + Wave 5):
+ *   - Push author can resolve their own review with reason 'merged' or
+ *     'abandoned'.
+ *   - Admin (canCreateBranch === true, Phase 4.3 cloud-bridge admin proxy)
+ *     can OVERRIDE a 'changes-requested' review with reason 'merged' — a
+ *     chat-logged justification appears as a system event (Wave 5 emits).
+ */
+export interface ReviewResolved extends BaseMessage {
+  type: 'review-resolved';
+  reviewId: string;
+  resolvedBy: string;
+  resolvedReason: 'merged' | 'abandoned';
+}
+
+/**
+ * Host → client only — sent post-auth alongside state-sync + chat-history
+ * (mirrors RESEARCH Open Q #2 ordering). Carries every ReviewRequest on the
+ * active branch so the client's ReviewState cache (Plan 06-03) populates
+ * immediately on (re)connect.
+ *
+ * T-06-05 mitigation: clients MUST verify the inbound ws is the host's
+ * connection before applying — same wire-trust posture as state-sync today.
+ * SessionClient already only connects to a single ws, so the structural
+ * mitigation is "no client-side handler echoes review-state-sync to peers."
+ */
+export interface ReviewStateSync extends BaseMessage {
+  type: 'review-state-sync';
+  branch: string;
+  reviews: ReviewRequest[];
+}
+
 // --- Discriminated union ---
 export type ProtocolMessage =
   | AuthRequest
@@ -349,6 +432,11 @@ export type ProtocolMessage =
   | ChatCleared
   | ChatTruncated
   | ChatHistory
+  | ReviewOpened
+  | ReviewCommentMessage
+  | ReviewVoteMessage
+  | ReviewResolved
+  | ReviewStateSync
   | PresenceUpdate;
 
 // --- Helpers ---
@@ -361,7 +449,9 @@ const VALID_TYPES: ReadonlySet<string> = new Set<MessageType>([
   'branch-locked', 'permission-changed', 'sync-request', 'sync-response',
   'tracked-paths-update',
   'chat-message', 'chat-message-amend',
-  'chat-cleared', 'chat-truncated', 'chat-history', 'presence-update',
+  'chat-cleared', 'chat-truncated', 'chat-history',
+  'review-opened', 'review-comment', 'review-vote', 'review-resolved', 'review-state-sync',
+  'presence-update',
 ]);
 
 export function sendMessage(send: (data: string) => void, msg: ProtocolMessage): void {

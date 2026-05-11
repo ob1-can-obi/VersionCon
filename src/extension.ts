@@ -2403,6 +2403,105 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
       );
 
+      // versioncon.importFromGitRemote clones a remote into a fresh
+      // .versioncon/branches/{newName}/ dir and registers it via
+      // BranchManager.registerExternalBranch. Same host-only + admin gate as
+      // export. T-04.3-02 confirmation modal mirrors export for symmetry.
+      // T-04.3-13 mitigation lives inside GitBridge.importFromRemote (strips
+      // .git/ after clone so malicious hooks can't fire).
+      context.subscriptions.push(
+        vscode.commands.registerCommand('versioncon.importFromGitRemote', async () => {
+          // T-04.3-04 layer 1: host-only.
+          if (!activeHost) {
+            void vscode.window.showErrorMessage(
+              'VersionCon: cloud import is host-only. Start a session as host first.',
+            );
+            return;
+          }
+          // T-04.3-04 layer 2: admin proxy.
+          if (!permissions.canCreateBranch(currentMemberId)) {
+            void vscode.window.showErrorMessage(
+              'VersionCon: cloud import requires admin permission.',
+            );
+            return;
+          }
+
+          const bridge = new GitBridge();
+
+          const url = await vscode.window.showInputBox({
+            prompt: 'Remote URL to clone',
+            placeHolder: 'https://github.com/you/your-repo.git',
+            validateInput: (v) =>
+              bridge.validateUrl(v.trim()) ? null : 'Invalid URL',
+          });
+          if (!url) return;
+
+          const branchOnRemote = await vscode.window.showInputBox({
+            prompt: 'Branch on remote to clone',
+            value: 'main',
+            validateInput: (v) =>
+              bridge.validateBranchName(v.trim()) ? null : 'Invalid branch name',
+          });
+          if (!branchOnRemote) return;
+
+          // Collision check uses listBranches() so the validateInput call
+          // surfaces the existing-branch error inline. Snapshot up-front;
+          // the set is small and the IIFE owns the only writer.
+          const existing = new Set(branchManager.listBranches().map((b) => b.name));
+          const newName = await vscode.window.showInputBox({
+            prompt: 'New VersionCon branch name for the imported content',
+            validateInput: (v) => {
+              const trimmed = v.trim();
+              if (!bridge.validateBranchName(trimmed)) return 'Invalid branch name';
+              if (existing.has(trimmed)) return `Branch "${trimmed}" already exists locally`;
+              return null;
+            },
+          });
+          if (!newName) return;
+
+          // T-04.3-02: confirmation modal before clone. Symmetric with export
+          // even though clone is import-side; the SPEC requires explicit
+          // user consent before a remote address is contacted.
+          const confirm = await vscode.window.showInformationMessage(
+            `Clone ${url.trim()} into branch "${newName.trim()}"?`,
+            {
+              modal: true,
+              detail: `Remote branch: ${branchOnRemote.trim()}\nDestination: .versioncon/branches/${newName.trim()}/`,
+            },
+            'Import',
+          );
+          if (confirm !== 'Import') return;
+
+          const channel = getGitBridgeOutputChannel(context);
+          channel.show(true);
+          channel.appendLine(`--- Import from ${url.trim()} (${new Date().toISOString()}) ---`);
+
+          const destDir = path.join(versionconDir, 'branches', newName.trim());
+
+          try {
+            await bridge.importFromRemote({
+              remoteUrl: url.trim(),
+              branchOnRemote: branchOnRemote.trim(),
+              destDir,
+              onOutput: (line) => channel.appendLine(line),
+            });
+            await branchManager.registerExternalBranch(newName.trim(), currentMemberId);
+            branchListProvider.refresh();
+            void vscode.window.showInformationMessage(
+              `VersionCon: imported branch "${newName.trim()}".`,
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            channel.appendLine(`ERROR: ${msg}`);
+            // Best-effort cleanup so a retry can run cleanly. Swallow rm
+            // errors — there may be nothing to remove if clone failed
+            // before destDir was created.
+            await fsPromises.rm(destDir, { recursive: true, force: true }).catch(() => undefined);
+            void vscode.window.showErrorMessage(`VersionCon: import failed — ${msg}`);
+          }
+        }),
+      );
+
       // Refresh commands
       context.subscriptions.push(
         vscode.commands.registerCommand('versioncon.refreshBranchTree', () => {

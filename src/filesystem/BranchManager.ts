@@ -151,6 +151,53 @@ export class BranchManager {
     await this.saveMetadata();
   }
 
+  /**
+   * Phase 4.3 SC-7: register a branch whose contents were materialized by an
+   * external process (e.g. GitBridge.importFromRemote cloning into the dest
+   * dir). Does NOT create the dir or copy any contents — caller has already
+   * populated it. Adds the BranchInfo to metadata and persists.
+   *
+   * Throws if:
+   *   * `name` fails the git-style validator (alphanumerics, dots, slashes,
+   *     dashes, underscores — accepts e.g. `feature/v1.0` which createBranch
+   *     would reject under its stricter `[A-Za-z0-9_-]+` rule).
+   *   * a branch with the same name already exists in metadata.
+   *   * the dir does not exist on disk (caller-must-populate contract).
+   *
+   * NOTE: createBranch's stricter validator (alphanumerics + underscore +
+   * hyphen only) is preserved verbatim — VersionCon-internal branch names
+   * stay simple. registerExternalBranch's relaxed validator matches the
+   * surface of git branch names we may encounter on a real remote.
+   */
+  async registerExternalBranch(
+    name: string,
+    creatorId: string,
+  ): Promise<BranchInfo> {
+    if (!/^[a-zA-Z0-9._/-]+$/.test(name)) {
+      throw new Error(
+        'Branch name must contain only alphanumeric characters, dots, hyphens, slashes, and underscores',
+      );
+    }
+    if (this.metadata.some(b => b.name === name)) {
+      throw new Error(`Branch "${name}" already exists`);
+    }
+    const dir = path.join(this.branchesDir, name);
+    if (!await this.dirExists(dir)) {
+      throw new Error(
+        `Branch dir not found on disk: ${dir} — caller must populate before registering`,
+      );
+    }
+    const info: BranchInfo = {
+      name,
+      createdBy: creatorId,
+      createdAt: Date.now(),
+      locked: false,
+    };
+    this.metadata.push(info);
+    await this.saveMetadata();
+    return info;
+  }
+
   /** Get branch info by name. */
   getBranch(name: string): BranchInfo | undefined {
     return this.metadata.find(b => b.name === name);

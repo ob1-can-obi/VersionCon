@@ -225,6 +225,11 @@
         "command": "versioncon.exportToGitRemote",
         "title": "VersionCon: Export to Git Remote",
         "category": "VersionCon"
+      },
+      {
+        "command": "versioncon.importFromGitRemote",
+        "title": "VersionCon: Import from Git Remote",
+        "category": "VersionCon"
       }
     ],
     "menus": {

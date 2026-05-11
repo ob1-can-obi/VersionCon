@@ -118,18 +118,42 @@ const chatCtx = await esbuild.context({
   plugins: [chatAssetsPlugin],
 });
 
+// Phase 5 Plan 05-04 (Wave 4): forked AST worker bundle. CJS / platform:node
+// so it runs inside a child_process.fork()'d Node process. `external: vscode`
+// is defense-in-depth — the worker has zero vscode imports (verified by
+// source-grep + bundled-output grep in tests), but marking it external
+// guarantees an immediate runtime error if a future refactor accidentally
+// pulls vscode into worker.ts's dependency closure (T-05-01 isolation).
+//
+// web-tree-sitter IS bundled — it's a pure CJS module and bundling avoids a
+// runtime node_modules lookup. The Wasm files it loads (grammars + the
+// runtime engine itself) live in dist/vendor/tree-sitter/, copied by
+// copyTreeSitterGrammars() above.
+const workerCtx = await esbuild.context({
+  entryPoints: ['src/ast/worker.ts'],
+  bundle: true,
+  outfile: 'dist/ast-worker.js',
+  external: ['vscode'],
+  format: 'cjs',
+  platform: 'node',
+  target: 'node18',
+  sourcemap: true,
+  minify: !isWatch,
+});
+
 if (isWatch) {
-  await Promise.all([extCtx.watch(), chatCtx.watch()]);
+  await Promise.all([extCtx.watch(), chatCtx.watch(), workerCtx.watch()]);
   // Initial copy in case watchers don't fire onEnd before the user edits.
   await copyChatAssets();
   await copyTreeSitterGrammars();
   console.log('Watching...');
 } else {
-  await Promise.all([extCtx.rebuild(), chatCtx.rebuild()]);
+  await Promise.all([extCtx.rebuild(), chatCtx.rebuild(), workerCtx.rebuild()]);
   // Belt-and-suspenders — onEnd already ran, but explicit copy guarantees
   // assets are present even if the plugin failed silently.
   await copyChatAssets();
   await copyTreeSitterGrammars();
   await extCtx.dispose();
   await chatCtx.dispose();
+  await workerCtx.dispose();
 }

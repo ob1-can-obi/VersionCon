@@ -94,7 +94,7 @@ Plans:
   3. Push events, revert events, and branch events are automatically posted to the chat timeline so the activity history is always visible
   4. When a teammate pushes changes to a file the user has open, the user receives a soft non-blocking notification (not a modal) identifying what changed and who pushed it
   5. When a push does not affect the user's workspace at all, the user sees a green "no impact" status and continues working without interruption
-**Plans:** 14/15 plans complete (Phase 4 feature-complete; gap-closure-v2 04-15 in flight to close 3 NEW blockers — CR-01-NEW actor mis-attribution, CR-02-NEW host-self echo, CR-03-NEW segment-aware path validator — surfaced by 04-VERIFICATION.md re-verification 2026-05-08)
+**Plans:** 15/15 plans complete (04-15 landed). UAT 2026-05-11 surfaced 3 NEW blocker gaps (G3/G4/G5 in 04-UAT.md, captured as backlog 999.3 / 999.4 / 999.5) — peer presence doesn't propagate end-to-end, displayName renders as literal "You" instead of actual name, joining a session doesn't set up the local .versioncon/ hierarchy. Phase 4 cannot be marked complete until a gap-closure plan (04-16 or inserted 4.2) lands.
 Plans:
 - [x] 04-01-protocol-and-types-PLAN.md — Wire protocol + ChatRecord/PresenceInfo types + round-trip tests
 - [x] 04-02-chat-log-PLAN.md — ChatLog persistence (mirror PushHistory) + 3 truncation modes + tests
@@ -207,6 +207,53 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 **Affected code:** Phase 1/2 discovery/networking layer (likely `src/network/` or `src/discovery/`).
 **Surfaced:** 2026-05-07 during Phase 3 (03-06) visual UAT. Blocked the single-machine two-host UAT setup; visual UAT for SC 5 / SC 6 was deferred as a result. This bug will block any future single-machine UAT for LAN-dependent features.
 **Suggested home:** small dedicated phase OR rolled into Phase 4 (presence/chat) as a prerequisite.
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.3: Peer presence-update messages don't propagate end-to-end (BACKLOG)
+
+**Goal:** [Captured for future planning] — When two Extension Development Host windows are connected in a session, focusing a file in one window does NOT cause that member's row to appear in the other window's PRESENCE panel. Each window only ever shows its own self-row. The (you) self-suffix is correct; the failure is in cross-peer propagation. This is the Phase 4 SC-1 blocker that surfaced during multi-window UAT on 2026-05-11.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+**Repro:** Connect two EDH windows (Alice hosts, Bob joins via manual IP). Alice opens `src/foo..bar.ts` — only Alice's row appears in her PRESENCE panel, never in Bob's. Bob focuses any file — only Bob's row appears in his panel, never in Alice's.
+**Affected code (likely):** `src/extension.ts` (onDidChangeActiveTextEditor presence dispatch), `src/host/SessionHost.ts` (presence-update broadcast), `src/client/SessionClient.ts` (presence-update receive → event emit), `src/ui/PresenceTreeProvider.ts` (upsert + refresh).
+**Surfaced:** 2026-05-11 during Phase 4 multi-window UAT (Test 2 / SC-1).
+**Suggested home:** Phase 4 gap-closure plan (e.g. 04-16), OR new inserted phase 4.2.
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.4: Presence displayName renders as literal "You" instead of actual displayName (BACKLOG)
+
+**Goal:** [Captured for future planning] — Every row in the PRESENCE panel renders the displayName as the literal string `You` instead of the actual displayName captured by the wizard (`Alice` / `Bob`). The `(you)` self-suffix logic is correct (only appears on the self-row); the failure is in the leading name field. Probably a tiny code fix once the call site is found.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+**Repro:** In Alice's window after hosting, PRESENCE row reads `You foo..bar.ts (you)` — should read `Alice foo..bar.ts (you)`.
+**Affected code (likely):** `src/extension.ts wireHostEvents` (host's local presence upsert call site — likely passing wrong field as displayName), `src/ui/PresenceTreeProvider.ts` (verify renderer reads `info.displayName` and doesn't substitute "You" anywhere except the suffix). Verify `activeHostIdentity.displayName` (Plan 04.1-03) flows into the upsert.
+**Surfaced:** 2026-05-11 during Phase 4 multi-window UAT (Test 2 / SC-1).
+**Suggested home:** Same gap-closure plan as 999.3 — these are tightly coupled and share most of the affected files.
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.5: Joining a session doesn't set up the local .versioncon/ hierarchy (BACKLOG)
+
+**Goal:** [Captured for future planning, UX] — When a member joins a session, their local workspace has no `.versioncon/branches/{branch}/` directory. Phase 3 v1 was scoped "sync-state-only; file-pull deferred", so peers don't auto-create or sync the hierarchy on join. This produces a confusing UX: BRANCH FILES shows "No branch files found. Open a folder with a .versioncon/ directory to see branch files." Bob has no way to start collaborating without manually setting up the directory structure.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+**User request (verbatim, 2026-05-11):** "When we join a session. The hierarchy must come in right. We can ask them where they want the repo to be in maybe - in their local at least. And get them set."
+
+**Two approach options:**
+- A) Post-connect wizard step on Join: "Where should VersionCon store collaborative files locally?" → defaults to `<workspace>/.versioncon/`, creates `branches/{branchName}/` on disk, registers FileSystemLayer at that path.
+- B) Auto-create `<workspace>/.versioncon/branches/{branchName}/` silently on first successful auth-response, with a Welcome notification explaining what was created and a "Change location" command for customization.
+
+**Surfaced:** 2026-05-11 during Phase 4 multi-window UAT setup — Bob's joined `test-workspace-b/` had no `.versioncon/` directory so BRANCH FILES was empty and SC-4/SC-5 tests have no surface to exercise.
+**Unblocks:** Phase 4 SC-4 (file-overlap toast) and SC-5 (no-impact flash) UAT, which require the joiner to have a branch file hierarchy that the host can push to/from.
+**Suggested home:** small dedicated phase (4.2 INSERTED) similar to how 4.1 was inserted for host-identity, OR roll into a Phase 3.1 / Phase 2-completion cycle.
 
 Plans:
 - [ ] TBD (promote with /gsd-review-backlog when ready)

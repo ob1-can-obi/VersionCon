@@ -142,6 +142,7 @@ None yet.
 
 ### Blockers/Concerns
 
+- [Phase 4 UAT 2026-05-11]: 3 BLOCKER gaps surfaced during multi-window UAT — peer presence doesn't propagate end-to-end (G3/999.3), displayName renders as literal "You" (G4/999.4), no .versioncon/ hierarchy created on join (G5/999.5). Phase 4 cannot be marked complete until a gap-closure plan (04-16 or inserted 4.2) lands. UAT paused, status: diagnosed.
 - [Phase 2]: Cross-webview drag-and-drop VS Code 1.90+ regression (issue #256444) requires a throwaway spike before full UI implementation
 - [Phase 5]: tree-sitter-java and tree-sitter-cpp WASM compatibility with web-tree-sitter@0.25.x is unvalidated — may require custom WASM builds or deferring Java/C++ support
 - [Phase 7]: Cloud relay operational model (hosting platform, cost model, self-host option) is not yet decided — needs decision before Phase 7 planning
@@ -163,7 +164,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-10T01:34:24Z
-Stopped at: Completed quick task 260510-sdm (Phase 4.1 UAT Test 3 gap closure — relaxed wizard.js maxlength 64→256 and added control-char-preserving paste handler so handleWizardNext's >64-char and control-char error literals are now reachable from the live UI; +4 source-grep regression tests; 341 passing total). Phase 4.1 UAT now 3/3 pass.
+Last session: 2026-05-11T03:30:00Z
+Stopped at: Phase 4 multi-window UAT paused after Test 2 (SC-1 Live Presence Panel) surfaced 3 blocker gaps. Inline fixes landed during UAT: 999.2 wizard step-2 Next button (f7fa415), MEMBERS panel includes host self (c171309), Phase 4.1 UAT Test 3 closure via quick task 260510-sdm. New gaps captured as backlog 999.3 (peer presence propagation), 999.4 (displayName "You" fallback), 999.5 (no .versioncon/ hierarchy on join). Tests 3-6 (SC-2 through SC-5) blocked by Test 2. Resume via /gsd-verify-work 4 after a gap-closure plan (04-16 or inserted 4.2) lands.
 Resume file: None
-Last activity: 2026-05-10 - Completed quick task 260510-sdm: Phase 4.1 UAT gap (Test 3) - surface displayName validation errors
+Last activity: 2026-05-11 - Phase 4 multi-window UAT paused after surfacing G3/G4/G5 blockers (999.3/999.4/999.5 backlog)

@@ -223,11 +223,24 @@ suite('Phase 5 Wave 2 — TypeScriptAdapter (CONF-02/04/05/06 + TSX routing)', (
     );
   });
 
-  // ---------- Module-import side effect ----------
-  test('importing typescript adapter module registers it in the factory', () => {
-    const registered = getAdapter('typescript');
-    assert.ok(registered, 'TypeScriptAdapter must register itself on import');
-    assert.strictEqual(registered.languageId, 'typescript');
+  // ---------- Module-import side effect (source-grep, not runtime) ----------
+  test('source-grep: typescript.ts calls registerAdapter at module scope', () => {
+    // Runtime check is unreliable because other adapter suites call
+    // _resetRegistryForTests() — by the time mocha alphabetically reaches THIS
+    // suite, the side-effect registration may have been cleared. The contract
+    // we care about is "source file contains the side-effect statement so
+    // importing triggers registration". Source-grep is ordering-independent.
+    const file = path.resolve(
+      __dirname,
+      '../../../src/ast/adapters/typescript.ts',
+    );
+    const src = fsSync.readFileSync(file, 'utf8');
+    assert.match(
+      src,
+      /^registerAdapter\(\s*['"]typescript['"]\s*,\s*new TypeScriptAdapter\(\)\s*\);/m,
+      'typescript.ts must contain a top-level `registerAdapter(\'typescript\', new TypeScriptAdapter())` statement so module import registers the adapter',
+    );
+    assert.strictEqual(typeof getAdapter, 'function');
   });
 
   // ---------- Source-grep: no throws in adapter source ----------

@@ -22,6 +22,8 @@ import type { PushRecord } from '../types/push.js';
 import type { BranchInfo } from '../types/branch.js';
 import { ChatLog } from '../filesystem/ChatLog.js';
 import { PresenceMap } from '../filesystem/PresenceMap.js';
+import { ReviewStore } from '../filesystem/ReviewStore.js';
+import type { ReviewRequest } from '../types/review.js';
 import type {
   ChatRecord,
   PresenceInfo,
@@ -97,10 +99,18 @@ export class SessionHost implements SessionEventEmitter {
   private memberTracking = new Map<string, string[]>();
 
   /**
-   * Optional permissions checker for relay validation (T-03-05). When set, the
-   * host validates canPushToBranch before relaying push-notification messages.
+   * Optional permissions checker for relay validation (T-03-05, Plan 06-02).
+   *   - canPushToBranch: T-03-05 push relay permission (Phase 3).
+   *   - canCreateBranch: Plan 06-02 admin proxy used by review-resolved
+   *     override path (mirrors Phase 4.3 cloud-bridge admin posture per the
+   *     06-SPEC.md frontmatter line-15 locked decision).
+   * Both methods may be absent on older permission objects; review-resolved
+   * is defensive about canCreateBranch being undefined.
    */
-  private permissions: { canPushToBranch: (memberId: string, branchName: string) => boolean } | null = null;
+  private permissions: {
+    canPushToBranch: (memberId: string, branchName: string) => boolean;
+    canCreateBranch?: (memberId: string) => boolean;
+  } | null = null;
 
   /**
    * Optional push history reference. When set, sync-response includes
@@ -119,8 +129,32 @@ export class SessionHost implements SessionEventEmitter {
    * Phase 4: Active branch name paired with chatLog. Stamped onto outbound
    * chat-history messages (Plan 04-04 Task 3) so joining members know which
    * branch the replay belongs to. Null until setChatLog is called.
+   *
+   * Phase 6 (Plan 06-02): also paired with reviewStore via setReviewStore.
+   * Both wiring points (setChatLog + setReviewStore) overwrite activeBranch
+   * — extension.ts MUST call them with matching branch names on every
+   * branch switch.
    */
   private activeBranch: string | null = null;
+
+  /**
+   * Phase 6 (Plan 06-02): per-active-branch ReviewStore. Wired by extension.ts
+   * via setReviewStore(store, branchName) on session start AND on every branch
+   * switch — mirrors setChatLog. Null until wired; all review-* handlers
+   * tolerate null by short-circuiting silently.
+   */
+  private reviewStore: ReviewStore | null = null;
+
+  /** T-06-03 mitigation (Plan 06-02): hard cap on comments per ReviewRequest. */
+  private static readonly REVIEW_COMMENT_CAP = 500;
+  /** T-06-03 mitigation (Plan 06-02): per-member sliding-window rate limit for review-comments. */
+  private static readonly REVIEW_COMMENT_RATE_PER_MIN = 30;
+  /**
+   * T-06-03 mitigation: per-memberId rolling 60s window of comment timestamps.
+   * Mirrors AuthHandler.rateLimitState (T-01-03) — entries older than 60s are
+   * pruned before counting.
+   */
+  private reviewCommentTimestamps = new Map<string, number[]>();
 
   /**
    * Phase 5 Plan 05-05 (SC-5): host-side AST analyzer. Constructed once per
@@ -487,6 +521,65 @@ export class SessionHost implements SessionEventEmitter {
           this.emit('presence-update', info);
           // Exclude sender — they already know their own active editor.
           this.broadcast(sanitized, memberId);
+        } else if (msg.type === 'review-opened') {
+          // T-06-01: server-trusted author override + host-stamped openedAt.
+          // Drop silently if reviewStore not wired or msg.review is malformed
+          // — same posture as parseMessage null-return.
+          if (!this.reviewStore) return;
+          if (!msg.review || typeof msg.review !== 'object') return;
+          if (typeof msg.review.pushId !== 'string' || msg.review.pushId.length === 0) return;
+          if (typeof msg.review.id !== 'string' || msg.review.id.length === 0) return;
+          if (typeof msg.review.branch !== 'string' || msg.review.branch.length === 0) return;
+          const cm = this.members.get(memberId);
+          if (!cm) return;
+          const displayName = cm.member.displayName;
+          const stampedTs = createTimestamp();
+          // Supersede: if a non-resolved ReviewRequest already exists for
+          // this pushId, close it first with status:'abandoned'. This is the
+          // "re-push supersedes" rule from 06-SPEC.md frontmatter.
+          const prior = this.reviewStore.getReview(msg.review.pushId);
+          if (prior && prior.status !== 'resolved' && prior.status !== 'abandoned') {
+            const abandoned: ReviewRequest = {
+              ...prior,
+              status: 'abandoned',
+              resolvedAt: stampedTs,
+              resolvedBy: memberId,
+              resolvedReason: 'abandoned',
+            };
+            try {
+              await this.reviewStore.upsertRequest(abandoned);
+            } catch (err) {
+              console.error('[SessionHost] review-opened prior-abandon persist failed', err);
+            }
+          }
+          // T-06-01: host-trusted construction. Defensive: clamp
+          // votes/comments — a misbehaving client could pre-populate the
+          // request with fake entries. By contract, "open" arrives empty.
+          const sanitized: ReviewRequest = {
+            ...msg.review,
+            authorMemberId: memberId,
+            authorDisplayName: displayName,
+            openedAt: stampedTs,
+            status: 'open',
+            votes: [],
+            comments: [],
+          };
+          try {
+            await this.reviewStore.upsertRequest(sanitized);
+          } catch (err) {
+            console.error('[SessionHost] review-opened persist failed', err);
+            return; // don't broadcast a state we couldn't persist
+          }
+          this.broadcast({ type: 'review-opened', timestamp: stampedTs, review: sanitized });
+          const shortId = sanitized.pushId.substring(0, 7);
+          this.appendAndBroadcastSystemEvent(
+            'review-opened',
+            `${displayName} opened a review on push ${shortId}`,
+            stampedTs,
+            { pushId: sanitized.pushId, branch: sanitized.branch },
+            memberId,
+            displayName,
+          );
         } else if (msg.type === 'sync-request') {
           // PUSH-09 reconnect path: respond with empty files (snapshot is
           // delivered out-of-band) plus the latest push id so the client can
@@ -637,6 +730,15 @@ export class SessionHost implements SessionEventEmitter {
     // swallows). No-op when setChatLog has not yet wired the active branch.
     if (this.chatLog && this.activeBranch) {
       void this.sendChatHistoryToMember(newMemberId, this.activeBranch);
+    }
+
+    // Phase 6 (Plan 06-02): review-state-sync replay. Fired AFTER chat-history
+    // so the client's ReviewState cache (Plan 06-03) populates once the
+    // ChatPanel has rendered the recent activity. Order matches RESEARCH
+    // Open Q #2's posture for chat-history. Fire-and-forget; null-guard on
+    // reviewStore mirrors chat-history null-guard above.
+    if (this.reviewStore && this.activeBranch) {
+      void this.sendReviewStateSyncToMember(newMemberId, this.activeBranch);
     }
 
     // Broadcast member-joined to all OTHER members
@@ -1001,6 +1103,47 @@ export class SessionHost implements SessionEventEmitter {
   }
 
   /**
+   * Phase 6 (Plan 06-02): wire the active-branch ReviewStore so review-*
+   * handlers can persist mutations and review-state-sync replays the
+   * current per-branch index. Mirrors setChatLog signature. Plan 06-04's
+   * extension.ts calls this on session start AND on every branch switch.
+   * Last-write-wins (same posture as setChatLog).
+   */
+  setReviewStore(store: ReviewStore, branchName: string): void {
+    this.reviewStore = store;
+    this.activeBranch = branchName;
+  }
+
+  /**
+   * Phase 6 (Plan 06-02): host → single-client review-state-sync send.
+   * Mirrors sendChatHistoryToMember — fired post-auth AFTER chat-history.
+   *
+   * T-06-05 mitigation (structural): this method emits ONLY to a SPECIFIC
+   * ws (the new joiner's), NEVER from a client to peers. The onmessage
+   * switch has NO inbound branch for `review-state-sync` (mirrors the
+   * chat-cleared/chat-truncated host-only-outbound posture).
+   *
+   * Fire-and-forget: failure is logged but does not propagate so the auth
+   * handshake never blocks on a review-state-sync send.
+   */
+  async sendReviewStateSyncToMember(memberId: string, branch: string): Promise<void> {
+    if (!this.reviewStore) return;
+    const cm = this.members.get(memberId);
+    if (!cm || cm.ws.readyState !== WebSocket.OPEN) return;
+    const reviews = this.reviewStore.getAll().filter(r => r.branch === branch);
+    try {
+      sendMessage((d) => cm.ws.send(d), {
+        type: 'review-state-sync',
+        timestamp: createTimestamp(),
+        branch,
+        reviews,
+      });
+    } catch (err) {
+      console.error('[SessionHost] sendReviewStateSyncToMember failed', err);
+    }
+  }
+
+  /**
    * Phase 5 Plan 05-05 (SC-5): wire the AST analyzer so broadcastPush can
    * fire an async analysis + follow-up `chat-message-amend` broadcast. Called
    * by extension.ts once per session start (host path only). Null when the
@@ -1353,8 +1496,19 @@ export class SessionHost implements SessionEventEmitter {
    * Wire a permissions checker so the host can validate canPushToBranch before
    * relaying push-notification messages (T-03-05). Without this wiring, the
    * host relays unconditionally (preserves prior behavior).
+   *
+   * Phase 6 (Plan 06-02) widening: `canCreateBranch` is now an optional
+   * second method on the checker — the review-resolved admin-override path
+   * (Plan 06-02 Task 3) reads it to gate "admin can OVERRIDE
+   * 'changes-requested' to merged" (06-SPEC.md frontmatter line 15 locked
+   * decision). BranchPermissions already exposes this method
+   * (src/filesystem/BranchPermissions.ts:50); the widening is type-level
+   * only and Phase 3's existing wiring continues to satisfy the contract.
    */
-  setPermissions(permissions: { canPushToBranch: (memberId: string, branchName: string) => boolean }): void {
+  setPermissions(permissions: {
+    canPushToBranch: (memberId: string, branchName: string) => boolean;
+    canCreateBranch?: (memberId: string) => boolean;
+  }): void {
     this.permissions = permissions;
   }
 

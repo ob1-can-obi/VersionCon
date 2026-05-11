@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { SystemEventSubKind } from '../types/chat.js';
+import type { AffectedSymbol } from '../ast/types.js';
 
 /**
  * Sub-classification kinds rendered in the activity log. Mirrors the SystemEventSubKind
@@ -36,6 +37,28 @@ export interface ActivityEntry {
   pushMessage?: string;
   /** True when the push touched a file the local user has open (Plan 04-06). */
   affectsLocal?: boolean;
+  /**
+   * Phase 5 Plan 05-05 (SC-5): the related chat record id. Stamped onto push
+   * entries via `linkChatRecordToPush` when the corresponding chat-received
+   * system-event arrives. Used by `applyAmend` to locate the entry when the
+   * host broadcasts a chat-message-amend with AST-derived affectedSymbols.
+   */
+  chatRecordId?: string;
+  /** Phase 5 Plan 05-05 (SC-5): the underlying push id (so chat record amends can be linked). */
+  pushId?: string;
+  /**
+   * Phase 5 Plan 05-05 (SC-5): per-symbol impact populated by the host AST
+   * analyzer's amend. Absent when analyzer is unwired, returns empty, or
+   * the entry pre-dates Phase 5. Drives the upgraded `affects N of your
+   * symbols` label in formatLabel.
+   */
+  affectedSymbols?: AffectedSymbol[];
+  /**
+   * Phase 5 Plan 05-05 (SC-3 fallback signal): list of language ids that fell
+   * through to file-level fallback for this push. Drives the tooltip suffix
+   * `Symbol analysis unavailable for: …`.
+   */
+  unsupportedLanguages?: string[];
   // ----- Branch-create field -----
   branchName?: string;
   // ----- Chat-unread sticky field -----
@@ -126,6 +149,54 @@ export class ActivityLogProvider implements vscode.TreeDataProvider<ActivityEntr
     return [...this.entries];
   }
 
+  /**
+   * Phase 5 Plan 05-05 (SC-5): record the chat record id that corresponds to
+   * a previously-added push activity entry. Called by extension.ts when the
+   * `chat-received` system-event arrives carrying `meta.pushId === pushId`.
+   * Used as the lookup key for `applyAmend` so we can find the right entry
+   * when the host broadcasts a chat-message-amend (whose only correlation
+   * back to the activity row is the chat record id).
+   *
+   * No-op when no push entry matches the pushId (e.g. amend race or
+   * never-added entry from before the link landed).
+   */
+  linkChatRecordToPush(pushId: string, chatRecordId: string): void {
+    // Match the most recent push entry with this pushId — earlier pushes with
+    // the same id are theoretically impossible (pushIds are random), but the
+    // reverse-find is more defensive against test setups that reuse ids.
+    for (let i = this.entries.length - 1; i >= 0; i--) {
+      const e = this.entries[i];
+      if (e.kind === 'push' && e.pushId === pushId && !e.chatRecordId) {
+        this.entries[i] = { ...e, chatRecordId };
+        return;
+      }
+    }
+  }
+
+  /**
+   * Phase 5 Plan 05-05 (SC-5): patch a push entry's affectedSymbols +
+   * unsupportedLanguages after AST analysis completes. Called by
+   * extension.ts when client/host receives a chat-message-amend event.
+   *
+   * Lookup is by chatRecordId (set via linkChatRecordToPush above). No-op
+   * when the entry isn't found — covers the T-05-06 accepted race
+   * (amend before original) and the chat-cleared truncation case.
+   */
+  applyAmend(
+    recordId: string,
+    affectedSymbols: AffectedSymbol[],
+    unsupportedLanguages: string[],
+  ): void {
+    const idx = this.entries.findIndex(e => e.chatRecordId === recordId);
+    if (idx < 0) return;
+    this.entries[idx] = {
+      ...this.entries[idx],
+      affectedSymbols,
+      unsupportedLanguages,
+    };
+    this.refresh();
+  }
+
   private pushEntry(entry: ActivityEntry): void {
     this.entries.push(entry);
     // Cap the non-sticky entries at RING_BUFFER_CAP. The sticky unread row is exempt
@@ -172,6 +243,20 @@ export class ActivityLogProvider implements vscode.TreeDataProvider<ActivityEntr
     switch (e.kind) {
       case 'push': {
         const n = e.files?.length ?? 0;
+        // Phase 5 Plan 05-05 (SC-5): when AST analysis identified caller
+        // symbols, render the smart-summary label. Cap displayed symbols at
+        // 3 + ', …' for the long-tail case (matches the webview render path
+        // for consistency — every render path uses the same truncation rule).
+        const sym = e.affectedSymbols ?? [];
+        if (sym.length > 0) {
+          const top3 = sym.slice(0, 3).map(s => `${s.name}()`).join(', ');
+          const more = sym.length > 3 ? ', …' : '';
+          const who = e.isMine ? 'You' : e.memberDisplayName;
+          return `${who} pushed ${n} file(s) — affects ${sym.length} of your symbols: ${top3}${more}`;
+        }
+        // Fallback: pre-Phase-5 label paths. isMine / affectsLocal remain
+        // the v1 distinction when affectedSymbols is empty (analyzer
+        // unwired, empty result, or fallback-only with no symbols).
         if (e.isMine) return `You pushed ${n} file(s)`;
         if (e.affectsLocal) return `${e.memberDisplayName} pushed ${n} file(s) — affects you`;
         return `${e.memberDisplayName} pushed ${n} file(s)`;
@@ -203,7 +288,13 @@ export class ActivityLogProvider implements vscode.TreeDataProvider<ActivityEntr
     const iso = new Date(e.timestamp).toISOString();
     if (e.kind === 'push' || e.kind === 'revert') {
       const msg = e.pushMessage ? `\n"${e.pushMessage}"` : '';
-      return `${iso}${msg}`;
+      // Phase 5 Plan 05-05 (SC-3): append the "Symbol analysis unavailable"
+      // suffix when the analyzer flagged unsupported languages for this push.
+      const unsupported = (e as ActivityEntry).unsupportedLanguages ?? [];
+      const fallback = unsupported.length > 0
+        ? `\nSymbol analysis unavailable for: ${unsupported.join(', ')}`
+        : '';
+      return `${iso}${msg}${fallback}`;
     }
     if (e.kind === 'branch-created') return iso;
     return undefined;

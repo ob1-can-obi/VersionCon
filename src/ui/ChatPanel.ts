@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import type { ChatRecord } from '../types/chat.js';
+import type { AffectedSymbol } from '../ast/types.js';
 
 type ConnectionStatus = 'connected' | 'reconnecting' | 'disconnected';
 
@@ -154,6 +155,24 @@ export class ChatPanel {
     void this.panel.webview.postMessage({
       type: 'state-update',
       payload: this.buildState(records),
+    });
+  }
+
+  /**
+   * Phase 5 Plan 05-05 (SC-5): forward a chat-message-amend to the webview.
+   * The webview patches its in-memory record state by `recordId` and
+   * re-renders the affected row via `renderAll()` (a per-row update is a
+   * later micro-optimization; renderAll keeps the implementation simple and
+   * correct).
+   */
+  applyAmend(
+    recordId: string,
+    affectedSymbols: AffectedSymbol[],
+    unsupportedLanguages: string[],
+  ): void {
+    void this.panel.webview.postMessage({
+      type: 'chat-message-amend',
+      payload: { recordId, affectedSymbols, unsupportedLanguages },
     });
   }
 

@@ -24,6 +24,7 @@ import { PushHistory } from './filesystem/PushHistory.js';
 import { PushService } from './filesystem/PushService.js';
 import { SyncTracker } from './filesystem/SyncTracker.js';
 import { ChatLog } from './filesystem/ChatLog.js';
+import { AstAnalyzer } from './ast/AstAnalyzer.js';
 import { createTimestamp } from './network/protocol.js';
 import { ActivityLogProvider } from './ui/ActivityLogProvider.js';
 import { PresenceTreeProvider } from './ui/PresenceTreeProvider.js';
@@ -128,6 +129,15 @@ let workspaceStateRef: WorkspaceState | null = null;
 // chat log. Null until the IIFE constructs it; remains null when no workspace
 // folder is open.
 let activeChatLog: ChatLog | null = null;
+
+/**
+ * Phase 5 Plan 05-05 (SC-5): module-scope mirror of the host-side AstAnalyzer.
+ * Constructed by the workspace IIFE once both `activeHost` and `fsLayer` are
+ * available (mirrors the activeChatLog wiring pattern). Disposed when the host
+ * `session-ended` fires. Null for client-only sessions — clients never run the
+ * worker.
+ */
+let activeAstAnalyzer: AstAnalyzer | null = null;
 
 // Phase 4.3 Wave 4 (Plan 04.3-04): dedicated Output channel for the cloud
 // bridge commands (versioncon.exportToGitRemote / versioncon.importFromGitRemote).
@@ -252,6 +262,39 @@ function formatPushToast(name: string, overlapping: string[], message: string): 
 function dispatchChatReceivedLocally(record: ChatRecord): void {
   clientChatRecords.push(record);
   ChatPanel.currentPanel?.postChatMessage(record);
+}
+
+/**
+ * Phase 5 Plan 05-05 (SC-5): patch a previously-received chat record's meta
+ * with AST-derived affectedSymbols + unsupportedLanguages, then forward the
+ * patch to the ChatPanel webview and ActivityLogProvider so the row re-renders
+ * with the smart push summary ("affects 2 of your symbols: …").
+ *
+ * Routing is identical for the host echo (via SessionHost emit) and the
+ * member wire path (via SessionClient emit) — both call this helper. No-op
+ * when the recordId is unknown locally (e.g. amend arrived after a
+ * chat-cleared truncation; or the original chat-message was never received,
+ * which is the T-05-06 accepted-risk wire-ordering race).
+ */
+function applyAmendLocally(
+  recordId: string,
+  affectedSymbols: import('./ast/types.js').AffectedSymbol[],
+  unsupportedLanguages: string[],
+): void {
+  // Patch the in-memory chat record cache so subsequent setHistory snapshots
+  // include the upgraded meta.
+  const idx = clientChatRecords.findIndex(r => r.id === recordId);
+  if (idx >= 0) {
+    const existing = clientChatRecords[idx].meta ?? {};
+    clientChatRecords[idx] = {
+      ...clientChatRecords[idx],
+      meta: { ...existing, affectedSymbols, unsupportedLanguages },
+    };
+  }
+  // Forward to the webview so its in-state record + rendered row update.
+  ChatPanel.currentPanel?.applyAmend(recordId, affectedSymbols, unsupportedLanguages);
+  // Forward to the activity tree so the sidebar label upgrades.
+  activityLogProvider?.applyAmend(recordId, affectedSymbols, unsupportedLanguages);
 }
 
 /**
@@ -809,6 +852,19 @@ export function activate(context: vscode.ExtensionContext): void {
       updatePresenceContext();
     });
 
+    // Phase 5 Plan 05-05 (SC-5): the host's runAstAnalysisAndAmend emits this
+    // event when the analyzer returns non-empty results so the HOST's own UI
+    // (ChatPanel + ActivityLogProvider) sees the amend — the host does not
+    // receive its own broadcast over the wire. Mirrors the chat-received
+    // local-echo pattern at extension.ts:255 (dispatchChatReceivedLocally).
+    host.on('chat-message-amend', (data: {
+      recordId: string;
+      affectedSymbols: import('./ast/types.js').AffectedSymbol[];
+      unsupportedLanguages: string[];
+    }) => {
+      applyAmendLocally(data.recordId, data.affectedSymbols, data.unsupportedLanguages);
+    });
+
     // Phase 4 UAT fix (999.3): when a member leaves, drop their presence row
     // from the host's panel (the broadcast-out to other clients is already
     // handled by SessionHost's member-left broadcast path, but the host's own
@@ -823,6 +879,17 @@ export function activate(context: vscode.ExtensionContext): void {
       // Plan 04.1-03: drop the pre-allocated HostIdentity reference so the
       // hostAuthSecret is not retained beyond the live session.
       activeHostIdentity = null;
+      // Phase 5 Plan 05-05 (SC-5): tear down the host-side AST analyzer so
+      // the forked worker process exits with the session. dispose() is
+      // idempotent — safe even if never wired (no-op).
+      if (activeAstAnalyzer) {
+        try {
+          activeAstAnalyzer.dispose();
+        } catch (err) {
+          console.error('[VersionCon] AstAnalyzer.dispose failed', err);
+        }
+        activeAstAnalyzer = null;
+      }
       statusBarManager.setStatus('disconnected');
       // Phase 4 (Plan 04-10): mirror disconnected status + clear chat cache;
       // the chat panel's banner switches to "Disconnected. Messages won't
@@ -989,6 +1056,12 @@ export function activate(context: vscode.ExtensionContext): void {
         files: pushedRel,
         pushMessage: data.message,
         affectsLocal: overlapping.length > 0,
+        // Phase 5 Plan 05-05 (SC-5): stamp the pushId so a subsequent
+        // chat-received system event can link the chat record id via
+        // ActivityLogProvider.linkChatRecordToPush. The chatRecordId is
+        // then the lookup key for applyAmend when the AST analyzer's
+        // chat-message-amend arrives.
+        pushId: data.pushId,
       });
       updateActivityContext();
 
@@ -1097,6 +1170,29 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       // Plan 04-10: forward to chat panel iff the panel is open.
       ChatPanel.currentPanel?.postChatMessage(record);
+
+      // Phase 5 Plan 05-05 (SC-5): system events for pushes carry a meta.pushId
+      // (set by SessionHost.broadcastPush via appendAndBroadcastSystemEvent).
+      // Stamp the chat record's id onto the matching activity entry so a
+      // subsequent chat-message-amend can locate the entry by id.
+      if (
+        record.kind === 'system' &&
+        record.subKind === 'push' &&
+        record.meta?.pushId
+      ) {
+        activityLogProvider?.linkChatRecordToPush(record.meta.pushId, record.id);
+      }
+    });
+
+    // Phase 5 Plan 05-05 (SC-5): host fires this after AST analysis completes
+    // so we patch the cached chat record's meta + propagate to ChatPanel +
+    // ActivityLogProvider. Mirrors the host echo path inside wireHostEvents.
+    client.on('chat-message-amend', (data: {
+      recordId: string;
+      affectedSymbols: import('./ast/types.js').AffectedSymbol[];
+      unsupportedLanguages: string[];
+    }) => {
+      applyAmendLocally(data.recordId, data.affectedSymbols, data.unsupportedLanguages);
     });
 
     client.on('chat-cleared', (data: { hostMemberId: string; hostDisplayName: string }) => {
@@ -1288,6 +1384,21 @@ export function activate(context: vscode.ExtensionContext): void {
       await activeChatLog.load();
       if (activeHost) {
         activeHost.setChatLog(activeChatLog, activeBranchName);
+      }
+
+      // Phase 5 Plan 05-05 (SC-5): construct the host-side AST analyzer once
+      // the workspace + branch are stable. The analyzer is host-only — clients
+      // never instantiate. setBranchDirGetter resolves at call time so a
+      // branch switch (line ~1811) doesn't require re-wiring the analyzer.
+      // The analyzer itself is constructed once per session; dispose happens
+      // in host.session-ended.
+      if (activeHost && !activeAstAnalyzer) {
+        activeAstAnalyzer = new AstAnalyzer(
+          workspaceFolder.uri.fsPath,
+          fsLayer.getBranchDir(),
+        );
+        activeHost.setAstAnalyzer(activeAstAnalyzer);
+        activeHost.setBranchDirGetter(() => fsLayer.getBranchDir());
       }
 
       // BRANCH-03: all-branches tree (separate from active-branch file tree)

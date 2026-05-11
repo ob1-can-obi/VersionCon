@@ -78,6 +78,20 @@ function escapeHtml(s: string): string {
 }
 
 // --- Types (mirror src/types/chat.ts to keep this file standalone) ---
+
+/**
+ * Phase 5 Plan 05-05 (SC-5): mirror of AffectedSymbol from src/ast/types.ts.
+ * Kept inline so the webview entry stays standalone (the webview bundle
+ * cannot import Node-side types directly; this match is verified by the
+ * round-trip tests in protocol.test.ts).
+ */
+interface AffectedSymbol {
+  name: string;
+  kind: 'function' | 'class' | 'variable' | 'import' | 'export';
+  changedIn: string;
+  callers: Array<{ memberId: string; displayName: string; file: string; line: number }>;
+}
+
 interface ChatRecord {
   id: string;
   kind: 'user' | 'system';
@@ -91,6 +105,14 @@ interface ChatRecord {
     branch?: string;
     files?: string[];
     affectsLocal?: boolean;
+    // Phase 5 Plan 05-05 (SC-5): populated by the chat-message-amend
+    // inbound handler below. Absent on records emitted before Phase 5 and
+    // when analysis fails or yields no impact.
+    affectedSymbols?: AffectedSymbol[];
+    // Phase 5 Plan 05-05 (SC-3 fallback signal): language ids that fell
+    // through to file-level fallback for this push. Drives the tooltip
+    // suffix on renderSystemRow.
+    unsupportedLanguages?: string[];
   };
 }
 
@@ -142,6 +164,27 @@ window.addEventListener('message', (event: MessageEvent) => {
         state.records.push(record);
         appendOne(record);
       }
+      break;
+    }
+    // Phase 5 Plan 05-05 (SC-5): patch the in-memory record's meta with
+    // AST-derived affectedSymbols + unsupportedLanguages, then re-render so
+    // the affected row picks up the upgraded body line + tooltip.
+    case 'chat-message-amend': {
+      const { recordId, affectedSymbols, unsupportedLanguages } = (msg as {
+        payload: {
+          recordId: string;
+          affectedSymbols: AffectedSymbol[];
+          unsupportedLanguages: string[];
+        };
+      }).payload;
+      if (!state) break;
+      const rec = state.records.find(r => r.id === recordId);
+      if (!rec) break;
+      rec.meta = { ...(rec.meta ?? {}), affectedSymbols, unsupportedLanguages };
+      // renderAll is the simplest correct option; per-row re-render is a
+      // future micro-optimization (Plan 05-05 explicitly accepts the
+      // full-relist cost for v1).
+      renderAll();
       break;
     }
     case 'chat-cleared':
@@ -246,9 +289,31 @@ function renderSystemRow(r: ChatRecord): HTMLElement {
     : r.subKind === 'branch-created'
       ? 'git-branch'
       : 'arrow-up';  // 'push' default
+
+  // Phase 5 Plan 05-05 (SC-5): when AST analysis identified caller symbols
+  // for this push, append the smart-summary clause. Capped at 3 displayed
+  // symbols + ', …' for the long-tail case (same rule as
+  // ActivityLogProvider.formatLabel for cross-render consistency).
+  const symList = r.meta?.affectedSymbols ?? [];
+  let body = r.body;
+  if (symList.length > 0) {
+    const top3 = symList.slice(0, 3).map(s => `${s.name}()`).join(', ');
+    const more = symList.length > 3 ? ', …' : '';
+    body = `${body} — affects ${symList.length} of your symbols: ${top3}${more}`;
+  }
+
+  // Phase 5 Plan 05-05 (SC-3 fallback): the tooltip surfaces languages that
+  // dropped to file-level fallback (e.g. Java, C++ in v1). Empty array →
+  // no tooltip. escapeHtml on the join'd list keeps the title attribute
+  // XSS-safe (T-04-10-01 invariant).
+  const unsupported = r.meta?.unsupportedLanguages ?? [];
+  const tooltip = unsupported.length > 0
+    ? ` title="Symbol analysis unavailable for: ${escapeHtml(unsupported.join(', '))}"`
+    : '';
+
   row.innerHTML =
     `<span class="codicon codicon-${iconClass}" aria-hidden="true"></span> ` +
-    `<span class="sys-text">${escapeHtml(r.body)}</span> ` +
+    `<span class="sys-text"${tooltip}>${escapeHtml(body)}</span> ` +
     `<span class="ts" data-ts="${r.timestamp}">${formatRelativeTime(r.timestamp)}</span>`;
   return row;
 }

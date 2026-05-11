@@ -816,3 +816,335 @@ suite('Phase 6 Wave 2 — host relay — review-comment (Task 2)', () => {
     await bob.close();
   });
 });
+
+// ===========================================================================
+// TASK 3 — review-vote + review-resolved (permission gate, status transitions)
+// ===========================================================================
+
+suite('Phase 6 Wave 2 — host relay — review-vote (Task 3)', () => {
+  let fx: Fixture;
+  setup(async () => { fx = await setupFixture(); });
+  teardown(async () => { await teardownFixture(fx); });
+
+  test('review-vote: host overrides reviewerMemberId + reviewerDisplayName (T-06-01)', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-vote', timestamp: 1, reviewId: parent.id,
+      vote: {
+        reviewerMemberId: 'BOB-ATTACKER',
+        reviewerDisplayName: 'BobAttacker',
+        vote: 'approved',
+        votedAt: 1,
+      },
+    });
+    await waitFor(() => (fx.reviewStore.getReview(parent.pushId)?.votes.length ?? 0) === 1);
+    const stored = fx.reviewStore.getReview(parent.pushId)!;
+    assert.strictEqual(stored.votes[0].reviewerMemberId, alice.memberId);
+    assert.strictEqual(stored.votes[0].reviewerDisplayName, 'Alice');
+    assert.notStrictEqual(stored.votes[0].reviewerMemberId, 'BOB-ATTACKER');
+    await alice.close();
+  });
+
+  test('review-vote: stamps votedAt at relay time', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx);
+    const beforeMs = Date.now();
+    alice.send({
+      type: 'review-vote', timestamp: 1, reviewId: parent.id,
+      vote: { reviewerMemberId: alice.memberId, reviewerDisplayName: 'Alice', vote: 'approved', votedAt: 1 },
+    });
+    await waitFor(() => (fx.reviewStore.getReview(parent.pushId)?.votes.length ?? 0) === 1);
+    const v = fx.reviewStore.getReview(parent.pushId)!.votes[0];
+    assert.ok(v.votedAt >= beforeMs);
+    assert.notStrictEqual(v.votedAt, 1);
+    await alice.close();
+  });
+
+  test('review-vote: dedupe — same reviewer voting twice replaces (latest wins)', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-vote', timestamp: 1, reviewId: parent.id,
+      vote: { reviewerMemberId: alice.memberId, reviewerDisplayName: 'Alice', vote: 'commented', votedAt: 1 },
+    });
+    await waitFor(() => (fx.reviewStore.getReview(parent.pushId)?.votes.length ?? 0) === 1);
+    alice.send({
+      type: 'review-vote', timestamp: 1, reviewId: parent.id,
+      vote: { reviewerMemberId: alice.memberId, reviewerDisplayName: 'Alice', vote: 'approved', votedAt: 2 },
+    });
+    await waitFor(() => fx.reviewStore.getReview(parent.pushId)?.votes[0].vote === 'approved');
+    const stored = fx.reviewStore.getReview(parent.pushId)!;
+    assert.strictEqual(stored.votes.length, 1, 'still one entry');
+    assert.strictEqual(stored.votes[0].vote, 'approved', 'latest wins');
+    await alice.close();
+  });
+
+  test('review-vote: changes-requested dominates approved (status transition)', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-vote', timestamp: 1, reviewId: parent.id,
+      vote: { reviewerMemberId: alice.memberId, reviewerDisplayName: 'Alice', vote: 'approved', votedAt: 1 },
+    });
+    await waitFor(() => fx.reviewStore.getReview(parent.pushId)?.status === 'approved');
+    bob.send({
+      type: 'review-vote', timestamp: 1, reviewId: parent.id,
+      vote: { reviewerMemberId: bob.memberId, reviewerDisplayName: 'Bob', vote: 'changes-requested', votedAt: 2 },
+    });
+    await waitFor(() => fx.reviewStore.getReview(parent.pushId)?.status === 'changes-requested');
+    const stored = fx.reviewStore.getReview(parent.pushId)!;
+    assert.strictEqual(stored.status, 'changes-requested');
+    assert.strictEqual(stored.votes.length, 2);
+    await alice.close();
+    await bob.close();
+  });
+
+  test('review-vote: commented does NOT change status from open', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-vote', timestamp: 1, reviewId: parent.id,
+      vote: { reviewerMemberId: alice.memberId, reviewerDisplayName: 'Alice', vote: 'commented', votedAt: 1 },
+    });
+    await waitFor(() => (fx.reviewStore.getReview(parent.pushId)?.votes.length ?? 0) === 1);
+    assert.strictEqual(fx.reviewStore.getReview(parent.pushId)!.status, 'open');
+    await alice.close();
+  });
+
+  test('review-vote: approved with no changes-requested transitions status to approved', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-vote', timestamp: 1, reviewId: parent.id,
+      vote: { reviewerMemberId: alice.memberId, reviewerDisplayName: 'Alice', vote: 'approved', votedAt: 1 },
+    });
+    await waitFor(() => fx.reviewStore.getReview(parent.pushId)?.status === 'approved');
+    assert.strictEqual(fx.reviewStore.getReview(parent.pushId)!.status, 'approved');
+    await alice.close();
+  });
+
+  test('review-vote: emits subKind review-approved system event for approved vote', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-vote', timestamp: 1, reviewId: parent.id,
+      vote: { reviewerMemberId: alice.memberId, reviewerDisplayName: 'Alice', vote: 'approved', votedAt: 1 },
+    });
+    await waitFor(() => fx.chatLog.getRecords().some((r) => r.subKind === 'review-approved'));
+    const sys = fx.chatLog.getRecords().find((r) => r.subKind === 'review-approved');
+    assert.ok(sys);
+    assert.match(sys.body, /Alice approved/);
+    await alice.close();
+  });
+
+  test('review-vote: emits subKind review-changes-requested system event', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-vote', timestamp: 1, reviewId: parent.id,
+      vote: { reviewerMemberId: alice.memberId, reviewerDisplayName: 'Alice', vote: 'changes-requested', votedAt: 1 },
+    });
+    await waitFor(() => fx.chatLog.getRecords().some((r) => r.subKind === 'review-changes-requested'));
+    const sys = fx.chatLog.getRecords().find((r) => r.subKind === 'review-changes-requested');
+    assert.ok(sys);
+    assert.match(sys.body, /Alice requested changes/);
+    await alice.close();
+  });
+
+  test('review-vote: emits subKind review-comment system event for commented vote', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-vote', timestamp: 1, reviewId: parent.id,
+      vote: { reviewerMemberId: alice.memberId, reviewerDisplayName: 'Alice', vote: 'commented', votedAt: 1 },
+    });
+    await waitFor(() => fx.chatLog.getRecords().some((r) => r.subKind === 'review-comment'));
+    const sys = fx.chatLog.getRecords().find((r) => r.subKind === 'review-comment' && /Alice commented on/.test(r.body));
+    assert.ok(sys, 'commented-vote system event uses subKind:review-comment');
+    await alice.close();
+  });
+
+  test('review-vote: on already-resolved review drops silently', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    const parent = await seedReview(fx, { status: 'resolved', resolvedReason: 'merged' });
+    alice.send({
+      type: 'review-vote', timestamp: 1, reviewId: parent.id,
+      vote: { reviewerMemberId: alice.memberId, reviewerDisplayName: 'Alice', vote: 'approved', votedAt: 1 },
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    const stored = fx.reviewStore.getReview(parent.pushId)!;
+    assert.strictEqual(stored.votes.length, 0, 'no vote applied to resolved review');
+    assert.strictEqual(bob.inbox.filter((m) => m.type === 'review-vote').length, 0);
+    await alice.close();
+    await bob.close();
+  });
+
+  test('review-vote: invalid vote value drops silently', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx);
+    // Send a vote with an unknown value (cast to bypass TS).
+    alice.send({
+      type: 'review-vote', timestamp: 1, reviewId: parent.id,
+      vote: {
+        reviewerMemberId: alice.memberId, reviewerDisplayName: 'Alice',
+        vote: 'BOGUS' as unknown as 'approved', votedAt: 1,
+      },
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.strictEqual(fx.reviewStore.getReview(parent.pushId)!.votes.length, 0);
+    await alice.close();
+  });
+});
+
+suite('Phase 6 Wave 2 — host relay — review-resolved (Task 3)', () => {
+  let fx: Fixture;
+  setup(async () => { fx = await setupFixture(); });
+  teardown(async () => { await teardownFixture(fx); });
+
+  test('review-resolved: push author can resolve own review (merged)', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    const parent = await seedReview(fx, { authorMemberId: alice.memberId, authorDisplayName: 'Alice' });
+    alice.send({
+      type: 'review-resolved', timestamp: 1, reviewId: parent.id,
+      resolvedBy: alice.memberId, resolvedReason: 'merged',
+    });
+    await waitFor(() => fx.reviewStore.getReview(parent.pushId)?.status === 'resolved');
+    const stored = fx.reviewStore.getReview(parent.pushId)!;
+    assert.strictEqual(stored.status, 'resolved');
+    assert.strictEqual(stored.resolvedBy, alice.memberId);
+    assert.strictEqual(stored.resolvedReason, 'merged');
+    // Both alice and bob receive the broadcast.
+    await waitFor(() => bob.inbox.some((m) => m.type === 'review-resolved'));
+    const resolvedEcho = bob.inbox.find((m) => m.type === 'review-resolved') as ReviewResolved;
+    assert.strictEqual(resolvedEcho.reviewId, parent.id);
+    assert.strictEqual(resolvedEcho.resolvedReason, 'merged');
+    await alice.close();
+    await bob.close();
+  });
+
+  test('review-resolved: non-author non-admin denied with REVIEW_PERMISSION_DENIED', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    const parent = await seedReview(fx, { authorMemberId: alice.memberId, authorDisplayName: 'Alice' });
+    // Bob is not the author and not an admin.
+    const bobErrors: ErrorMessage[] = [];
+    bob.onMessage((m) => { if (m.type === 'error') { bobErrors.push(m); } });
+    bob.send({
+      type: 'review-resolved', timestamp: 1, reviewId: parent.id,
+      resolvedBy: bob.memberId, resolvedReason: 'merged',
+    });
+    await waitFor(() => bobErrors.length === 1, 2000);
+    assert.strictEqual(bobErrors[0].code, 'REVIEW_PERMISSION_DENIED');
+    // Review status unchanged.
+    assert.strictEqual(fx.reviewStore.getReview(parent.pushId)!.status, 'open');
+    await alice.close();
+    await bob.close();
+  });
+
+  test('review-resolved: admin can OVERRIDE changes-requested to merged (emits TWO system events)', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const carol = await connectClient(fx.port, 'Carol');
+    fx.permGrants.canCreate.add(carol.memberId); // admin grant
+    const parent = await seedReview(fx, {
+      authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+      status: 'changes-requested',
+    });
+    carol.send({
+      type: 'review-resolved', timestamp: 1, reviewId: parent.id,
+      resolvedBy: carol.memberId, resolvedReason: 'merged',
+    });
+    await waitFor(() => fx.reviewStore.getReview(parent.pushId)?.status === 'resolved');
+    // TWO system events: one 'resolved' + one 'OVERRODE'.
+    await waitFor(
+      () => fx.chatLog.getRecords().filter((r) => r.subKind === 'review-resolved').length === 2,
+      2000,
+    );
+    const resolvedRecords = fx.chatLog.getRecords().filter((r) => r.subKind === 'review-resolved');
+    const overrideRecord = resolvedRecords.find((r) => /OVERRODE/.test(r.body));
+    assert.ok(overrideRecord, 'OVERRODE system event emitted');
+    assert.match(overrideRecord.body, /Carol OVERRODE/);
+    await alice.close();
+    await carol.close();
+  });
+
+  test('review-resolved: admin override denied when status is NOT changes-requested', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const carol = await connectClient(fx.port, 'Carol');
+    fx.permGrants.canCreate.add(carol.memberId);
+    const parent = await seedReview(fx, {
+      authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+      status: 'approved', // NOT changes-requested
+    });
+    const carolErrors: ErrorMessage[] = [];
+    carol.onMessage((m) => { if (m.type === 'error') { carolErrors.push(m); } });
+    carol.send({
+      type: 'review-resolved', timestamp: 1, reviewId: parent.id,
+      resolvedBy: carol.memberId, resolvedReason: 'merged',
+    });
+    await waitFor(() => carolErrors.length === 1, 2000);
+    assert.strictEqual(carolErrors[0].code, 'REVIEW_PERMISSION_DENIED');
+    assert.strictEqual(fx.reviewStore.getReview(parent.pushId)!.status, 'approved');
+    await alice.close();
+    await carol.close();
+  });
+
+  test('review-resolved: invalid resolvedReason drops silently', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx, { authorMemberId: alice.memberId });
+    alice.send({
+      type: 'review-resolved', timestamp: 1, reviewId: parent.id,
+      resolvedBy: alice.memberId, resolvedReason: 'GARBAGE' as unknown as 'merged',
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.strictEqual(fx.reviewStore.getReview(parent.pushId)!.status, 'open');
+    await alice.close();
+  });
+
+  test('review-resolved: on already-resolved review drops silently', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    const parent = await seedReview(fx, {
+      authorMemberId: alice.memberId, status: 'resolved', resolvedReason: 'merged',
+    });
+    alice.send({
+      type: 'review-resolved', timestamp: 1, reviewId: parent.id,
+      resolvedBy: alice.memberId, resolvedReason: 'merged',
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.strictEqual(bob.inbox.filter((m) => m.type === 'review-resolved').length, 0);
+    await alice.close();
+    await bob.close();
+  });
+
+  test('review-resolved: abandoned reason allowed by author', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx, { authorMemberId: alice.memberId });
+    alice.send({
+      type: 'review-resolved', timestamp: 1, reviewId: parent.id,
+      resolvedBy: alice.memberId, resolvedReason: 'abandoned',
+    });
+    await waitFor(() => fx.reviewStore.getReview(parent.pushId)?.status === 'resolved');
+    const stored = fx.reviewStore.getReview(parent.pushId)!;
+    assert.strictEqual(stored.resolvedReason, 'abandoned');
+    await alice.close();
+  });
+
+  test('review-resolved: emits subKind review-resolved system event with reason in body', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx, { authorMemberId: alice.memberId });
+    alice.send({
+      type: 'review-resolved', timestamp: 1, reviewId: parent.id,
+      resolvedBy: alice.memberId, resolvedReason: 'merged',
+    });
+    await waitFor(() => fx.chatLog.getRecords().some((r) => r.subKind === 'review-resolved'));
+    const sys = fx.chatLog.getRecords().find((r) => r.subKind === 'review-resolved');
+    assert.ok(sys);
+    assert.match(sys.body, /Alice resolved the review/);
+    assert.match(sys.body, /merged/);
+    await alice.close();
+  });
+});

@@ -65,7 +65,7 @@ suite('PushService', () => {
     await fs.mkdir(path.join(projectRoot, 'src'), { recursive: true });
     await fs.writeFile(path.join(projectRoot, 'src', 'feature.ts'), 'export const x = 1;\n');
 
-    const record = await pushService.executePush('Add feature', ['src/feature.ts'], {
+    const { record } = await pushService.executePush('Add feature', ['src/feature.ts'], {
       id: 'member-1',
       displayName: 'Alice',
     });
@@ -86,7 +86,7 @@ suite('PushService', () => {
     await fs.mkdir(path.join(projectRoot, 'src'), { recursive: true });
     await fs.writeFile(path.join(projectRoot, 'src', 'mod.ts'), 'modified\n');
 
-    const record = await pushService.executePush('Modify', ['src/mod.ts'], {
+    const { record } = await pushService.executePush('Modify', ['src/mod.ts'], {
       id: 'm1', displayName: 'A',
     });
 
@@ -104,7 +104,7 @@ suite('PushService', () => {
     await fs.mkdir(path.join(projectRoot, 'src'), { recursive: true });
     await fs.writeFile(path.join(projectRoot, 'src', 'revert.ts'), 'modified\n');
 
-    const record = await pushService.executePush('Will revert', ['src/revert.ts'], {
+    const { record } = await pushService.executePush('Will revert', ['src/revert.ts'], {
       id: 'm1', displayName: 'A',
     });
 
@@ -128,7 +128,7 @@ suite('PushService', () => {
     await fs.mkdir(path.join(projectRoot, 'src'), { recursive: true });
     await fs.writeFile(path.join(projectRoot, 'src', 'added.ts'), 'new file\n');
 
-    const record = await pushService.executePush('Add', ['src/added.ts'], {
+    const { record } = await pushService.executePush('Add', ['src/added.ts'], {
       id: 'm1', displayName: 'A',
     });
 
@@ -145,7 +145,7 @@ suite('PushService', () => {
     await fs.writeFile(path.join(projectRoot, 'src', 'a.ts'), 'a\n');
     await fs.writeFile(path.join(projectRoot, 'src', 'b.ts'), 'b\n');
 
-    const record = await pushService.executePush('Multi', ['src/a.ts', 'src/b.ts'], {
+    const { record } = await pushService.executePush('Multi', ['src/a.ts', 'src/b.ts'], {
       id: 'm1', displayName: 'A',
     });
 

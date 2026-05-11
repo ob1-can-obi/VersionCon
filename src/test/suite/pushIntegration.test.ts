@@ -51,7 +51,7 @@ suite('PushIntegration', () => {
     await fs.mkdir(path.join(projectRoot, 'src'), { recursive: true });
     await fs.writeFile(path.join(projectRoot, 'src', 'msg.ts'), 'x\n');
 
-    const record = await pushService.executePush('Initial push message', ['src/msg.ts'], {
+    const { record } = await pushService.executePush('Initial push message', ['src/msg.ts'], {
       id: 'm1',
       displayName: 'Alice',
     });
@@ -67,7 +67,7 @@ suite('PushIntegration', () => {
     await fs.mkdir(path.join(projectRoot, 'src'), { recursive: true });
     await fs.writeFile(path.join(projectRoot, 'src', 'who.ts'), 'export {};\n');
 
-    const record = await pushService.executePush('add who.ts', ['src/who.ts'], {
+    const { record } = await pushService.executePush('add who.ts', ['src/who.ts'], {
       id: 'member-1',
       displayName: 'Alice',
     });
@@ -87,7 +87,7 @@ suite('PushIntegration', () => {
     await fs.writeFile(path.join(projectRoot, 'src', 'a.ts'), 'pushed-a\n');
     await fs.writeFile(path.join(projectRoot, 'src', 'b.ts'), 'pushed-b\n');
 
-    const record = await pushService.executePush('multi', ['src/a.ts', 'src/b.ts'], {
+    const { record } = await pushService.executePush('multi', ['src/a.ts', 'src/b.ts'], {
       id: 'm1', displayName: 'A',
     });
 
@@ -107,7 +107,7 @@ suite('PushIntegration', () => {
     await fs.writeFile(path.join(projectRoot, 'src', 'a.ts'), 'new\n');
     await fs.writeFile(path.join(projectRoot, 'src', 'b.ts'), 'b-new\n');
 
-    const record = await pushService.executePush('partial', ['src/a.ts', 'src/b.ts'], {
+    const { record } = await pushService.executePush('partial', ['src/a.ts', 'src/b.ts'], {
       id: 'm1', displayName: 'A',
     });
 
@@ -128,7 +128,7 @@ suite('PushIntegration', () => {
     await fs.writeFile(path.join(projectRoot, 'src', 'a.ts'), 'new-a\n');
     await fs.writeFile(path.join(projectRoot, 'src', 'b.ts'), 'new-b\n');
 
-    const record = await pushService.executePush('two-file push', ['src/a.ts', 'src/b.ts'], {
+    const { record } = await pushService.executePush('two-file push', ['src/a.ts', 'src/b.ts'], {
       id: 'm1', displayName: 'A',
     });
 

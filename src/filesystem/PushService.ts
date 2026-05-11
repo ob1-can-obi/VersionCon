@@ -62,18 +62,36 @@ export class PushService {
   }
 
   /**
-   * Execute a push: snapshot pre-push content, copy workspace files to branch, record history.
+   * Execute a push: snapshot pre-push content, copy workspace files to branch,
+   * record history.
+   *
+   * Phase 5 Plan 05-05 (SC-2 + analyzer wiring): returns BOTH the PushRecord
+   * AND a `prePostByFile` map that surfaces the per-file pre/post content the
+   * loop already reads. The caller (extension.ts push handler) passes the map
+   * to `SessionHost.broadcastPush` so the host's AST analyzer can run without
+   * re-reading the branch snapshot we just wrote. Existing callers that don't
+   * need the map can destructure `{ record }` and ignore the rest — the
+   * v1 PushRecord shape is unchanged.
+   *
+   * `preContent === null` means the file did not exist in the branch before
+   * the push (newly-added file). `postContent === null` means the file does
+   * not exist in the workspace (deleted file). Both null is a no-op
+   * theoretical edge — the loop will not be entered for an empty stagedPaths.
    */
   async executePush(
     message: string,
     stagedPaths: string[],
     memberInfo: { id: string; displayName: string },
-  ): Promise<PushRecord> {
+  ): Promise<{
+    record: PushRecord;
+    prePostByFile: Map<string, { preContent: string | null; postContent: string | null }>;
+  }> {
     const pushId = crypto.randomBytes(10).toString('hex');
     const branchDir = this.getBranchDir();
     const branchName = this.getActiveBranchName();
 
     const files: PushFileEntry[] = [];
+    const prePostByFile = new Map<string, { preContent: string | null; postContent: string | null }>();
 
     for (const relativePath of stagedPaths) {
       const workspacePath = path.join(this.projectRoot, relativePath);
@@ -111,6 +129,14 @@ export class PushService {
       }
 
       files.push({ relativePath, status, addedLines, removedLines });
+
+      // Phase 5 Plan 05-05: surface pre/post content so the analyzer caller
+      // (SessionHost.broadcastPush via extension.ts) doesn't have to re-read
+      // the branch snapshot we just persisted. null = "did not exist".
+      prePostByFile.set(relativePath, {
+        preContent: branchExists ? branchContent : null,
+        postContent: workspaceExists ? workspaceContent : null,
+      });
     }
 
     const record: PushRecord = {
@@ -125,7 +151,7 @@ export class PushService {
     };
 
     await this.history.addRecord(record);
-    return record;
+    return { record, prePostByFile };
   }
 
   /**

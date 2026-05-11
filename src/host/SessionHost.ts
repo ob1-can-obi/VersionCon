@@ -1,5 +1,7 @@
 import { createServer } from 'net';
 import * as crypto from 'crypto';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
 import { AuthHandler } from './AuthHandler.js';
@@ -25,6 +27,11 @@ import type {
   PresenceInfo,
   SystemEventSubKind,
 } from '../types/chat.js';
+// Phase 5 Plan 05-05 (SC-5): AST analyzer is wired via setAstAnalyzer. Type-only
+// import keeps SessionHost free of any runtime dependency on the worker module
+// tree — the analyzer is constructed by extension.ts and injected in.
+import type { AstAnalyzer } from '../ast/AstAnalyzer.js';
+import type { AnalyzePayload } from '../ast/types.js';
 
 /** Internal tracking for each connected member's WebSocket and status. */
 interface ConnectedMember {
@@ -114,6 +121,26 @@ export class SessionHost implements SessionEventEmitter {
    * branch the replay belongs to. Null until setChatLog is called.
    */
   private activeBranch: string | null = null;
+
+  /**
+   * Phase 5 Plan 05-05 (SC-5): host-side AST analyzer. Constructed once per
+   * session start by extension.ts (host path only) and injected via
+   * setAstAnalyzer. Null when the analyzer is absent (test setups,
+   * client-only sessions, or before extension.ts wires it) — broadcastPush
+   * then degrades to the Phase 4.3 baseline (no amend ever fires). SC-1 and
+   * SC-5 are end-to-end-verified only when this is wired.
+   */
+  private astAnalyzer: AstAnalyzer | null = null;
+
+  /**
+   * Phase 5 Plan 05-05: lazy getter for the branch directory path. The
+   * SessionHost runs in the same process as PushService, and the active
+   * branch can switch mid-session, so we resolve at call time rather than at
+   * construction. Wired by extension.ts via setBranchDirGetter — mirrors the
+   * existing setChatLog pattern. Null when not wired (runAstAnalysisAndAmend
+   * short-circuits to empty result).
+   */
+  private branchDirGetter: (() => string) | null = null;
 
   /**
    * Phase 4: Presence map — memberId -> PresenceInfo. Cleared per-member on
@@ -743,7 +770,10 @@ export class SessionHost implements SessionEventEmitter {
    * Returns the persisted ChatRecord so extension.ts can echo it into the
    * host's own ChatPanel via dispatchChatReceivedLocally (CR-02-NEW closure).
    */
-  broadcastPush(record: PushRecord): ChatRecord {
+  broadcastPush(
+    record: PushRecord,
+    prePostByFile?: Map<string, { preContent: string | null; postContent: string | null }>,
+  ): ChatRecord {
     const stampedTs = createTimestamp();
     this.broadcast({
       type: 'push-notification',
@@ -757,7 +787,7 @@ export class SessionHost implements SessionEventEmitter {
     });
     const fileCount = record.files.length;
     const body = `${record.memberDisplayName} pushed ${fileCount} file(s)`;
-    return this.appendAndBroadcastSystemEvent(
+    const systemRecord = this.appendAndBroadcastSystemEvent(
       'push',
       body,
       stampedTs,
@@ -769,6 +799,20 @@ export class SessionHost implements SessionEventEmitter {
       record.memberId,
       record.memberDisplayName,
     );
+    // Phase 5 Plan 05-05 (SC-2 + SC-5): fire-and-forget AST analysis. The
+    // synchronous broadcast path above is COMPLETE before this fires — the
+    // caller never waits on the returned Promise. When the analyzer resolves
+    // with non-empty affectedSymbols OR unsupportedLanguages, the host
+    // broadcasts a `chat-message-amend` referencing systemRecord.id so
+    // clients can patch the cached record's meta and re-render.
+    //
+    // SC-2 hard line: do NOT await this; it MUST run after the sync path
+    // returns. The `void` operator pins that intent and silences the
+    // promise-must-be-awaited lint.
+    if (this.astAnalyzer && prePostByFile && prePostByFile.size > 0) {
+      void this.runAstAnalysisAndAmend(systemRecord.id, record, prePostByFile);
+    }
+    return systemRecord;
   }
 
   /**
@@ -954,6 +998,166 @@ export class SessionHost implements SessionEventEmitter {
   setChatLog(chatLog: ChatLog, branchName: string): void {
     this.chatLog = chatLog;
     this.activeBranch = branchName;
+  }
+
+  /**
+   * Phase 5 Plan 05-05 (SC-5): wire the AST analyzer so broadcastPush can
+   * fire an async analysis + follow-up `chat-message-amend` broadcast. Called
+   * by extension.ts once per session start (host path only). Null when the
+   * analyzer is absent — broadcastPush degrades to the Phase 4.3 baseline.
+   */
+  setAstAnalyzer(analyzer: AstAnalyzer | null): void {
+    this.astAnalyzer = analyzer;
+  }
+
+  /**
+   * Phase 5 Plan 05-05 (SC-5): wire a lazy getter for the active branch
+   * directory so runAstAnalysisAndAmend can read each member's tracked-file
+   * content from the host's branch source-of-truth without needing the
+   * content over the wire. Called by extension.ts mirroring setChatLog.
+   * Null when not wired — runAstAnalysisAndAmend short-circuits to empty.
+   */
+  setBranchDirGetter(getter: () => string): void {
+    this.branchDirGetter = getter;
+  }
+
+  /**
+   * Phase 5 Plan 05-05 (SC-5) core: build analyzer inputs, run analysis,
+   * broadcast amend.
+   *
+   * Threat mitigations:
+   *  - T-05-01 (worker crash) — wrapped in try/catch; analyzer itself handles
+   *    re-fork + 3-strike circuit. Empty-result short-circuit prevents amend
+   *    broadcast on any failure (original chat-message still stands).
+   *  - T-05-02 (slowloris parse) — analyzer's 5s timeout fires; this method
+   *    resolves with empty result; no amend broadcast.
+   *  - T-05-03 (path escape) — analyzer.validateAndFilter drops unsafe paths
+   *    BEFORE IPC; host passes raw paths trusting the analyzer's gate.
+   *  - T-05-04 (large tracked file) — pre-stat skip cap at 500KB avoids
+   *    wasted IPC bandwidth; the worker's skipPolicy is the source of truth.
+   *
+   * Wire ordering: this method is invoked fire-and-forget from
+   * broadcastPush AFTER the synchronous chat-message envelope broadcasts.
+   * The amend (if any) ALWAYS arrives after the original chat-message on the
+   * same client connection. Disordering can occur only across reconnects —
+   * the threat register accepts that as v1 risk (T-05-06) since the chat-log
+   * patchMeta + chat-history replay covers reconnecting members.
+   */
+  private async runAstAnalysisAndAmend(
+    recordId: string,
+    pushRecord: PushRecord,
+    prePostByFile: Map<string, { preContent: string | null; postContent: string | null }>,
+  ): Promise<void> {
+    try {
+      if (!this.astAnalyzer) return;
+
+      // Build the changedFiles payload from prePostByFile. languageId is null
+      // so the worker derives via detectLanguageFromPath; this avoids the
+      // host duplicating language-detection logic.
+      const changedFiles: AnalyzePayload['changedFiles'] = [];
+      for (const [relativePath, { preContent, postContent }] of prePostByFile) {
+        changedFiles.push({
+          relativePath,
+          preContent,
+          postContent,
+          languageId: null,
+        });
+      }
+
+      // Build memberTrackedFiles by reading content from the branch source-
+      // of-truth. The pusher is excluded — they're the source of the change,
+      // not a caller. Skip files >500KB (T-05-04 defense-in-depth; the
+      // worker's shouldSkip is the source of truth).
+      const memberTrackedFiles: AnalyzePayload['memberTrackedFiles'] = {};
+      const memberDisplayNames: AnalyzePayload['memberDisplayNames'] = {};
+      const names = this.getMemberNames();
+      const branchDir = this.branchDirGetter ? this.branchDirGetter() : null;
+      if (branchDir) {
+        for (const [memberId, trackedPaths] of this.memberTracking) {
+          if (memberId === pushRecord.memberId) continue;
+          const files: AnalyzePayload['memberTrackedFiles'][string] = [];
+          for (const rel of trackedPaths) {
+            try {
+              const abs = path.join(branchDir, rel);
+              const stat = await fs.stat(abs);
+              // T-05-04 pre-stat skip — saves IPC bandwidth for files the
+              // worker would shouldSkip anyway. The 500KB threshold matches
+              // skipPolicy.ts.
+              if (stat.size > 500_000) continue;
+              const content = await fs.readFile(abs, 'utf-8');
+              files.push({ relativePath: rel, content, languageId: null });
+            } catch {
+              // File missing in branch dir (e.g. workspace-only file the
+              // member tracks) — skip. The worker only operates on branch
+              // content for tracked-paths in v1.
+            }
+          }
+          if (files.length > 0) {
+            memberTrackedFiles[memberId] = files;
+            memberDisplayNames[memberId] = names.get(memberId) ?? 'Unknown';
+          }
+        }
+      }
+
+      const result = await this.astAnalyzer.analyzeChange({
+        changedFiles,
+        memberTrackedFiles,
+        memberDisplayNames,
+      });
+
+      // Empty-result short-circuit: when the analyzer returns no affected
+      // symbols AND no unsupported languages (the SC-3 fallback signal), the
+      // original chat-message stands; no amend broadcast. This is what makes
+      // the wire-ordering posture safe — older clients only see new amends
+      // when the host has something useful to amend with.
+      if (
+        result.affectedSymbols.length === 0 &&
+        result.unsupportedLanguages.length === 0
+      ) {
+        return;
+      }
+
+      // Persist the amend to the ChatLog so chat-history replay carries the
+      // patched meta — joiners after the amend lands still see the affected
+      // symbols. patchMeta is a no-op when the record id is missing
+      // (best-effort; chat-history replay will still render the file-level
+      // message).
+      if (this.chatLog) {
+        try {
+          await this.chatLog.patchMeta(recordId, {
+            affectedSymbols: result.affectedSymbols,
+            unsupportedLanguages: result.unsupportedLanguages,
+          });
+        } catch (err) {
+          // chat-log persistence failure must not block the live amend
+          // broadcast — mirrors the existing append() posture.
+          console.error('[SessionHost] chat-log patchMeta failed', err);
+        }
+      }
+
+      const amendTs = createTimestamp();
+      this.broadcast({
+        type: 'chat-message-amend',
+        timestamp: amendTs,
+        recordId,
+        affectedSymbols: result.affectedSymbols,
+        unsupportedLanguages: result.unsupportedLanguages,
+      });
+      // Emit a typed event so extension.ts can route the amend into the
+      // host's own ChatPanel + ActivityLogProvider (the host doesn't receive
+      // its own broadcast over the wire, mirroring the chat-message echo
+      // pattern at extension.ts:285).
+      this.emit('chat-message-amend', {
+        recordId,
+        affectedSymbols: result.affectedSymbols,
+        unsupportedLanguages: result.unsupportedLanguages,
+      });
+    } catch (err) {
+      // T-05-01: any analyzer failure (crash, timeout, validation rejection)
+      // must NEVER crash the host. Log + swallow; the original chat-message
+      // stands unchanged.
+      console.error('[SessionHost] runAstAnalysisAndAmend failed', err);
+    }
   }
 
   /**

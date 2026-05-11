@@ -59,6 +59,38 @@ export class ChatLog {
   }
 
   /**
+   * Phase 5 Plan 05-05 (SC-5): merge `patch` into an existing record's meta
+   * and persist. Used by SessionHost.runAstAnalysisAndAmend to stamp
+   * `affectedSymbols` + `unsupportedLanguages` onto the original push system
+   * event AFTER the async AST analysis completes — so chat-history replay
+   * (Plan 04-04) carries the amended meta to joiners who arrive after the
+   * amend lands.
+   *
+   * Best-effort semantics:
+   *   - No-op when the record id is missing (e.g. record evicted by a
+   *     concurrent truncation; the live amend wire broadcast still fires and
+   *     reaches currently-connected clients).
+   *   - Whole-file rewrite via save() — same atomicity posture as append().
+   *     Concurrent appends + patchMeta calls are safe in v1 because the
+   *     single host process serializes both through the event loop; a future
+   *     .tmp+rename upgrade is tracked in the Phase 4 STRIDE register as
+   *     T-04-02-04.
+   */
+  async patchMeta(
+    recordId: string,
+    patch: Partial<NonNullable<ChatRecord['meta']>>,
+  ): Promise<void> {
+    const idx = this.records.findIndex(r => r.id === recordId);
+    if (idx < 0) return;
+    const existing = this.records[idx].meta ?? {};
+    this.records[idx] = {
+      ...this.records[idx],
+      meta: { ...existing, ...patch },
+    };
+    await this.save();
+  }
+
+  /**
    * Returns all records in chronological order (oldest first).
    * NOTE: differs from PushHistory.getRecords() which returns newest first.
    * Chat displays oldest-at-top, scrolling down to newest.

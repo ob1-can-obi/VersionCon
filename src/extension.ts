@@ -1583,7 +1583,10 @@ export function activate(context: vscode.ExtensionContext): void {
           if (!message) return;
 
           try {
-            const record = await pushService.executePush(message, stagedPaths, {
+            // Plan 05-05 (SC-2): executePush now returns BOTH the PushRecord
+            // AND a per-file pre/post content map so SessionHost can feed the
+            // AST analyzer without re-reading the branch snapshot.
+            const { record, prePostByFile } = await pushService.executePush(message, stagedPaths, {
               id: currentMemberId,
               displayName: currentDisplayName,
             });
@@ -1611,7 +1614,10 @@ export function activate(context: vscode.ExtensionContext): void {
               // ChatRecord; echo it into the host's own ChatPanel since the host
               // does NOT receive its own broadcast over the wire (mirrors line 285
               // for user messages).
-              const systemRecord = activeHost.broadcastPush(record);
+              // Plan 05-05 (SC-5): pass prePostByFile so the host can fire its
+              // AST analyzer fire-and-forget after the sync broadcast completes
+              // and emit a `chat-message-amend` when affectedSymbols are known.
+              const systemRecord = activeHost.broadcastPush(record, prePostByFile);
               dispatchChatReceivedLocally(systemRecord);
             }
           } catch (err) {

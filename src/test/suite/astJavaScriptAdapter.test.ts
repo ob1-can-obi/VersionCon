@@ -4,7 +4,7 @@ import * as path from 'path';
 
 import { JavaScriptAdapter } from '../../ast/adapters/javascript.js';
 import { initParser, _resetGrammarsForTests } from '../../ast/grammars.js';
-import { _resetRegistryForTests, getAdapter } from '../../ast/AstFactory.js';
+import { getAdapter } from '../../ast/AstFactory.js';
 
 // -----------------------------------------------------------------------------
 // Phase 5 Wave 2 (Plan 05-02) — JavaScriptAdapter unit tests.
@@ -26,9 +26,11 @@ suite('Phase 5 Wave 2 — JavaScriptAdapter (CONF-02/04/05/06)', () => {
   let adapter: JavaScriptAdapter;
 
   suiteSetup(async () => {
-    // Reset both registry and grammar cache so the test suite starts from
-    // the same baseline regardless of which other suite ran before.
-    _resetRegistryForTests();
+    // NOTE: do NOT reset the registry here — the JavaScriptAdapter module's
+    // import side effect at the top of this file just populated it, and the
+    // registry test below ("importing javascript adapter module registers
+    // it") would lose its evidence. Tests that need a clean registry must
+    // reset locally and re-import the adapter.
     _resetGrammarsForTests();
     await initParser();
     adapter = new JavaScriptAdapter();
@@ -37,7 +39,9 @@ suite('Phase 5 Wave 2 — JavaScriptAdapter (CONF-02/04/05/06)', () => {
 
   suiteTeardown(() => {
     _resetGrammarsForTests();
-    _resetRegistryForTests();
+    // Do NOT _resetRegistryForTests — other adapter suites (e.g.
+    // astTypeScriptAdapter.test.ts) rely on the side-effect registration
+    // surviving across suite boundaries.
   });
 
   // ---------- extractSymbols: functions ----------

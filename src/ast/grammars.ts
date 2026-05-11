@@ -36,6 +36,7 @@
  * Plan 05-04 but noted here.
  */
 import * as path from 'node:path';
+import * as fs from 'node:fs';
 import { Parser, Language } from 'web-tree-sitter';
 import type { LanguageId } from './types.js';
 
@@ -60,13 +61,51 @@ const LANGUAGE_CACHE = new Map<string, Language>();
 const PARSER_CACHE = new Map<string, Parser>();
 
 /**
- * Compute the dist/vendor/tree-sitter/ absolute path. Works from both
- * dist/extension.js (host process — not a legitimate caller, see file header)
- * and dist/worker.js (Wave 4 worker target). The path is computed from
- * __dirname so the resolver works regardless of CWD.
+ * Compute the absolute path to dist/vendor/tree-sitter/. The challenge: this
+ * module ships in two different layouts depending on the build mode:
+ *
+ *   - esbuild bundle (host runtime + Wave 4 worker): one file under dist/,
+ *     so __dirname === dist/ and vendor/tree-sitter/ is `dist/vendor/...`.
+ *
+ *   - tsc emit (test runner — vscode-test compiles each .ts to its own .js
+ *     under dist/test/... and dist/ast/...): __dirname === dist/ast/, so
+ *     "../vendor/tree-sitter/" is the correct relative path.
+ *
+ * We walk up from __dirname looking for the first ancestor that contains a
+ * `vendor/tree-sitter/` directory. The walk is bounded (max 6 levels) so a
+ * pathological setup can't loop forever — bail out with the bundle-mode
+ * default if not found.
+ *
+ * Cached so the filesystem scan happens at most once per process.
  */
+let _distVendorDirCache: string | null = null;
 function distVendorDir(): string {
-  return path.resolve(__dirname, 'vendor', 'tree-sitter');
+  if (_distVendorDirCache) return _distVendorDirCache;
+  let cur = __dirname;
+  for (let i = 0; i < 6; i++) {
+    const candidate = path.join(cur, 'vendor', 'tree-sitter');
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+        _distVendorDirCache = candidate;
+        return candidate;
+      }
+    } catch {
+      // ignore — keep walking up
+    }
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  // Bundle-mode default. The eventual Language.load call will error with a
+  // clear ENOENT if this guess is wrong — surfacing the misconfiguration
+  // immediately instead of returning a phantom directory.
+  _distVendorDirCache = path.resolve(__dirname, 'vendor', 'tree-sitter');
+  return _distVendorDirCache;
+}
+
+/** Test-only: clear the distVendorDir cache so tests can pin a fresh resolve. */
+function _resetDistVendorDirForTests(): void {
+  _distVendorDirCache = null;
 }
 
 /**
@@ -199,4 +238,5 @@ export function _resetGrammarsForTests(): void {
     }
   }
   PARSER_CACHE.clear();
+  _resetDistVendorDirForTests();
 }

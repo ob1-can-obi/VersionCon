@@ -41,9 +41,54 @@ const chatAssetsPlugin = {
       } catch (err) {
         console.error('[esbuild] copyChatAssets failed:', err);
       }
+      try {
+        await copyTreeSitterGrammars();
+      } catch (err) {
+        console.error('[esbuild] copyTreeSitterGrammars failed:', err);
+      }
     });
   },
 };
+
+/**
+ * Phase 5 Plan 05-02 (Wave 2 — JS/TS) + Plan 05-03 (Wave 3 — Python):
+ * copy vendored tree-sitter grammar WASMs into dist/ so the forked AST worker
+ * (Wave 4, runs as a Node child_process) can resolve them at runtime via
+ * locateFile in grammars.ts. Mirrors the copyChatAssets() pattern above.
+ *
+ * The list of grammars is sourced from src/vendor/tree-sitter/ at build time —
+ * each Wave only writes its own files into src/vendor/tree-sitter/, but ALL
+ * present .wasm files are copied so adding a new grammar requires only the
+ * vendor-side edit, not an esbuild.config.mjs change.
+ *
+ * Also copies the web-tree-sitter runtime WASM (the parser engine, distinct
+ * from language grammars). The worker's grammars.ts locateFile resolver
+ * points the runtime here.
+ */
+async function copyTreeSitterGrammars() {
+  const { readdir } = await import('node:fs/promises');
+  await mkdir('dist/vendor/tree-sitter', { recursive: true });
+  let entries = [];
+  try {
+    entries = await readdir('src/vendor/tree-sitter');
+  } catch {
+    // Directory absent — no grammars to copy. Wave 2 + Wave 3 create it.
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith('.wasm')) continue;
+    await copyFile(
+      `src/vendor/tree-sitter/${entry}`,
+      `dist/vendor/tree-sitter/${entry}`,
+    );
+  }
+  // Runtime parser engine — separate from language grammars. Bundled with the
+  // web-tree-sitter npm package.
+  await copyFile(
+    'node_modules/web-tree-sitter/web-tree-sitter.wasm',
+    'dist/vendor/tree-sitter/web-tree-sitter.wasm',
+  );
+}
 
 const extCtx = await esbuild.context({
   entryPoints: ['src/extension.ts'],
@@ -77,12 +122,14 @@ if (isWatch) {
   await Promise.all([extCtx.watch(), chatCtx.watch()]);
   // Initial copy in case watchers don't fire onEnd before the user edits.
   await copyChatAssets();
+  await copyTreeSitterGrammars();
   console.log('Watching...');
 } else {
   await Promise.all([extCtx.rebuild(), chatCtx.rebuild()]);
   // Belt-and-suspenders — onEnd already ran, but explicit copy guarantees
   // assets are present even if the plugin failed silently.
   await copyChatAssets();
+  await copyTreeSitterGrammars();
   await extCtx.dispose();
   await chatCtx.dispose();
 }

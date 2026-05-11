@@ -634,30 +634,43 @@ export function activate(context: vscode.ExtensionContext): void {
     void vscode.commands.executeCommand(
       'setContext', 'versioncon.connected', true,
     );
+    // Phase 4 UAT fix (2026-05-10): build the host's own sidebar member list
+    // INCLUDING the host's self row (Alice's MEMBERS panel should show Alice).
+    // host.getMembers() returns only joined clients — Plan 04.1-02 stores
+    // host identity separately as hostMemberId/hostDisplayName.
+    const buildHostSidebarMembers = (): Array<{ id: string; displayName: string; role: 'host' | 'member'; isOnline: boolean; }> => {
+      const list: Array<{ id: string; displayName: string; role: 'host' | 'member'; isOnline: boolean; }> = [
+        {
+          id: hostIdentity.memberId,
+          displayName: hostIdentity.displayName,
+          role: 'host',
+          isOnline: true,
+        },
+      ];
+      for (const m of host.getMembers()) {
+        list.push({ id: m.id, displayName: m.displayName, role: m.role, isOnline: m.isOnline });
+      }
+      return list;
+    };
+
     sidebarProvider.updateState({
       connectionStatus: 'connected',
       sessionName,
       role: 'host',
-      members: host.getMembers().map((m) => ({
-        id: m.id, displayName: m.displayName, role: m.role, isOnline: m.isOnline,
-      })),
+      members: buildHostSidebarMembers(),
       bandwidthStats: host.getBandwidthStats(),
     });
 
     host.on('member-joined', () => {
       sidebarProvider.updateState({
-        members: host.getMembers().map((m) => ({
-          id: m.id, displayName: m.displayName, role: m.role, isOnline: m.isOnline,
-        })),
+        members: buildHostSidebarMembers(),
         bandwidthStats: host.getBandwidthStats(),
       });
     });
 
     host.on('member-left', () => {
       sidebarProvider.updateState({
-        members: host.getMembers().map((m) => ({
-          id: m.id, displayName: m.displayName, role: m.role, isOnline: m.isOnline,
-        })),
+        members: buildHostSidebarMembers(),
         bandwidthStats: host.getBandwidthStats(),
       });
     });

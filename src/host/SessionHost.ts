@@ -74,6 +74,15 @@ export class SessionHost implements SessionEventEmitter {
   private readonly hostAuthSecret: string;
 
   /**
+   * Phase 4 UAT fix (2026-05-10): Unix-ms timestamp captured at host
+   * construction. Used as the host's `joinedAt` when the host is included in
+   * the state-sync member list and the host-side sidebar member list — the
+   * host pre-exists every joiner, so "session start" is the correct origin
+   * for its joinedAt sort key.
+   */
+  private readonly hostJoinedAt: number = Date.now();
+
+  /**
    * Map of memberId -> tracked file paths. Populated from tracked-paths-update
    * messages and host-side setHostTrackedPaths calls. Drives PUSH-03 file-level
    * affected-member computation.
@@ -1240,13 +1249,34 @@ export class SessionHost implements SessionEventEmitter {
     isOnline: boolean;
     joinedAt: number;
   }> {
-    return Array.from(this.members.values()).map((cm) => ({
-      id: cm.member.id,
-      displayName: cm.member.displayName,
-      role: cm.member.role,
-      isOnline: cm.member.isOnline,
-      joinedAt: cm.member.joinedAt,
-    }));
+    // Phase 4 UAT fix (2026-05-10): prepend the host's own row so the
+    // state-sync member list sent to clients includes the host. Without this,
+    // joined members' MEMBERS panel showed only themselves and could not see
+    // the host. The host pre-exists in this.hostMemberId/this.hostDisplayName
+    // (Plan 04.1-02 pre-registration) and is intentionally NOT stored in
+    // this.members (the joined-clients map). hostMemberId is guarded against
+    // null here for safety, but in practice it is set in the constructor and
+    // only ever null after removeMember on disconnect.
+    const list: Array<{ id: string; displayName: string; role: string; isOnline: boolean; joinedAt: number; }> = [];
+    if (this.hostMemberId !== null) {
+      list.push({
+        id: this.hostMemberId,
+        displayName: this.hostDisplayName,
+        role: 'host',
+        isOnline: true,
+        joinedAt: this.hostJoinedAt,
+      });
+    }
+    for (const cm of this.members.values()) {
+      list.push({
+        id: cm.member.id,
+        displayName: cm.member.displayName,
+        role: cm.member.role,
+        isOnline: cm.member.isOnline,
+        joinedAt: cm.member.joinedAt,
+      });
+    }
+    return list;
   }
 
   /** Find a free port by briefly creating a TCP server on port 0. */

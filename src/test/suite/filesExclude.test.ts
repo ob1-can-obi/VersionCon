@@ -282,7 +282,11 @@ suite('Phase 4.3 Wave 1 — git-style command aliases (SC-2)', () => {
       { alias: 'versioncon.cmd.checkout', canonical: 'versioncon.switchBranch' },
       { alias: 'versioncon.cmd.branch', canonical: 'versioncon.createBranch' },
       { alias: 'versioncon.cmd.log', canonical: 'versioncon.showPushHistory' },
-      { alias: 'versioncon.cmd.diff', canonical: 'versioncon.previewDiff' },
+      // Phase 4.3 Wave 3 retargeted cmd.diff from versioncon.previewDiff to
+      // the new workspace-wide versioncon.diff (SC-5 contract). previewDiff
+      // (per-file context menu) remains its own command; cmd.diff now routes
+      // to the QuickPick over all changed files.
+      { alias: 'versioncon.cmd.diff', canonical: 'versioncon.diff' },
       { alias: 'versioncon.cmd.merge', canonical: 'versioncon.mergeBranch' },
     ];
     for (const { alias, canonical } of mapping) {

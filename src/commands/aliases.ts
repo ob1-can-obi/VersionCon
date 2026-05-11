@@ -10,13 +10,15 @@ import * as vscode from 'vscode';
  * place (the canonical handler).
  *
  * Mapping (defined by 04.3-01-PLAN.md must_haves; cmd.pull retargeted by
- * 04.3-02 to the dedicated versioncon.pull command — SC-4 contract):
+ * 04.3-02 to the dedicated versioncon.pull command — SC-4 contract; cmd.diff
+ * retargeted by 04.3-03 to the workspace-wide versioncon.diff command —
+ * SC-5 contract):
  *   versioncon.cmd.push     → versioncon.push
  *   versioncon.cmd.pull     → versioncon.pull     (was versioncon.sync — Wave 2 retarget)
  *   versioncon.cmd.checkout → versioncon.switchBranch
  *   versioncon.cmd.branch   → versioncon.createBranch
  *   versioncon.cmd.log      → versioncon.showPushHistory
- *   versioncon.cmd.diff     → versioncon.previewDiff
+ *   versioncon.cmd.diff     → versioncon.diff      (was versioncon.previewDiff — Wave 3 retarget)
  *   versioncon.cmd.merge    → versioncon.mergeBranch
  *
  * The `cmd.` infix keeps the alias namespace unambiguous and avoids any
@@ -42,7 +44,7 @@ export function registerGitStyleAliases(context: vscode.ExtensionContext): void 
       vscode.commands.executeCommand('versioncon.showPushHistory'),
     ),
     vscode.commands.registerCommand('versioncon.cmd.diff', () =>
-      vscode.commands.executeCommand('versioncon.previewDiff'),
+      vscode.commands.executeCommand('versioncon.diff'),
     ),
     vscode.commands.registerCommand('versioncon.cmd.merge', () =>
       vscode.commands.executeCommand('versioncon.mergeBranch'),

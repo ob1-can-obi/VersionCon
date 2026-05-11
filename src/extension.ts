@@ -2743,6 +2743,58 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
       );
 
+      // --- Phase 4.3 SC-5: versioncon.diff — workspace-wide QuickPick diff
+      // Distinct from versioncon.previewDiff (per-file diff from the
+      // workspaceTree context menu). versioncon.diff is the click target of
+      // LocalChangesStatusBar and the new target of the cmd.diff alias —
+      // it surfaces a QuickPick over ALL changed files; selecting one opens
+      // vscode.diff between the branch ↔ workspace versions.
+      //
+      // The handler is intentionally lightweight: WorkspaceDiffer runs once
+      // (no caching from the watcher refresh — those are separate calls so
+      // the diff is always fresh against the active branch dir, even after
+      // a switchBranch that the user did since the last watcher fire).
+      context.subscriptions.push(
+        vscode.commands.registerCommand('versioncon.diff', async () => {
+          const differ = new WorkspaceDiffer();
+          const diff = await differ.diff(
+            workspaceFolder.uri.fsPath,
+            fsLayer.getBranchDir(),
+          );
+          if (diff.allChanged.length === 0) {
+            void vscode.window.showInformationMessage('VersionCon: no local changes.');
+            return;
+          }
+          // Status prefix per file ("A " added / "M " modified / "D " deleted)
+          // mirrors familiar `git status -s` shorthand so the QuickPick reads
+          // at a glance.
+          const addedSet = new Set(diff.added);
+          const deletedSet = new Set(diff.deleted);
+          const items = diff.allChanged.map(rel => {
+            const prefix = addedSet.has(rel) ? 'A ' : deletedSet.has(rel) ? 'D ' : 'M ';
+            return { label: `${prefix}${rel}`, description: rel, rel };
+          });
+          const picked = await vscode.window.showQuickPick(items, {
+            title: `VersionCon: ${diff.allChanged.length} local change(s)`,
+            placeHolder: 'Pick a file to diff against branch',
+            matchOnDescription: true,
+          });
+          if (!picked) return;
+          // vscode.diff needs URIs. For added files the branch side doesn't
+          // exist; vscode.diff renders the missing side as an empty document,
+          // which is the desired UX (user sees the full added content on the
+          // right side). Mirrors the per-file previewDiff command at line ~1480.
+          const branchPath = path.join(fsLayer.getBranchDir(), picked.rel);
+          const workspacePath = path.join(workspaceFolder.uri.fsPath, picked.rel);
+          await vscode.commands.executeCommand(
+            'vscode.diff',
+            vscode.Uri.file(branchPath),
+            vscode.Uri.file(workspacePath),
+            `${picked.rel} (Branch ↔ Workspace)`,
+          );
+        }),
+      );
+
       // --- PUSH-09: Modal block on debug start ---
       // The listener fires AFTER VS Code starts the session; if the user
       // picks Sync we stop the session and run sync. Otherwise the modal

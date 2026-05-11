@@ -5,6 +5,13 @@ export interface BranchInfo {
   createdAt: number;
   locked: boolean;
   lockedPushers?: string[];
+  /**
+   * Phase 6 REVIEW-04 (Plan 06-01): when true, versioncon.mergeBranch refuses
+   * to merge INTO this branch unless the source branch's most-recent push
+   * has a ReviewRequest in status:'approved'. Admin-toggleable via
+   * versioncon.setBranchRequireReview (Plan 06-05). Absent = false (no gate).
+   */
+  requireReview?: boolean;
 }
 
 /** Merge permission strictness levels. */

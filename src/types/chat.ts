@@ -18,7 +18,20 @@ import type { AffectedSymbol } from '../ast/types.js';
 export type ChatRecordKind = 'user' | 'system';
 
 /** Sub-classification for system events fed into the chat timeline. */
-export type SystemEventSubKind = 'push' | 'revert' | 'branch-created';
+export type SystemEventSubKind =
+  | 'push'                        // existing — push event
+  | 'revert'                      // existing — push reverted
+  | 'branch-created'              // existing — new branch
+  // Phase 6 review system events (Plan 06-01 contract; Plan 06-02 emits via
+  // SessionHost.appendAndBroadcastSystemEvent). Plan 04-10's ChatPanel
+  // renderSystemRow already keys off record.kind === 'system' — Wave 4 (Plan
+  // 06-04) adds review-specific copy via a sub-kind switch but unknown
+  // sub-kinds fall through to the existing generic renderer.
+  | 'review-opened'               // new — review opened on a push
+  | 'review-comment'              // new — line comment added
+  | 'review-approved'             // new — reviewer approved
+  | 'review-changes-requested'    // new — reviewer requested changes
+  | 'review-resolved';            // new — review resolved (merged/abandoned)
 
 /**
  * A single record in the per-branch chat log. User messages and system events

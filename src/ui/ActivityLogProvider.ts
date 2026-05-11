@@ -9,7 +9,23 @@ import type { AffectedSymbol } from '../ast/types.js';
  * @internal The compile-time check below ensures we cover every SystemEventSubKind so
  * that adding a new system event kind in src/types/chat.ts is caught at build time.
  */
-export type ActivityKind = 'push' | 'revert' | 'branch-created' | 'chat-unread';
+export type ActivityKind =
+  | 'push'
+  | 'revert'
+  | 'branch-created'
+  | 'chat-unread'
+  // Phase 6 Wave 1 (Plan 06-01): the activity log MUST cover every
+  // SystemEventSubKind to satisfy the exhaustiveness assertion below. The
+  // 5 review sub-kinds render via a generic "review event" placeholder until
+  // Wave 4 (Plan 06-04) wires review-specific copy + icons + commands. The
+  // tree presently never emits these — Plan 06-04 calls `addReviewEntry`
+  // (planned) — but the type contract must be in place for Waves 2-5 to
+  // compile against.
+  | 'review-opened'
+  | 'review-comment'
+  | 'review-approved'
+  | 'review-changes-requested'
+  | 'review-resolved';
 
 // Compile-time exhaustiveness: every SystemEventSubKind must be representable as an
 // ActivityKind. If a new SystemEventSubKind is added without extending ActivityKind,
@@ -275,6 +291,20 @@ export class ActivityLogProvider implements vscode.TreeDataProvider<ActivityEntr
       }
       case 'chat-unread':
         return `$(circle-filled) ${e.unreadCount ?? 0} unread message(s)`;
+      // Phase 6 Wave 1 (Plan 06-01): placeholder labels — Wave 4 (Plan 06-04)
+      // overrides with review-specific copy. No code path emits these entries
+      // yet; the cases exist solely to satisfy the exhaustiveness check on
+      // ActivityKind (which mirrors SystemEventSubKind).
+      case 'review-opened':
+        return e.isMine ? 'You opened a review' : `${e.memberDisplayName} opened a review`;
+      case 'review-comment':
+        return e.isMine ? 'You commented on a review' : `${e.memberDisplayName} commented on a review`;
+      case 'review-approved':
+        return e.isMine ? 'You approved a review' : `${e.memberDisplayName} approved a review`;
+      case 'review-changes-requested':
+        return e.isMine ? 'You requested changes on a review' : `${e.memberDisplayName} requested changes on a review`;
+      case 'review-resolved':
+        return e.isMine ? 'You resolved a review' : `${e.memberDisplayName} resolved a review`;
     }
   }
 
@@ -313,6 +343,16 @@ export class ActivityLogProvider implements vscode.TreeDataProvider<ActivityEntr
         return new vscode.ThemeIcon('git-branch', new vscode.ThemeColor('descriptionForeground'));
       case 'chat-unread':
         return new vscode.ThemeIcon('comment', new vscode.ThemeColor('charts.blue'));
+      // Phase 6 Wave 1 (Plan 06-01): placeholder icons — Wave 4 (Plan 06-04)
+      // overrides with review-specific icons. Exhaustiveness gate only.
+      case 'review-opened':
+      case 'review-comment':
+      case 'review-changes-requested':
+        return new vscode.ThemeIcon('comment-discussion', new vscode.ThemeColor('charts.blue'));
+      case 'review-approved':
+        return new vscode.ThemeIcon('check', new vscode.ThemeColor('testing.iconPassed'));
+      case 'review-resolved':
+        return new vscode.ThemeIcon('verified', new vscode.ThemeColor('descriptionForeground'));
     }
   }
 

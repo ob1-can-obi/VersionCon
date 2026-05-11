@@ -438,3 +438,381 @@ suite('Phase 6 Wave 2 — host relay — review-opened + state-sync (Task 1)', (
     await bob.close();
   });
 });
+
+// ===========================================================================
+// TASK 2 — review-comment + T-06-03 rate-limit + 500-cap + path validation
+// ===========================================================================
+
+/**
+ * Helper: pre-seed a review and return its id. Used by Task 2 + Task 3 tests
+ * that need an existing parent review to comment / vote / resolve against.
+ */
+async function seedReview(
+  fx: Fixture,
+  overrides: Partial<ReviewRequest> = {},
+): Promise<ReviewRequest> {
+  const r: ReviewRequest = {
+    id: crypto.randomUUID(),
+    pushId: crypto.randomUUID(),
+    branch: 'main',
+    authorMemberId: 'AUTHOR-MEMBER-ID',
+    authorDisplayName: 'Author',
+    openedAt: 1000,
+    status: 'open',
+    votes: [],
+    comments: [],
+    ...overrides,
+  };
+  await fx.reviewStore.upsertRequest(r);
+  return r;
+}
+
+suite('Phase 6 Wave 2 — host relay — review-comment (Task 2)', () => {
+  let fx: Fixture;
+  setup(async () => { fx = await setupFixture(); });
+  teardown(async () => { await teardownFixture(fx); });
+
+  test('review-comment: host overrides authorMemberId + authorDisplayName (T-06-01)', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-comment',
+      timestamp: 1,
+      reviewId: parent.id,
+      comment: {
+        id: 'c1', reviewId: parent.id,
+        authorMemberId: 'BOB-ATTACKER', authorDisplayName: 'BobAttacker',
+        filePath: 'src/foo.ts', line: 10, body: 'looks good',
+        createdAt: 1,
+      },
+    });
+    await waitFor(() => (fx.reviewStore.getReview(parent.pushId)?.comments.length ?? 0) === 1);
+    const stored = fx.reviewStore.getReview(parent.pushId)!;
+    assert.strictEqual(stored.comments[0].authorMemberId, alice.memberId, 'authorMemberId overridden');
+    assert.strictEqual(stored.comments[0].authorDisplayName, 'Alice', 'displayName overridden');
+    assert.notStrictEqual(stored.comments[0].authorMemberId, 'BOB-ATTACKER');
+    await alice.close();
+  });
+
+  test('review-comment: host stamps createdAt at relay time', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx);
+    const beforeMs = Date.now();
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c1', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'src/foo.ts', line: 10, body: 'x', createdAt: 1,
+      },
+    });
+    await waitFor(() => (fx.reviewStore.getReview(parent.pushId)?.comments.length ?? 0) === 1);
+    const c = fx.reviewStore.getReview(parent.pushId)!.comments[0];
+    assert.ok(c.createdAt >= beforeMs, 'host stamped createdAt');
+    assert.notStrictEqual(c.createdAt, 1, 'client createdAt 1 was overridden');
+    await alice.close();
+  });
+
+  test('review-comment: body > 16 KiB drops silently', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    const parent = await seedReview(fx);
+    const oversizeBody = 'a'.repeat(16_385);
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c1', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'src/foo.ts', line: 1, body: oversizeBody, createdAt: 1,
+      },
+    });
+    // Send a known-good comment after to pivot.
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c2', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'src/foo.ts', line: 1, body: 'ok', createdAt: 1,
+      },
+    });
+    await waitFor(() => bob.inbox.some((m) => m.type === 'review-comment'));
+    const comments = bob.inbox.filter((m) => m.type === 'review-comment');
+    assert.strictEqual(comments.length, 1, 'only the well-formed comment broadcast');
+    assert.strictEqual((comments[0] as ReviewCommentMessage).comment.body, 'ok');
+    await alice.close();
+    await bob.close();
+  });
+
+  test('review-comment: filePath with traversal (..) drops silently', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c1', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: '../etc/passwd', line: 1, body: 'x', createdAt: 1,
+      },
+    });
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c2', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'src/safe.ts', line: 1, body: 'ok', createdAt: 1,
+      },
+    });
+    await waitFor(() => bob.inbox.some((m) => m.type === 'review-comment'));
+    const comments = bob.inbox.filter((m) => m.type === 'review-comment');
+    assert.strictEqual(comments.length, 1);
+    assert.strictEqual((comments[0] as ReviewCommentMessage).comment.filePath, 'src/safe.ts');
+    await alice.close();
+    await bob.close();
+  });
+
+  test('review-comment: filePath with backslash drops silently', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c1', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'src\\windows\\path.ts', line: 1, body: 'x', createdAt: 1,
+      },
+    });
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c2', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'src/posix.ts', line: 1, body: 'ok', createdAt: 1,
+      },
+    });
+    await waitFor(() => bob.inbox.some((m) => m.type === 'review-comment'));
+    assert.strictEqual(bob.inbox.filter((m) => m.type === 'review-comment').length, 1);
+    await alice.close();
+    await bob.close();
+  });
+
+  test('review-comment: line === 0 drops silently', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c1', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'a.ts', line: 0, body: 'x', createdAt: 1,
+      },
+    });
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c2', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'a.ts', line: 1, body: 'ok', createdAt: 1,
+      },
+    });
+    await waitFor(() => bob.inbox.some((m) => m.type === 'review-comment'));
+    assert.strictEqual(bob.inbox.filter((m) => m.type === 'review-comment').length, 1);
+    await alice.close();
+    await bob.close();
+  });
+
+  test('review-comment: line > 1,000,000 drops silently', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c1', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'a.ts', line: 1_000_001, body: 'x', createdAt: 1,
+      },
+    });
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c2', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'a.ts', line: 1_000_000, body: 'ok', createdAt: 1,
+      },
+    });
+    await waitFor(() => bob.inbox.some((m) => m.type === 'review-comment'));
+    assert.strictEqual(bob.inbox.filter((m) => m.type === 'review-comment').length, 1);
+    await alice.close();
+    await bob.close();
+  });
+
+  test('review-comment: unknown reviewId drops silently', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: 'unknown-id',
+      comment: {
+        id: 'c1', reviewId: 'unknown-id',
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'a.ts', line: 1, body: 'x', createdAt: 1,
+      },
+    });
+    // wait some time, assert nothing arrives at bob
+    await new Promise((r) => setTimeout(r, 150));
+    assert.strictEqual(bob.inbox.filter((m) => m.type === 'review-comment').length, 0);
+    await alice.close();
+    await bob.close();
+  });
+
+  test('review-comment: persists comment before broadcast + emits system event with path:line', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c1', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'src/foo.ts', line: 42, body: 'nit', createdAt: 1,
+      },
+    });
+    await waitFor(() => fx.chatLog.getRecords().some((r) => r.subKind === 'review-comment'));
+    const sys = fx.chatLog.getRecords().find((r) => r.subKind === 'review-comment');
+    assert.ok(sys);
+    assert.match(sys.body, /commented on push.*src\/foo\.ts:42/);
+    // Comment persisted before broadcast — store has comment, chat-log has event.
+    const stored = fx.reviewStore.getReview(parent.pushId)!;
+    assert.strictEqual(stored.comments.length, 1);
+    assert.strictEqual(stored.comments[0].body, 'nit');
+    assert.strictEqual(stored.comments[0].line, 42);
+    await alice.close();
+  });
+
+  test('review-comment: rate-limit — first 30 within 60s pass, 31st drops with REVIEW_RATE_LIMIT error', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    const parent = await seedReview(fx);
+    // Send 30 valid comments rapidly.
+    for (let i = 0; i < 30; i++) {
+      alice.send({
+        type: 'review-comment', timestamp: 1, reviewId: parent.id,
+        comment: {
+          id: `c${i}`, reviewId: parent.id,
+          authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+          filePath: 'a.ts', line: 1, body: 'x', createdAt: 1,
+        },
+      });
+    }
+    await waitFor(() => (fx.reviewStore.getReview(parent.pushId)?.comments.length ?? 0) === 30, 5000);
+
+    // 31st should drop and trigger a private error frame to alice only.
+    const aliceErrors: ErrorMessage[] = [];
+    alice.onMessage((m) => { if (m.type === 'error') { aliceErrors.push(m); } });
+    const bobErrors: ErrorMessage[] = [];
+    bob.onMessage((m) => { if (m.type === 'error') { bobErrors.push(m); } });
+
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c30', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'a.ts', line: 1, body: 'over-limit', createdAt: 1,
+      },
+    });
+    await waitFor(() => aliceErrors.length === 1, 2000);
+    assert.strictEqual(aliceErrors[0].code, 'REVIEW_RATE_LIMIT');
+    assert.strictEqual(bobErrors.length, 0, 'bob receives no error frame — private to sender');
+    // Stored count is still 30 — 31st was dropped.
+    assert.strictEqual(fx.reviewStore.getReview(parent.pushId)!.comments.length, 30);
+    await alice.close();
+    await bob.close();
+  });
+
+  test('review-comment: 500-cap — at cap, next comment drops with REVIEW_COMMENT_CAP error', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    // Pre-seed a review with 500 comments already.
+    const preExisting = [] as ReviewRequest['comments'];
+    for (let i = 0; i < 500; i++) {
+      preExisting.push({
+        id: `c${i}`, reviewId: '',
+        authorMemberId: 'pre', authorDisplayName: 'Pre',
+        filePath: 'a.ts', line: 1, body: 'x', createdAt: i,
+      });
+    }
+    const parent = await seedReview(fx, { comments: preExisting });
+    // Fix the reviewId on the comments (id was pending). Just re-upsert.
+    parent.comments = preExisting.map((c) => ({ ...c, reviewId: parent.id }));
+    await fx.reviewStore.upsertRequest(parent);
+
+    const aliceErrors: ErrorMessage[] = [];
+    alice.onMessage((m) => { if (m.type === 'error') { aliceErrors.push(m); } });
+    const bobErrors: ErrorMessage[] = [];
+    bob.onMessage((m) => { if (m.type === 'error') { bobErrors.push(m); } });
+
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c501', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'a.ts', line: 1, body: 'over-cap', createdAt: 1,
+      },
+    });
+    await waitFor(() => aliceErrors.length === 1, 2000);
+    assert.strictEqual(aliceErrors[0].code, 'REVIEW_COMMENT_CAP');
+    assert.strictEqual(bobErrors.length, 0, 'bob receives no error frame — private to sender');
+    assert.strictEqual(fx.reviewStore.getReview(parent.pushId)!.comments.length, 500, 'cap NOT exceeded');
+    await alice.close();
+    await bob.close();
+  });
+
+  test('review-comment: empty body drops silently', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    const parent = await seedReview(fx);
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c1', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'a.ts', line: 1, body: '', createdAt: 1,
+      },
+    });
+    alice.send({
+      type: 'review-comment', timestamp: 1, reviewId: parent.id,
+      comment: {
+        id: 'c2', reviewId: parent.id,
+        authorMemberId: alice.memberId, authorDisplayName: 'Alice',
+        filePath: 'a.ts', line: 1, body: 'ok', createdAt: 1,
+      },
+    });
+    await waitFor(() => bob.inbox.some((m) => m.type === 'review-comment'));
+    assert.strictEqual(bob.inbox.filter((m) => m.type === 'review-comment').length, 1);
+    await alice.close();
+    await bob.close();
+  });
+
+  test('presence-update validator regression: traversal still rejected after validateRelativePath refactor', async () => {
+    const alice = await connectClient(fx.port, 'Alice');
+    const bob = await connectClient(fx.port, 'Bob');
+    // '..' segment should be dropped — presence-update emits NO broadcast to bob.
+    alice.send({
+      type: 'presence-update', timestamp: 1,
+      memberId: alice.memberId, displayName: 'Alice',
+      branch: 'main', activeFilePath: '../etc/passwd',
+    });
+    // Send a legitimate presence-update — bob should receive THAT only.
+    alice.send({
+      type: 'presence-update', timestamp: 1,
+      memberId: alice.memberId, displayName: 'Alice',
+      branch: 'main', activeFilePath: 'src/legit.ts',
+    });
+    await waitFor(() => bob.inbox.some((m) => m.type === 'presence-update'));
+    const presences = bob.inbox.filter((m) => m.type === 'presence-update');
+    assert.strictEqual(presences.length, 1, 'only the legit presence-update broadcast');
+    await alice.close();
+    await bob.close();
+  });
+});

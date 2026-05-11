@@ -15,8 +15,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Extension Foundation + LAN Networking** - VS Code extension scaffold, WebSocket transport, host/join flow, connection status
 - [ ] **Phase 2: Split-Pane UI + File System Layer** - Two-pane webview, drag-and-drop, stateless webview protocol, filesystem-as-truth
 - [x] **Phase 3: Push, Sync + Branch Management** - Explicit push with diff, push history, revert, branch creation, admin/member permissions (6/6 plans done; 6/6 SCs satisfied by code, visual UAT deferred — see 03-VERIFICATION.md and 03-HUMAN-UAT.md)
-- [ ] **Phase 4: Presence, Chat + File-Level Conflict Notifications** - Real-time presence, in-app chat, push activity log, soft conflict alerts
+- [x] **Phase 4: Presence, Chat + File-Level Conflict Notifications** - Real-time presence, in-app chat, push activity log, soft conflict alerts (15/15 plans done; UAT 2026-05-11 found 3 blockers all closed inline — commit a420eb5; 350 tests passing; visual UAT deferred per Phase 3 precedent)
 - [x] **Phase 4.1 (INSERTED): Host Identity + Creation Wizard** - Wizard prompts host for displayName; session creator is host by construction (not first WebSocket auth) (4/4 plans done; UAT 3/3 pass; UAT Test 3 gap closed by quick task 260510-sdm)
+- [ ] **Phase 4.3 (INSERTED): Git-Style Commands + File Explorer Workflow + Cloud Bridge** - Hide `.versioncon/` from VS Code File Explorer; git-style command aliases; workspace-diff-driven push/pull (no drag required); status-bar "N local changes" indicator; one-way export to a real Git remote (host-only) so v2-of-project starts with `git pull` + fresh session
 - [ ] **Phase 5: Dependency-Aware Conflict Detection (AST)** - AST child process, per-language parsers, function-level conflict attribution, smart push summary
 - [ ] **Phase 6: Inline Code Review** - Diff + approve flow, line comments, mandatory review gate, review threads in chat
 - [ ] **Phase 7: Cloud Mode + Relay Server** - Relay deployment, JWT auth, CloudTransport, same UX as LAN over internet
@@ -133,6 +134,27 @@ Plans:
 - [x] 04.1-03-PLAN.md — Wave 2 (parallel with 02): Wizard step 1 collects displayName with default chain (settings → git → os → Host), validation (≤64 chars, no control chars), workspace-scoped persistence; package.json declares versioncon.displayName; HostIdentity allocated and threaded through onSessionStarted callback; extension.ts wireHostEvents accepts hostIdentity (Defect A closure)
 - [x] 04.1-04-PLAN.md — Wave 3: Cross-cutting regression suite — 10 tests covering Defect A wizard contract (source-grep), Defect B race protection, Phase 4 closure preservation (CR-01-NEW/CR-02-NEW/CR-03-NEW under HostIdentity model), secret hygiene assertions, length-mismatch attack guard
 **UI hint**: yes (wizard step changes)
+
+### Phase 4.3 (INSERTED): Git-Style Commands + File Explorer Workflow + Cloud Bridge
+**Goal**: Make VersionCon's coordination model feel like Git so users have familiar handles, and bridge the LAN-collaboration model to real Git remotes so projects can ship to GitHub/GitLab/etc. Surfaced 2026-05-11 during Phase 4 UAT discussion — user feedback: "I want it to be more command prompt driven rather than how we do now ... mimic git so people understand better."
+**Depends on**: Phase 4
+**Requirements**: TBD (new — covers UX vocabulary + cloud export)
+**Success Criteria** (what must be TRUE):
+  1. The `.versioncon/` directory is hidden from VS Code's native File Explorer by default (workspace `files.exclude` injected on first activation), so users see only their project files. Users can still view branch files via the BRANCH FILES sidebar.
+  2. Git-style command aliases exist and are discoverable in the Command Palette: `versioncon.push`, `versioncon.pull`, `versioncon.checkout`, `versioncon.branch`, `versioncon.log`, `versioncon.diff`, `versioncon.merge` — each routes to the existing handler. Documented in the README with a "VersionCon for Git users" quick-ref.
+  3. `versioncon.push` and `versioncon.pull` work WITHOUT drag-and-drop. Push collects all changed files in the workspace (diff against `.versioncon/branches/{branch}/`) and pipes them through the existing push pipeline. Pull copies from `.versioncon/branches/{branch}/` into the workspace, overwriting (with the existing per-file conflict prompt where needed).
+  4. A status-bar item shows "N local changes — vc push to share" when the workspace has uncommitted changes relative to the active branch. Clicking it runs `versioncon.diff` which displays a quick-pick preview of what would be pushed.
+  5. Host-only command `versioncon.exportToGitRemote` initializes a git repo inside `.versioncon/branches/{branch}/`, stages everything, commits with a user-supplied message, sets a remote URL, and pushes. Permission-gated (only members with admin role can run). Inverse `versioncon.importFromGitRemote` clones a remote into a fresh branch dir for starting v2-of-project.
+  6. Drag-and-drop split-pane stays — power users keep that workflow. The new commands ARE the default surface, but nothing removed.
+  7. README and PROJECT.md updated to document the full lifecycle: create project locally → LAN collab via VersionCon → push to cloud git → next version via pull + fresh session.
+  8. All existing tests still pass; new commands ship with regression coverage following the source-grep + integration-test pattern from prior phases.
+**Plans:** TBD (planned via /gsd-plan-phase 4.3)
+**UI hint**: yes (status bar item, files.exclude injection)
+**Scope guardrails**:
+- Do NOT remove the split-pane drag-and-drop UI — it stays as a power-user surface.
+- Do NOT change the underlying `.versioncon/branches/{branch}/` storage model — PROJECT.md "branch as source of truth, workspace as scratch pad" decision is preserved; this phase is a UX layer + cloud bridge on top.
+- Do NOT auto-push to cloud git on every LAN push — cloud export is a deliberate host-only action.
+- Do NOT plumb a configurable `.versioncon/` location (deferred from 999.5) — keep hard-locked to `<workspace>/.versioncon/` for this phase.
 
 ### Phase 5: Dependency-Aware Conflict Detection (AST)
 **Goal**: Conflict notifications upgrade from file-level to function-level — users are told exactly which symbol changed, who changed it, and on which line they call it

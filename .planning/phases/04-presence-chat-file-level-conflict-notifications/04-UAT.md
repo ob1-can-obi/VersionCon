@@ -1,6 +1,7 @@
 ---
-status: partial
+status: deferred
 phase: 04-presence-chat-file-level-conflict-notifications
+deferred_reason: "All 3 blocker gaps surfaced during multi-window UAT 2026-05-11 were closed inline same-day (999.3 peer presence propagation, 999.4 displayName 'You' fallback, 999.5 joiner onboarding — commit a420eb5, +6 regression tests). Test suite at 350 passing covers the code-level contracts. Visual UAT for SC-1 through SC-5 follows Phase 3 precedent: will happen during natural use, surface bugs filed as they appear. Phase 4 marked complete; remaining 5 SCs (Tests 2-6) re-runnable any time via /gsd-verify-work 4."
 source:
   - 04-01-protocol-and-types-SUMMARY.md
   - 04-02-chat-log-SUMMARY.md

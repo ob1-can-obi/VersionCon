@@ -144,7 +144,7 @@ None yet.
 
 - [Phase 4 UAT 2026-05-11]: 3 blocker gaps surfaced during multi-window UAT (999.3 peer presence propagation, 999.4 displayName "You" fallback, 999.5 joiner onboarding) — all CLOSED same-day inline at commit a420eb5. Tests 2-6 unblocked; retest pending. Test suite at 350 passing.
 - [Phase 2]: Cross-webview drag-and-drop VS Code 1.90+ regression (issue #256444) requires a throwaway spike before full UI implementation
-- [Phase 5]: tree-sitter-java and tree-sitter-cpp WASM compatibility with web-tree-sitter@0.25.x is unvalidated — may require custom WASM builds or deferring Java/C++ support
+- [Phase 5]: tree-sitter-java and tree-sitter-cpp WASM compatibility with web-tree-sitter@0.26 — partially mitigated via SC-3 fallback path. Phase 5 ships Java + C++ adapters that register the language IDs and route to FallbackAdapter (line-level diff, no AST). Real grammars deferred to Phase 5.x. Adding them later is a one-WASM-plus-one-adapter PR; the AstFactory seam is in place.
 - [Phase 7]: Cloud relay operational model (hosting platform, cost model, self-host option) is not yet decided — needs decision before Phase 7 planning
 - [Phase 8]: VS Code MCP API is new (2025) — McpStdioServerDefinition vs McpHttpServerDefinition tradeoffs need research during Phase 8 planning
 
@@ -161,6 +161,7 @@ None yet.
 | 4 | Presence, Chat + File-Level Conflict Notifications | 2026-05-11 | 15 | (across many) | 337+ |
 | 4.1 | Host Identity + Creation Wizard (INSERTED) | 2026-05-09 | 4 | (across waves) | +20 |
 | 4.3 | Git-Style Commands + File Explorer Workflow + Cloud Bridge (INSERTED) | 2026-05-11 | 5 | 9e20df0..69ffeaf (14 commits) | +89 (350→439) |
+| 5 | Dependency-Aware Conflict Detection (AST) | 2026-05-11 | 5 | 754c0e8..7d4d75b (25 commits) | +245 (439→684) |
 
 ## Deferred Items
 
@@ -172,7 +173,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-11T07:13:00Z
-Stopped at: Autonomous run completed Phase 4 closure + Phase 4.3 full execution. Phase 4 marked done (UAT deferred per Phase 3 precedent — 3 blocker gaps closed inline a420eb5). Phase 4.3 inserted, planned, and executed: 5 waves, 14 commits (9e20df0..69ffeaf), +89 tests (350 → 439). Shipped: `.versioncon/` hidden from File Explorer via auto-injected files.exclude; 7 git-style command aliases (vc push/pull/checkout/branch/log/diff/merge); workspace-diff-driven push/pull (no drag required); LocalChangesStatusBar with FileSystemWatcher debounce; vscode.diff QuickPick preview; GitBridge service with shell-safe spawn + admin-gated exportToGitRemote/importFromGitRemote; README Lifecycle Tour + VersionCon-for-Git-Users quick-ref. Phase 5 (AST conflict detection) is next.
+Last session: 2026-05-11T10:31:00Z
+Stopped at: Phase 5 (Dependency-Aware Conflict Detection / AST) shipped autonomously. 5 plans, 25 code commits (754c0e8..7d4d75b), +245 tests (439 → 684 passing). Vendored web-tree-sitter WASMs for JavaScript / TypeScript / TSX / Python. PythonAdapter + JavaScriptAdapter + TypeScriptAdapter (with TSX routing) extract function/class/variable/import/export/call symbols. FallbackAdapter + Java/C++ register-but-fallback stubs cover SC-3. AstWorker runs as forked child_process (SC-2 isolation guarantee, sub-50ms broadcast remains synchronous), with 3-strike crash-circuit + 5s per-file slowloris timeout + segment-aware path validation (T-05-01..05 mitigated). AstAnalyzer wired into SessionHost.broadcastPush; chat-message-amend wire type carries affectedSymbols + unsupportedLanguages payload; ChatPanel + ActivityLog upgrade their labels when payload present, fall back to file-count when absent. Phase 6 (Inline Code Review) is next.
 Resume file: None
-Last activity: 2026-05-11 - Phase 4.3 complete autonomously; ready for Phase 5 planning
+Last activity: 2026-05-11 - Phase 5 complete autonomously; ready for Phase 6 planning

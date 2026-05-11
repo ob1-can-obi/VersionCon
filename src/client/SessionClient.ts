@@ -348,6 +348,19 @@ export class SessionClient implements SessionEventEmitter {
         break;
       }
 
+      // Phase 5 Plan 05-05 (SC-5): host fires this after the AST analyzer
+      // resolves so clients can patch a previously-received chat-message's
+      // `meta.affectedSymbols` + `meta.unsupportedLanguages`. Forwarded
+      // verbatim — the client/extension layer is responsible for locating
+      // the record by id and merging meta.
+      case 'chat-message-amend':
+        this.emit('chat-message-amend', {
+          recordId: msg.recordId,
+          affectedSymbols: msg.affectedSymbols,
+          unsupportedLanguages: msg.unsupportedLanguages,
+        });
+        break;
+
       case 'chat-cleared':
         this.emit('chat-cleared', {
           hostMemberId: msg.hostMemberId,

@@ -2,6 +2,7 @@ import { Member, ConnectionStatus, SessionConfig } from './session.js';
 import type { PushFileEntry } from './push.js';
 import type { BranchInfo } from './branch.js';
 import type { ChatRecord, PresenceInfo } from './chat.js';
+import type { AffectedSymbol } from '../ast/types.js';
 
 // All session lifecycle events
 export interface SessionEventMap {
@@ -28,6 +29,14 @@ export interface SessionEventMap {
   // wire messages into these typed events (Plan 04-05).
   /** Fired when host broadcasts a chat-message — sender is included (no exclude) per RESEARCH Open Q #1. */
   'chat-received': ChatRecord;
+  /**
+   * Phase 5 SC-5 (Plan 05-05): host broadcasts after AST analysis completes
+   * so clients can patch the previously-received `chat-received` record's
+   * meta with `affectedSymbols` + `unsupportedLanguages`. Older clients that
+   * lack this event silently drop the wire frame at parseMessage — the
+   * original chat-message still renders correctly (graceful degradation).
+   */
+  'chat-message-amend': { recordId: string; affectedSymbols: AffectedSymbol[]; unsupportedLanguages: string[] };
   /** Host ran "Delete entire chat" — clients clear their panel and show a toast. */
   'chat-cleared': { hostMemberId: string; hostDisplayName: string };
   /** Host ran a non-destructive truncation — clients re-render with the trimmed dataset. */

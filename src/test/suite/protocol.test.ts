@@ -3,12 +3,14 @@ import {
   parseMessage,
   type AuthRequest,
   type ChatMessage,
+  type ChatMessageAmend,
   type ChatCleared,
   type ChatTruncated,
   type ChatHistory,
   type PresenceUpdate,
 } from '../../network/protocol.js';
 import type { ChatRecord } from '../../types/chat.js';
+import type { AffectedSymbol } from '../../ast/types.js';
 
 // Protocol tests will import from ../../network/protocol once Plan 01 creates it
 suite('Protocol', () => {
@@ -193,6 +195,88 @@ suite('Phase 4 protocol', () => {
     // (e.g. 'chat-bogus', 'chat-admin') from passing dispatch.
     const fake = { type: 'chat-bogus', timestamp: 1 };
     assert.strictEqual(parseMessage(JSON.stringify(fake)), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 Wave 5 (Plan 05-05): chat-message-amend wire shape.
+//
+// Host broadcasts AFTER the synchronous chat-message (push system event) so
+// clients can patch the original record's meta with AST-derived
+// affectedSymbols + unsupportedLanguages. Older clients (pre-Phase 5) reject
+// the type at parseMessage — verified by the "older-client graceful" test
+// in pushSmartSummary.test.ts which simulates the older VALID_TYPES set.
+// ---------------------------------------------------------------------------
+
+suite('Phase 5 protocol — chat-message-amend (Plan 05-05)', () => {
+  const symA: AffectedSymbol = {
+    name: 'calculateTotal',
+    kind: 'function',
+    changedIn: 'cart-helpers.ts',
+    callers: [
+      { memberId: 'alice', displayName: 'Alice', file: 'cart.ts', line: 34 },
+    ],
+  };
+
+  test('parseMessage accepts a valid chat-message-amend round-trip', () => {
+    const valid: ChatMessageAmend = {
+      type: 'chat-message-amend',
+      timestamp: 1700000000000,
+      recordId: 'record-uuid-1',
+      affectedSymbols: [symA],
+      unsupportedLanguages: [],
+    };
+    const parsed = parseMessage(JSON.stringify(valid));
+    assert.deepStrictEqual(parsed, valid);
+  });
+
+  test('parseMessage accepts an empty affectedSymbols with non-empty unsupportedLanguages (fallback-tooltip case)', () => {
+    // The plan locks this case: when affectedSymbols is empty but
+    // unsupportedLanguages has entries, host STILL fires the amend so
+    // clients can render the "Symbol analysis unavailable for…" tooltip.
+    const valid: ChatMessageAmend = {
+      type: 'chat-message-amend',
+      timestamp: 42,
+      recordId: 'record-uuid-2',
+      affectedSymbols: [],
+      unsupportedLanguages: ['java', 'cpp'],
+    };
+    const round = parseMessage(JSON.stringify(valid));
+    assert.deepStrictEqual(round, valid);
+  });
+
+  test('parseMessage round-trips multiple affectedSymbols verbatim', () => {
+    const symB: AffectedSymbol = {
+      name: 'discountRate',
+      kind: 'variable',
+      changedIn: 'pricing.ts',
+      callers: [
+        { memberId: 'bob', displayName: 'Bob', file: 'checkout.ts', line: 12 },
+        { memberId: 'alice', displayName: 'Alice', file: 'cart.ts', line: 89 },
+      ],
+    };
+    const valid: ChatMessageAmend = {
+      type: 'chat-message-amend',
+      timestamp: 99,
+      recordId: 'record-uuid-3',
+      affectedSymbols: [symA, symB],
+      unsupportedLanguages: [],
+    };
+    const round = parseMessage(JSON.stringify(valid));
+    assert.deepStrictEqual(round, valid);
+  });
+
+  test('parseMessage rejects chat-message-amend with non-number timestamp (parse gate enforced)', () => {
+    // parseMessage's timestamp gate must reject — same posture as every
+    // other type. The amend is no exception.
+    const malformed = JSON.stringify({
+      type: 'chat-message-amend',
+      timestamp: 'not-a-number',
+      recordId: 'r1',
+      affectedSymbols: [],
+      unsupportedLanguages: [],
+    });
+    assert.strictEqual(parseMessage(malformed), null);
   });
 });
 

@@ -2,6 +2,7 @@ import { Member, SessionConfig } from '../types/session.js';
 import type { PushFileEntry } from '../types/push.js';
 import type { BranchInfo } from '../types/branch.js';
 import type { ChatRecord, SystemEventSubKind } from '../types/chat.js';
+import type { AffectedSymbol } from '../ast/types.js';
 
 // --- Message type discriminator ---
 export type MessageType =
@@ -27,6 +28,7 @@ export type MessageType =
   | 'sync-response'
   | 'tracked-paths-update'
   | 'chat-message'
+  | 'chat-message-amend'
   | 'chat-cleared'
   | 'chat-truncated'
   | 'chat-history'
@@ -235,6 +237,36 @@ export interface ChatMessage extends BaseMessage {
 }
 
 /**
+ * Phase 5 Plan 05-05 (SC-5): host broadcasts AFTER the original system-event
+ * `chat-message` (push) to amend that record's meta with AST-derived
+ * `affectedSymbols` and the list of `unsupportedLanguages` that fell through to
+ * file-level fallback (CONF-10). Clients locate the original record by
+ * `recordId` and patch its meta in place — no full re-broadcast of the body.
+ *
+ * Older clients (pre-Phase 5) silently drop the message because the type is
+ * absent from their `VALID_TYPES` parse gate. The original `chat-message`
+ * still renders correctly on those clients — graceful degradation is the
+ * contract.
+ *
+ * The amend NEVER carries the original message body — only the diff. The
+ * client looks up the original by `recordId`.
+ */
+export interface ChatMessageAmend extends BaseMessage {
+  type: 'chat-message-amend';
+  /** Must equal the `recordId` of the original chat-message this amend patches. */
+  recordId: string;
+  /**
+   * May be empty array — clients that receive an empty `affectedSymbols`
+   * should not render an "affects" suffix. (Empty + non-empty
+   * `unsupportedLanguages` is the "Symbol analysis unavailable for…" tooltip
+   * case.)
+   */
+  affectedSymbols: AffectedSymbol[];
+  /** List of LanguageIds that fell through to file-level fallback for this push. */
+  unsupportedLanguages: string[];
+}
+
+/**
  * Broadcast after the host runs "Delete entire chat" (truncate to empty).
  * Receiving clients clear their panel and show a toast (UI-SPEC §7.3).
  * Host-only outbound — clients never send this message.
@@ -313,6 +345,7 @@ export type ProtocolMessage =
   | SyncResponse
   | TrackedPathsUpdate
   | ChatMessage
+  | ChatMessageAmend
   | ChatCleared
   | ChatTruncated
   | ChatHistory
@@ -327,7 +360,8 @@ const VALID_TYPES: ReadonlySet<string> = new Set<MessageType>([
   'push-notification', 'push-reverted', 'branch-created',
   'branch-locked', 'permission-changed', 'sync-request', 'sync-response',
   'tracked-paths-update',
-  'chat-message', 'chat-cleared', 'chat-truncated', 'chat-history', 'presence-update',
+  'chat-message', 'chat-message-amend',
+  'chat-cleared', 'chat-truncated', 'chat-history', 'presence-update',
 ]);
 
 export function sendMessage(send: (data: string) => void, msg: ProtocolMessage): void {

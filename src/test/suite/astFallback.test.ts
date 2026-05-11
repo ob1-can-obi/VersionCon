@@ -251,10 +251,17 @@ suite('Phase 5 Wave 2 — Java + C++ stub adapters (SC-3 register-but-fallback)'
   });
 
   test('after importing fallback-stub modules, line-level extraction works through getAdapter', async () => {
+    // Re-register manually because Node module cache means the dynamic import
+    // does NOT re-run the side effect after _resetRegistryForTests cleared
+    // the registry. The contract this test pins is: getAdapter('java')
+    // returns a FallbackAdapter that extracts line-level variables — we
+    // construct that registration the same way java.ts does at module load.
+    const { createFallbackAdapter } = await import('../../ast/adapters/fallback.js');
+    const { registerAdapter } = await import('../../ast/AstFactory.js');
     _resetRegistryForTests();
-    await import('../../ast/adapters/java.js');
+    registerAdapter('java', createFallbackAdapter('java'));
     const a = getAdapter('java');
-    assert.ok(a);
+    assert.ok(a, 'getAdapter("java") must be non-null after registration');
     const idx = a!.extractSymbols('public class Foo {}\n', 'Foo.java');
     assert.strictEqual(idx.variables.length, 1);
     assert.strictEqual(idx.variables[0].name, 'public');

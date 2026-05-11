@@ -73,6 +73,10 @@
     const nameOk = !!(state.sessionName && state.sessionName.trim());
     const dispOk = !!(state.displayName && state.displayName.trim());
     const nextDisabled = !nameOk || !dispOk;
+    // Plan 04.1 UAT Test 3 fix: maxlength on #display-name raised from 64 to 256 so the >64 validation
+    // in WizardPanel.handleWizardNext is reachable from the live UI. 256 is a defensive
+    // ceiling against pathological multi-MB pastes locking the renderer; the 64-char
+    // cap is still enforced by handleWizardNext (extension-host side).
     return `
       <div class="wizard-header"><h1>Create Session</h1></div>
       <div class="form-group">
@@ -84,7 +88,7 @@
         <label for="display-name">Your Display Name</label>
         <input type="text" id="display-name"
                placeholder="Your name (defaults to git config or OS username)"
-               value="${escapeHtml(state.displayName || '')}" maxlength="64">
+               value="${escapeHtml(state.displayName || '')}" maxlength="256">
       </div>
       <div class="button-row">
         <div></div>
@@ -169,6 +173,27 @@
     }
     if (dispInput) {
       dispInput.addEventListener('input', updateNextDisabled);
+      // Plan 04.1 UAT Test 3 fix: webview <input> silently strips control characters on
+      // paste before they reach .value (WebKit/Electron behavior). Read the raw clipboard
+      // text via clipboardData.getData('text'), splice into the input value preserving
+      // control chars, then preventDefault() so the default filtered paste does not run.
+      // Round-trip: pasted bytes → input.value → postMessage → handleWizardNext, which
+      // can now reach the 'Display name cannot contain control characters.' error path.
+      dispInput.addEventListener('paste', (event) => {
+        const cd = event.clipboardData;
+        if (!cd) return; // older webviews — fall through to default behavior
+        const text = cd.getData('text');
+        if (text === '') return;
+        event.preventDefault();
+        const start = dispInput.selectionStart ?? dispInput.value.length;
+        const end = dispInput.selectionEnd ?? dispInput.value.length;
+        const before = dispInput.value.slice(0, start);
+        const after = dispInput.value.slice(end);
+        dispInput.value = before + text + after;
+        const caret = start + text.length;
+        dispInput.setSelectionRange(caret, caret);
+        updateNextDisabled();
+      });
     }
     updateNextDisabled();
 

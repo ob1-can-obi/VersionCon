@@ -234,3 +234,66 @@ suite('Phase 4.3 Wave 2 — WorkspaceDiffer', () => {
     }
   });
 });
+
+// -----------------------------------------------------------------------------
+// Phase 4.3 Wave 2 — vc push auto-stage fallback (SC-3)
+//
+// Source-grep suite — pins the wiring in src/extension.ts. Each test reads
+// the file once at module init and asserts on structural patterns that must
+// remain true for SC-3 to hold (auto-stage path present, permission gates
+// still in place, drag-staged path preserved).
+// -----------------------------------------------------------------------------
+
+import * as fsSync from 'fs';
+
+const EXTENSION_TS_PATH = path.resolve(process.cwd(), 'src/extension.ts');
+const EXTENSION_SOURCE = fsSync.readFileSync(EXTENSION_TS_PATH, 'utf-8');
+
+suite('Phase 4.3 Wave 2 — vc push auto-stage fallback (SC-3)', () => {
+  test('extension.ts imports WorkspaceDiffer from the services barrel', () => {
+    assert.match(
+      EXTENSION_SOURCE,
+      /import\s*\{\s*WorkspaceDiffer\s*\}\s*from\s*['"]\.\/services\/WorkspaceDiffer\.js['"]/,
+      'expected `import { WorkspaceDiffer } from "./services/WorkspaceDiffer.js"` near the top of extension.ts',
+    );
+  });
+
+  test('versioncon.push fallback runs WorkspaceDiffer when nothing is drag-staged', () => {
+    // The literal staged-empty branch must construct a WorkspaceDiffer,
+    // call .diff() against workspaceFolder.uri.fsPath + fsLayer.getBranchDir(),
+    // assign diff.allChanged to stagedPaths, and flip autoStaged = true.
+    assert.match(
+      EXTENSION_SOURCE,
+      /if\s*\(\s*staged\.length\s*===\s*0\s*\)\s*\{[\s\S]{0,1500}new\s+WorkspaceDiffer\(\)[\s\S]{0,1500}differ\.diff\([\s\S]{0,800}stagedPaths\s*=\s*diff\.allChanged[\s\S]{0,200}autoStaged\s*=\s*true/,
+      'expected the staged.length === 0 block to build a WorkspaceDiffer, call differ.diff(), and assign diff.allChanged to stagedPaths with autoStaged = true',
+    );
+    // Also pin the specific args passed to differ.diff() so the wiring is concrete.
+    assert.match(
+      EXTENSION_SOURCE,
+      /differ\.diff\(\s*workspaceFolder\.uri\.fsPath\s*,\s*fsLayer\.getBranchDir\(\)\s*,?\s*\)/,
+      'expected differ.diff(workspaceFolder.uri.fsPath, fsLayer.getBranchDir()) call',
+    );
+  });
+
+  test('versioncon.push preserves the drag-staged path in the else branch', () => {
+    assert.match(
+      EXTENSION_SOURCE,
+      /\}\s*else\s*\{\s*stagedPaths\s*=\s*staged\.map\(\s*s\s*=>\s*s\.path\s*\)\s*;\s*\}/,
+      'expected `else { stagedPaths = staged.map(s => s.path); }` branch to remain in place',
+    );
+  });
+
+  test('versioncon.push retains permission gates after the auto-stage block', () => {
+    // The auto-stage block sits BEFORE the permission checks; we assert the
+    // canPushToBranch call still exists somewhere after the autoStaged
+    // assignment so a future refactor cannot accidentally short-circuit it.
+    const autoStagedIdx = EXTENSION_SOURCE.indexOf('autoStaged = true');
+    assert.ok(autoStagedIdx >= 0, 'autoStaged = true marker not found — auto-stage block missing');
+    const tail = EXTENSION_SOURCE.slice(autoStagedIdx);
+    assert.match(
+      tail,
+      /permissions\.canPushToBranch\(\s*currentMemberId\s*,\s*branch\s*\)/,
+      'permissions.canPushToBranch(currentMemberId, branch) must appear after the auto-stage block',
+    );
+  });
+});

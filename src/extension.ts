@@ -28,6 +28,8 @@ import { ActivityLogProvider } from './ui/ActivityLogProvider.js';
 import { PresenceTreeProvider } from './ui/PresenceTreeProvider.js';
 import { computeFileOverlap, getOpenTabPaths } from './utils/fileOverlap.js';
 import { registerGitStyleAliases } from './commands/aliases.js';
+import { WorkspaceDiffer } from './services/WorkspaceDiffer.js';
+import { GitBridge } from './services/GitBridge.js';
 import type { PresenceInfo } from './types/chat.js';
 import type { ChatRecord } from './types/chat.js';
 
@@ -121,6 +123,33 @@ let workspaceStateRef: WorkspaceState | null = null;
 // chat log. Null until the IIFE constructs it; remains null when no workspace
 // folder is open.
 let activeChatLog: ChatLog | null = null;
+
+// Phase 4.3 Wave 4 (Plan 04.3-04): dedicated Output channel for the cloud
+// bridge commands (versioncon.exportToGitRemote / versioncon.importFromGitRemote).
+// Lazily created on first use via getGitBridgeOutputChannel() so the channel
+// only exists once the user actually invokes a cloud command; disposed with
+// the extension via context.subscriptions.push at construction time.
+let gitBridgeOutputChannel: vscode.OutputChannel | null = null;
+let gitBridgeChannelPushedToSubs = false;
+
+/**
+ * Lazily construct (or return) the singleton Output channel named exactly
+ * 'VersionCon: Git Bridge' per Phase 4.3 SPEC. Registered into
+ * context.subscriptions on first construction so it disposes with the
+ * extension. Subsequent calls return the same instance.
+ */
+function getGitBridgeOutputChannel(
+  context: vscode.ExtensionContext,
+): vscode.OutputChannel {
+  if (!gitBridgeOutputChannel) {
+    gitBridgeOutputChannel = vscode.window.createOutputChannel('VersionCon: Git Bridge');
+  }
+  if (!gitBridgeChannelPushedToSubs) {
+    context.subscriptions.push(gitBridgeOutputChannel);
+    gitBridgeChannelPushedToSubs = true;
+  }
+  return gitBridgeOutputChannel;
+}
 
 /**
  * Format the CONF-07 toast string per UI-SPEC §6.1 (locked literals):
@@ -1460,12 +1489,26 @@ export function activate(context: vscode.ExtensionContext): void {
       context.subscriptions.push(
         vscode.commands.registerCommand('versioncon.push', async () => {
           const staged = workspaceState.getStagedFiles();
+          let stagedPaths: string[];
+          let autoStaged = false;
           if (staged.length === 0) {
-            void vscode.window.showWarningMessage('No files staged for push. Stage files first.');
-            return;
+            // Phase 4.3 SC-3: workspace-diff fallback when nothing is drag-staged.
+            // Diffs workspace vs. active branch dir; uses allChanged as the
+            // staged-paths list fed into the existing push pipeline.
+            const differ = new WorkspaceDiffer();
+            const diff = await differ.diff(
+              workspaceFolder.uri.fsPath,
+              fsLayer.getBranchDir(),
+            );
+            if (diff.allChanged.length === 0) {
+              void vscode.window.showWarningMessage('No workspace changes to push.');
+              return;
+            }
+            stagedPaths = diff.allChanged;
+            autoStaged = true;
+          } else {
+            stagedPaths = staged.map(s => s.path);
           }
-
-          const stagedPaths = staged.map(s => s.path);
 
           // Permission check: locked branch (BRANCH-04)
           const branch = branchProvider.getActiveBranchName();
@@ -1512,7 +1555,7 @@ export function activate(context: vscode.ExtensionContext): void {
           ).join('\n');
 
           const confirmation = await vscode.window.showInformationMessage(
-            `Push ${staged.length} file(s) (+${summary.totalAdded} -${summary.totalRemoved} lines)`,
+            `Push ${stagedPaths.length} file(s) (+${summary.totalAdded} -${summary.totalRemoved} lines)`,
             { modal: true, detail: `${fileList}${affectedInfo}` },
             'Push',
           );
@@ -1536,9 +1579,13 @@ export function activate(context: vscode.ExtensionContext): void {
             // user is by definition synced after their own push).
             syncTracker.onLocalPush(record.id);
 
-            // Clear staged state
-            workspaceState.clearStaged();
-            workspaceProvider!.clearStaged();
+            // Clear staged state. When the push was auto-staged via
+            // WorkspaceDiffer (SC-3) there was nothing in the staged-set
+            // to begin with; the guard documents intent (no-op either way).
+            if (!autoStaged) {
+              workspaceState.clearStaged();
+              workspaceProvider!.clearStaged();
+            }
             branchProvider.refresh();
 
             void vscode.window.showInformationMessage(

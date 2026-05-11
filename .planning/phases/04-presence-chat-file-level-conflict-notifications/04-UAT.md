@@ -1,5 +1,5 @@
 ---
-status: diagnosed
+status: partial
 phase: 04-presence-chat-file-level-conflict-notifications
 source:
   - 04-01-protocol-and-types-SUMMARY.md
@@ -24,7 +24,7 @@ updated: 2026-05-11T03:30:00Z
 
 ## Current Test
 
-[testing paused — Test 2 (SC-1) failed with blocker gaps; Tests 3-6 blocked on Test 2's gap closure. Resume via `/gsd-verify-work 4` after the gap-closure plan lands.]
+[testing paused — Test 2 (SC-1) failed with 3 blocker gaps that were closed inline at commit a420eb5 (999.3 peer presence propagation, 999.4 displayName "You" fallback, 999.5 joiner onboarding partial). Tests 2-6 are unblocked but need a retest pass with both Extension Development Host windows reloaded to pick up the new compiled extension. Resume via `/gsd-verify-work 4`.]
 
 ## Tests
 

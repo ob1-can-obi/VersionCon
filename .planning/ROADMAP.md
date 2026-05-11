@@ -94,7 +94,7 @@ Plans:
   3. Push events, revert events, and branch events are automatically posted to the chat timeline so the activity history is always visible
   4. When a teammate pushes changes to a file the user has open, the user receives a soft non-blocking notification (not a modal) identifying what changed and who pushed it
   5. When a push does not affect the user's workspace at all, the user sees a green "no impact" status and continues working without interruption
-**Plans:** 15/15 plans complete (04-15 landed). UAT 2026-05-11 surfaced 3 NEW blocker gaps (G3/G4/G5 in 04-UAT.md, captured as backlog 999.3 / 999.4 / 999.5) — peer presence doesn't propagate end-to-end, displayName renders as literal "You" instead of actual name, joining a session doesn't set up the local .versioncon/ hierarchy. Phase 4 cannot be marked complete until a gap-closure plan (04-16 or inserted 4.2) lands.
+**Plans:** 15/15 plans complete (04-15 landed). UAT 2026-05-11 surfaced 3 blocker gaps which were closed inline same-day (a420eb5): 999.3 peer presence propagation, 999.4 displayName "You" fallback, 999.5 joiner onboarding notification (full directory-location picker deferred). Multi-window UAT (Tests 2–6) can resume — `/gsd-verify-work 4` to retest.
 Plans:
 - [x] 04-01-protocol-and-types-PLAN.md — Wire protocol + ChatRecord/PresenceInfo types + round-trip tests
 - [x] 04-02-chat-log-PLAN.md — ChatLog persistence (mirror PushHistory) + 3 truncation modes + tests
@@ -211,52 +211,52 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 Plans:
 - [ ] TBD (promote with /gsd-review-backlog when ready)
 
-### Phase 999.3: Peer presence-update messages don't propagate end-to-end (BACKLOG)
+### Phase 999.3: Peer presence-update messages don't propagate end-to-end (CLOSED — a420eb5)
 
-**Goal:** [Captured for future planning] — When two Extension Development Host windows are connected in a session, focusing a file in one window does NOT cause that member's row to appear in the other window's PRESENCE panel. Each window only ever shows its own self-row. The (you) self-suffix is correct; the failure is in cross-peer propagation. This is the Phase 4 SC-1 blocker that surfaced during multi-window UAT on 2026-05-11.
-**Requirements:** TBD
-**Plans:** 0 plans
+**Status:** CLOSED 2026-05-11 by inline fix during Phase 4 multi-window UAT. Closed before promotion to a planned phase because the gap was three small surgical fixes that unblocked SC-1 UAT.
 
-**Repro:** Connect two EDH windows (Alice hosts, Bob joins via manual IP). Alice opens `src/foo..bar.ts` — only Alice's row appears in her PRESENCE panel, never in Bob's. Bob focuses any file — only Bob's row appears in his panel, never in Alice's.
-**Affected code (likely):** `src/extension.ts` (onDidChangeActiveTextEditor presence dispatch), `src/host/SessionHost.ts` (presence-update broadcast), `src/client/SessionClient.ts` (presence-update receive → event emit), `src/ui/PresenceTreeProvider.ts` (upsert + refresh).
+**Root causes (two distinct sub-bugs):**
+- **3a (joiner self-row missing):** the `activeClient` branch of the presence-update dispatch in `src/extension.ts` sent a wire frame to the host but never locally upserted into `presenceTreeProvider`. `SessionHost`'s broadcast excludes the sender (Plan 04-04 policy), so the client never received its own presence-update back over the wire.
+- **3b (host UI never saw peer presence):** `SessionHost`'s incoming `presence-update` handler upserted into `this.presenceMap` and broadcast to other clients, but did NOT emit a `SessionEvent`. `extension.ts wireHostEvents` therefore had no hook to update the host's `PresenceTreeProvider` when a peer's presence arrived.
+
+**Fixes (commit a420eb5):**
+- Client branch now locally upserts `selfInfo` right after sending the wire frame — mirrors the host-side parallel pattern.
+- `SessionHost.handleMessage` for `presence-update` emits `this.emit('presence-update', info)` right after the `PresenceMap.upsert`.
+- `wireHostEvents` adds `host.on('presence-update', info => presenceTreeProvider?.upsert(info))` listener, plus a `member-left` listener that calls `presenceTreeProvider?.removeMember` so peer rows clean up on disconnect.
+
+**Regression coverage:** +4 source-grep tests in `src/test/suite/host.test.ts` under suite "Phase 4 UAT 2026-05-11 — peer presence propagation + displayName closure".
+
 **Surfaced:** 2026-05-11 during Phase 4 multi-window UAT (Test 2 / SC-1).
-**Suggested home:** Phase 4 gap-closure plan (e.g. 04-16), OR new inserted phase 4.2.
 
-Plans:
-- [ ] TBD (promote with /gsd-review-backlog when ready)
+### Phase 999.4: Presence displayName renders as literal "You" (CLOSED — a420eb5)
 
-### Phase 999.4: Presence displayName renders as literal "You" instead of actual displayName (BACKLOG)
+**Status:** CLOSED 2026-05-11 by inline fix during Phase 4 multi-window UAT.
 
-**Goal:** [Captured for future planning] — Every row in the PRESENCE panel renders the displayName as the literal string `You` instead of the actual displayName captured by the wizard (`Alice` / `Bob`). The `(you)` self-suffix logic is correct (only appears on the self-row); the failure is in the leading name field. Probably a tiny code fix once the call site is found.
-**Requirements:** TBD
-**Plans:** 0 plans
+**Root cause:** `src/extension.ts:93` declares `let currentSelfDisplayName = 'You'` as the default placeholder. `wireHostEvents` updated `currentSelfMemberId` from the host identity at session start, but never updated `currentSelfDisplayName`. The host's `PresenceInfo` therefore always carried `displayName = "You"` even though the wizard had captured the real name as `hostIdentity.displayName`.
 
-**Repro:** In Alice's window after hosting, PRESENCE row reads `You foo..bar.ts (you)` — should read `Alice foo..bar.ts (you)`.
-**Affected code (likely):** `src/extension.ts wireHostEvents` (host's local presence upsert call site — likely passing wrong field as displayName), `src/ui/PresenceTreeProvider.ts` (verify renderer reads `info.displayName` and doesn't substitute "You" anywhere except the suffix). Verify `activeHostIdentity.displayName` (Plan 04.1-03) flows into the upsert.
+**Fix (commit a420eb5):** in `wireHostEvents`, mirror `hostIdentity.displayName` into `currentSelfDisplayName` alongside the existing `currentSelfMemberId = hostMemberId;` assignment. (`wireClientEvents` already did the analogous update for joiners via `selfMember.displayName`.)
+
+**Regression coverage:** +1 source-grep test in `src/test/suite/host.test.ts` (`999.4: wireHostEvents updates currentSelfDisplayName from hostIdentity.displayName`).
+
 **Surfaced:** 2026-05-11 during Phase 4 multi-window UAT (Test 2 / SC-1).
-**Suggested home:** Same gap-closure plan as 999.3 — these are tightly coupled and share most of the affected files.
 
-Plans:
-- [ ] TBD (promote with /gsd-review-backlog when ready)
+### Phase 999.5: Joining a session doesn't set up the local .versioncon/ hierarchy (PARTIAL — a420eb5)
 
-### Phase 999.5: Joining a session doesn't set up the local .versioncon/ hierarchy (BACKLOG)
+**Status:** PARTIAL CLOSURE 2026-05-11. Onboarding-notification UX shipped; full directory-location picker deferred (would require plumbing through `BranchManager`, `FileSystemLayer`, and the push/pull layer).
 
-**Goal:** [Captured for future planning, UX] — When a member joins a session, their local workspace has no `.versioncon/branches/{branch}/` directory. Phase 3 v1 was scoped "sync-state-only; file-pull deferred", so peers don't auto-create or sync the hierarchy on join. This produces a confusing UX: BRANCH FILES shows "No branch files found. Open a folder with a .versioncon/ directory to see branch files." Bob has no way to start collaborating without manually setting up the directory structure.
-**Requirements:** TBD
-**Plans:** 0 plans
+**What landed (commit a420eb5):** in `wireClientEvents` after successful auth, fire a one-time information notification:
+> "Joined '{session}'. Branch files for '{branch}' live at {workspace}/.versioncon/branches/{branch}/. Push files from your workspace to share them with the team."
 
-**User request (verbatim, 2026-05-11):** "When we join a session. The hierarchy must come in right. We can ask them where they want the repo to be in maybe - in their local at least. And get them set."
+Action button **Open .versioncon Folder** → calls `revealFileInOS` so the joiner can orient themselves in their OS file explorer. Fire-and-forget IIFE so it never blocks auth or other init.
 
-**Two approach options:**
-- A) Post-connect wizard step on Join: "Where should VersionCon store collaborative files locally?" → defaults to `<workspace>/.versioncon/`, creates `branches/{branchName}/` on disk, registers FileSystemLayer at that path.
-- B) Auto-create `<workspace>/.versioncon/branches/{branchName}/` silently on first successful auth-response, with a Welcome notification explaining what was created and a "Change location" command for customization.
+**What's deferred to future planning (still backlog):**
+- Configurable `.versioncon/` location (currently hard-locked to `<workspace>/.versioncon/`).
+- File-pull from host on join so `BRANCH FILES` isn't empty for the joiner (Phase 3 v1 explicitly scoped "sync-state-only; file-pull deferred"; needs Phase 3.1 or a new inserted phase).
+- "Import workspace files into branch" command for hosts setting up a fresh workspace.
 
-**Surfaced:** 2026-05-11 during Phase 4 multi-window UAT setup — Bob's joined `test-workspace-b/` had no `.versioncon/` directory so BRANCH FILES was empty and SC-4/SC-5 tests have no surface to exercise.
-**Unblocks:** Phase 4 SC-4 (file-overlap toast) and SC-5 (no-impact flash) UAT, which require the joiner to have a branch file hierarchy that the host can push to/from.
-**Suggested home:** small dedicated phase (4.2 INSERTED) similar to how 4.1 was inserted for host-identity, OR roll into a Phase 3.1 / Phase 2-completion cycle.
+**Regression coverage:** +1 source-grep test in `src/test/suite/host.test.ts` (`999.5: wireClientEvents shows joiner onboarding notification with reveal action`).
 
-Plans:
-- [ ] TBD (promote with /gsd-review-backlog when ready)
+**Surfaced:** 2026-05-11 during Phase 4 multi-window UAT setup — Bob's joined `test-workspace-b/` had no `.versioncon/` directory so `BRANCH FILES` was empty with no orientation hint.
 
 ### Phase 999.2: Wizard step 2 Next button stays disabled (CLOSED — f7fa415)
 

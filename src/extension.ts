@@ -131,6 +131,68 @@ let activeChatLog: ChatLog | null = null;
  *
  * Pure helper — exported only for unit-testability shape (no external import yet).
  */
+/**
+ * Phase 4.3 SC-1: hide `.versioncon/` from VS Code's native File Explorer by
+ * merging `{ ".versioncon": true }` into `<workspace>/.vscode/settings.json`
+ * under `files.exclude`. T-04.3-01 mitigation: NEVER overwrite the whole file —
+ * read existing JSON, deep-merge under files.exclude only, write back.
+ *
+ * Gated by `context.workspaceState.get('versioncon.filesExcludeInjected')` so
+ * we run at most once per workspace. If the user manually sets the key (true
+ * OR false) themselves, we do NOT touch it on subsequent activations.
+ *
+ * Defense-in-depth: malformed-JSON errors are swallowed and treated as empty
+ * existing-settings; the helper never propagates exceptions to the caller.
+ * The IIFE admin-bypass invariant is unaffected — this code path runs BEFORE
+ * the workspace IIFE and only touches `.vscode/settings.json`.
+ *
+ * Exported (rather than module-private) so the regression suite in
+ * `src/test/suite/filesExclude.test.ts` can exercise the helper directly
+ * against a tmpdir-backed `vscode.ExtensionContext`-shaped fake. Tests in
+ * this repo already reach into internal helpers (see chatLog.test.ts for
+ * prior art).
+ *
+ * @internal — public only for testability.
+ */
+export async function ensureVersionconExcluded(
+  context: vscode.ExtensionContext,
+): Promise<void> {
+  if (context.workspaceState.get<boolean>('versioncon.filesExcludeInjected')) {
+    return;
+  }
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) {
+    // No folder open — defer until one is opened. Do NOT set the flag yet.
+    return;
+  }
+  const settingsPath = path.join(folder.uri.fsPath, '.vscode', 'settings.json');
+  let existing: Record<string, unknown> = {};
+  try {
+    const raw = await fsPromises.readFile(settingsPath, 'utf-8');
+    existing = JSON.parse(raw) as Record<string, unknown>;
+    if (existing === null || typeof existing !== 'object' || Array.isArray(existing)) {
+      // Defensive: a top-level JSON array or null is not a valid settings
+      // shape; treat as empty rather than letting the assignment below blow up.
+      existing = {};
+    }
+  } catch {
+    /* file missing or malformed — treat as empty, do NOT propagate */
+  }
+  const filesExclude =
+    (existing['files.exclude'] as Record<string, unknown> | undefined) ?? {};
+  // If the user already has an opinion (true OR false), respect it and just
+  // set the workspaceState flag so we never revisit on subsequent activations.
+  if (Object.prototype.hasOwnProperty.call(filesExclude, '.versioncon')) {
+    await context.workspaceState.update('versioncon.filesExcludeInjected', true);
+    return;
+  }
+  filesExclude['.versioncon'] = true;
+  existing['files.exclude'] = filesExclude;
+  await fsPromises.mkdir(path.dirname(settingsPath), { recursive: true });
+  await fsPromises.writeFile(settingsPath, JSON.stringify(existing, null, 2), 'utf-8');
+  await context.workspaceState.update('versioncon.filesExcludeInjected', true);
+}
+
 function formatPushToast(name: string, overlapping: string[], message: string): string {
   const N = overlapping.length;
   const msgSuffix = message ? `: '${message}'` : '';
@@ -230,6 +292,15 @@ export function activate(context: vscode.ExtensionContext): void {
       })();
     }, 0);
   }
+
+  // --- Phase 4.3 (SC-1, T-04.3-01 mitigation): hide .versioncon/ from File
+  // Explorer by merging { ".versioncon": true } into .vscode/settings.json.
+  // Fire-and-forget so activation never blocks on disk I/O. The helper itself
+  // swallows malformed-JSON / read errors; the outer catch is defense-in-depth
+  // for write/mkdir failures so a permission error never breaks activation.
+  void ensureVersionconExcluded(context).catch(err => {
+    console.error('[versioncon] files.exclude injection failed', err);
+  });
 
   // --- Phase 4: starting context keys for viewsWelcome `when` clauses ---
   void vscode.commands.executeCommand('setContext', 'versioncon.connected', false);

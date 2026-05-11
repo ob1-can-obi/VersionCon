@@ -2292,6 +2292,117 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
       );
 
+      // --- Phase 4.3 Wave 4 (SC-6 / T-04.3-02 / T-04.3-03 / T-04.3-04): cloud bridge ---
+      // versioncon.exportToGitRemote ships the active branch dir to a real git
+      // remote (GitHub, GitLab, local bare repo). Host-only via activeHost gate;
+      // admin-gated via permissions.canCreateBranch (host always passes per
+      // BranchPermissions.canCreateBranch host-bypass). All git invocations go
+      // through GitBridge → child_process.spawn with shell:false + argv array.
+      // T-04.3-02 mitigation: confirmation modal before any push fires.
+      context.subscriptions.push(
+        vscode.commands.registerCommand('versioncon.exportToGitRemote', async () => {
+          // T-04.3-04 layer 1: host-only. Members cannot trigger cloud export.
+          if (!activeHost) {
+            void vscode.window.showErrorMessage(
+              'VersionCon: cloud export is host-only. Start a session as host first.',
+            );
+            return;
+          }
+          // T-04.3-04 layer 2: admin proxy via canCreateBranch (host bypasses;
+          // members need an explicit grant). Same gate used by createBranch /
+          // mergeBranch — see BranchPermissions.canCreateBranch host-bypass.
+          if (!permissions.canCreateBranch(currentMemberId)) {
+            void vscode.window.showErrorMessage(
+              'VersionCon: cloud export requires admin permission.',
+            );
+            return;
+          }
+
+          const bridge = new GitBridge();
+
+          // T-04.3-03: URL is validated against the allowlist regex BEFORE it
+          // ever reaches spawn. validateInput rejects anything non-conforming.
+          const url = await vscode.window.showInputBox({
+            prompt: 'Remote URL (https://, git@host:, or file://)',
+            placeHolder: 'https://github.com/you/your-repo.git',
+            validateInput: (v) =>
+              bridge.validateUrl(v.trim())
+                ? null
+                : 'Invalid URL — must match https://, git@host:, or file:// allowlist',
+          });
+          if (!url) return;
+
+          const activeBranch = await branchManager.getActiveBranch();
+
+          // T-04.3-03: branch name validated against allowlist before spawn.
+          const branchOnRemote = await vscode.window.showInputBox({
+            prompt: 'Branch name on remote',
+            value: activeBranch,
+            validateInput: (v) =>
+              bridge.validateBranchName(v.trim())
+                ? null
+                : 'Invalid branch name — alphanumerics, dots, slashes, dashes, underscores; max 128 chars',
+          });
+          if (!branchOnRemote) return;
+
+          // Commit message is passed via spawn argv as a discrete element, so
+          // shell metacharacters in the message are harmless. No regex needed
+          // beyond non-empty.
+          const message = await vscode.window.showInputBox({
+            prompt: 'Commit message',
+            placeHolder: 'Initial export from VersionCon',
+            validateInput: (v) => (v.trim() ? null : 'Message is required'),
+          });
+          if (!message) return;
+
+          // Build the branchDir path the export will run inside.
+          const branchDir = path.join(versionconDir, 'branches', activeBranch);
+
+          // Count files (best-effort, surface in the confirmation modal).
+          let fileCount = 0;
+          try {
+            const entries = await fsPromises.readdir(branchDir, { withFileTypes: true });
+            fileCount = entries.filter((e) => e.isFile()).length;
+          } catch {
+            /* dir missing — fileCount stays 0 */
+          }
+
+          // T-04.3-02: explicit confirmation modal before the push. User must
+          // click Export. URL + branch + file count + commit message all
+          // surfaced so the user has full context before code leaves the LAN.
+          const confirm = await vscode.window.showInformationMessage(
+            `Push branch "${activeBranch}" to ${url.trim()}?`,
+            {
+              modal: true,
+              detail: `Branch on remote: ${branchOnRemote.trim()}\nFiles: ${fileCount}\nCommit message: "${message.trim()}"`,
+            },
+            'Export',
+          );
+          if (confirm !== 'Export') return;
+
+          const channel = getGitBridgeOutputChannel(context);
+          channel.show(true);
+          channel.appendLine(`--- Export to ${url.trim()} (${new Date().toISOString()}) ---`);
+
+          try {
+            await bridge.exportToRemote({
+              branchDir,
+              remoteUrl: url.trim(),
+              branchOnRemote: branchOnRemote.trim(),
+              commitMessage: message.trim(),
+              onOutput: (line) => channel.appendLine(line),
+            });
+            void vscode.window.showInformationMessage(
+              `VersionCon: exported "${activeBranch}" to ${url.trim()}.`,
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            channel.appendLine(`ERROR: ${msg}`);
+            void vscode.window.showErrorMessage(`VersionCon: export failed — ${msg}`);
+          }
+        }),
+      );
+
       // Refresh commands
       context.subscriptions.push(
         vscode.commands.registerCommand('versioncon.refreshBranchTree', () => {
@@ -2419,6 +2530,103 @@ export function activate(context: vscode.ExtensionContext): void {
               `VersionCon: synced ${pulled} file(s); kept ${kept} local. ${remaining} file(s) still out of sync.`,
             );
           }
+          branchProvider.refresh();
+        }),
+      );
+
+      // --- Phase 4.3 SC-4: workspace-diff–driven pull command ---
+      // Distinct from versioncon.sync (which walks the SyncTracker out-of-sync
+      // set after a remote push). vc.pull computes a fresh branch-vs-workspace
+      // diff and copies the branch side into the workspace for any file that
+      // is added/modified upstream. Conflicts reuse the PUSH-11 modal verbatim
+      // (T-04.3-06 mitigation): same literals, same loop semantics, same options.
+      context.subscriptions.push(
+        vscode.commands.registerCommand('versioncon.pull', async () => {
+          const differ = new WorkspaceDiffer();
+          const diff = await differ.diff(
+            workspaceFolder.uri.fsPath,
+            fsLayer.getBranchDir(),
+          );
+          const candidates = [...diff.added, ...diff.modified];
+          if (candidates.length === 0) {
+            void vscode.window.showInformationMessage(
+              'VersionCon: workspace is already up to date with the branch.',
+            );
+            return;
+          }
+
+          const branchDir = fsLayer.getBranchDir();
+          const projectRoot = fsLayer.getProjectRoot();
+          let pulled = 0;
+          let kept = 0;
+
+          for (const rel of candidates) {
+            const branchPath = path.join(branchDir, rel);
+            const workspacePath = path.join(projectRoot, rel);
+            const branchExists = fs.existsSync(branchPath);
+            const workspaceExists = fs.existsSync(workspacePath);
+
+            if (!branchExists) continue;
+
+            // Case B (silent pull): workspace missing the file.
+            if (!workspaceExists) {
+              await fsLayer.copyFileToWorkspace(rel);
+              pulled++;
+              continue;
+            }
+
+            // Case C: both exist -> byte compare.
+            const [bBuf, wBuf] = await Promise.all([
+              fsPromises.readFile(branchPath),
+              fsPromises.readFile(workspacePath),
+            ]);
+            if (bBuf.equals(wBuf)) continue;
+
+            // Case D: real conflict -> reuse PUSH-11 modal.
+            let resolved = false;
+            while (!resolved) {
+              const choice = await vscode.window.showInformationMessage(
+                `Pull conflict: ${rel}`,
+                {
+                  modal: true,
+                  detail: 'The branch has a different version of this file than your workspace. Choose how to resolve:',
+                },
+                'Keep mine',
+                'Take branch',
+                'Show diff',
+              );
+              if (choice === 'Take branch') {
+                await fsLayer.copyFileToWorkspace(rel);
+                pulled++;
+                resolved = true;
+              } else if (choice === 'Keep mine') {
+                kept++;
+                resolved = true;
+              } else if (choice === 'Show diff') {
+                const branchUri = vscode.Uri.file(branchPath);
+                const workspaceUri = vscode.Uri.file(workspacePath);
+                await vscode.commands.executeCommand(
+                  'vscode.diff',
+                  branchUri,
+                  workspaceUri,
+                  `${rel} (Branch ↔ Workspace)`,
+                );
+                // Loop and re-prompt — user must still pick Keep / Take.
+              } else {
+                // Dismissed (Esc / X) — treat as Keep mine and move on.
+                kept++;
+                resolved = true;
+              }
+            }
+          }
+
+          // vc.pull v1: branch-side deletions are NOT propagated to the
+          // workspace — user must delete manually. Mirrors the sync handler's
+          // deleted-upstream behavior (extension.ts above: branch missing →
+          // drop from set, do not delete workspace file).
+          void vscode.window.showInformationMessage(
+            `VersionCon: pulled ${pulled} file(s); kept ${kept} local.`,
+          );
           branchProvider.refresh();
         }),
       );

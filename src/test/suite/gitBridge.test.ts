@@ -264,3 +264,139 @@ suite('Phase 4.3 Wave 4 — GitBridge spawn invariant (T-04.3-03)', () => {
     assert.match(src, /export\s+class\s+GitBridge\b/);
   });
 });
+
+// -----------------------------------------------------------------------------
+// Phase 4.3 Wave 4 — exportToGitRemote wiring (SC-6 / T-04.3-04)
+//
+// Source-grep against src/extension.ts + package.json to pin the wiring:
+//   * import of GitBridge
+//   * registration of versioncon.exportToGitRemote inside the workspace IIFE
+//   * two-layer permission gate: !activeHost AND !permissions.canCreateBranch
+//   * URL + branch-name validation via gitBridge.validateUrl / validateBranchName
+//   * confirmation modal (T-04.3-02) before exportToRemote() invocation
+//   * dedicated Output channel 'VersionCon: Git Bridge'
+//   * error path catches GitBridge errors with showErrorMessage
+// -----------------------------------------------------------------------------
+suite('Phase 4.3 Wave 4 — exportToGitRemote wiring (SC-6 / T-04.3-04)', () => {
+  const extPath = path.resolve(process.cwd(), 'src/extension.ts');
+  const pkgPath = path.resolve(process.cwd(), 'package.json');
+
+  test('extension.ts imports GitBridge from ./services/GitBridge.js', () => {
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+    assert.match(
+      src,
+      /import\s*\{\s*GitBridge\s*\}\s*from\s*['"]\.\/services\/GitBridge\.js['"]/,
+      'extension.ts must import GitBridge from ./services/GitBridge.js',
+    );
+  });
+
+  test('extension.ts registers versioncon.exportToGitRemote command', () => {
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+    assert.match(
+      src,
+      /registerCommand\(\s*['"]versioncon\.exportToGitRemote['"]/,
+      'extension.ts must register versioncon.exportToGitRemote',
+    );
+  });
+
+  test('exportToGitRemote handler has !activeHost host-only gate (T-04.3-04)', () => {
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+    // Find the registerCommand block for exportToGitRemote and inspect it.
+    const block = src.match(
+      /registerCommand\(\s*['"]versioncon\.exportToGitRemote['"][\s\S]*?\}\),\s*\n\s*\);/,
+    );
+    assert.ok(block, 'exportToGitRemote registration block must be parseable');
+    assert.match(
+      block[0],
+      /if\s*\(\s*!activeHost\s*\)/,
+      'exportToGitRemote handler must early-return when !activeHost (T-04.3-04 host-only gate)',
+    );
+  });
+
+  test('exportToGitRemote handler has permissions.canCreateBranch admin gate (T-04.3-04)', () => {
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+    const block = src.match(
+      /registerCommand\(\s*['"]versioncon\.exportToGitRemote['"][\s\S]*?\}\),\s*\n\s*\);/,
+    );
+    assert.ok(block, 'exportToGitRemote registration block must be parseable');
+    assert.match(
+      block[0],
+      /permissions\.canCreateBranch\(currentMemberId\)/,
+      'exportToGitRemote handler must check permissions.canCreateBranch(currentMemberId)',
+    );
+  });
+
+  test('exportToGitRemote prompts for URL using validateUrl', () => {
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+    const block = src.match(
+      /registerCommand\(\s*['"]versioncon\.exportToGitRemote['"][\s\S]*?\}\),\s*\n\s*\);/,
+    );
+    assert.ok(block);
+    assert.match(
+      block[0],
+      /showInputBox\([\s\S]*?validateInput[\s\S]*?validateUrl/,
+      'exportToGitRemote URL prompt must call gitBridge.validateUrl in validateInput',
+    );
+  });
+
+  test('exportToGitRemote prompts for branch using validateBranchName', () => {
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+    const block = src.match(
+      /registerCommand\(\s*['"]versioncon\.exportToGitRemote['"][\s\S]*?\}\),\s*\n\s*\);/,
+    );
+    assert.ok(block);
+    assert.match(
+      block[0],
+      /validateBranchName/,
+      'exportToGitRemote handler must invoke validateBranchName for the branch input',
+    );
+  });
+
+  test('exportToGitRemote shows modal confirmation before exportToRemote (T-04.3-02)', () => {
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+    const block = src.match(
+      /registerCommand\(\s*['"]versioncon\.exportToGitRemote['"][\s\S]*?\}\),\s*\n\s*\);/,
+    );
+    assert.ok(block);
+    // Modal confirm must come BEFORE the exportToRemote call.
+    const modalIdx = block[0].search(/\{\s*modal:\s*true/);
+    const exportIdx = block[0].search(/exportToRemote\s*\(/);
+    assert.ok(modalIdx > 0, 'confirmation modal { modal: true } must appear in handler');
+    assert.ok(exportIdx > 0, 'exportToRemote(...) must be invoked');
+    assert.ok(
+      modalIdx < exportIdx,
+      'confirmation modal must precede exportToRemote(...) call (T-04.3-02)',
+    );
+  });
+
+  test('extension.ts creates Output channel exactly "VersionCon: Git Bridge"', () => {
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+    assert.match(
+      src,
+      /createOutputChannel\(\s*['"]VersionCon: Git Bridge['"]\s*\)/,
+      'extension.ts must create an OutputChannel named exactly "VersionCon: Git Bridge"',
+    );
+  });
+
+  test('exportToGitRemote handler catches errors and shows showErrorMessage (no crash)', () => {
+    const src = fsSync.readFileSync(extPath, 'utf-8');
+    const block = src.match(
+      /registerCommand\(\s*['"]versioncon\.exportToGitRemote['"][\s\S]*?\}\),\s*\n\s*\);/,
+    );
+    assert.ok(block);
+    assert.match(
+      block[0],
+      /catch\s*\([\s\S]*?showErrorMessage/,
+      'exportToGitRemote handler must catch errors and route through showErrorMessage',
+    );
+  });
+
+  test('package.json declares versioncon.exportToGitRemote with VersionCon category', () => {
+    const src = fsSync.readFileSync(pkgPath, 'utf-8');
+    assert.match(
+      src,
+      /"command"\s*:\s*"versioncon\.exportToGitRemote"[\s\S]{0,200}?"title"\s*:\s*"VersionCon: Export to Git Remote"[\s\S]{0,200}?"category"\s*:\s*"VersionCon"/,
+      'package.json must declare versioncon.exportToGitRemote with the SPEC-locked title + category',
+    );
+  });
+});

@@ -220,6 +220,11 @@
         "command": "versioncon.cmd.merge",
         "title": "VersionCon: Merge",
         "category": "VersionCon"
+      },
+      {
+        "command": "versioncon.exportToGitRemote",
+        "title": "VersionCon: Export to Git Remote",
+        "category": "VersionCon"
       }
     ],
     "menus": {

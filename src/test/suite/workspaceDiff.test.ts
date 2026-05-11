@@ -297,3 +297,99 @@ suite('Phase 4.3 Wave 2 — vc push auto-stage fallback (SC-3)', () => {
     );
   });
 });
+
+// -----------------------------------------------------------------------------
+// Phase 4.3 Wave 2 — vc pull (SC-4)
+//
+// Source-grep suite — pins the new versioncon.pull handler in extension.ts
+// and the cmd.pull alias retarget in src/commands/aliases.ts.
+// -----------------------------------------------------------------------------
+
+const ALIASES_TS_PATH = path.resolve(process.cwd(), 'src/commands/aliases.ts');
+const ALIASES_SOURCE = fsSync.readFileSync(ALIASES_TS_PATH, 'utf-8');
+
+/**
+ * Returns the byte range of the versioncon.pull handler block in
+ * extension.ts — from the registerCommand opener to the matching `}),`.
+ * Used so tests can scope assertions to the pull handler ONLY (the file
+ * also contains the existing versioncon.sync handler with similar shape,
+ * so naive substring matches would conflict).
+ */
+function pullHandlerBlock(): string {
+  const startMarker = "registerCommand('versioncon.pull'";
+  const startIdx = EXTENSION_SOURCE.indexOf(startMarker);
+  assert.ok(startIdx >= 0, 'expected registerCommand("versioncon.pull") in extension.ts');
+  // Conservative end-of-block sentinel: the closing "}),\n      );" that
+  // closes the subscriptions.push wrapper. There is exactly one such
+  // sequence following the pull handler's body before the next comment.
+  const endIdx = EXTENSION_SOURCE.indexOf('}),\n      );', startIdx);
+  assert.ok(endIdx > startIdx, 'expected `}),\\n      );` closer for the versioncon.pull handler');
+  return EXTENSION_SOURCE.slice(startIdx, endIdx + 14);
+}
+
+suite('Phase 4.3 Wave 2 — vc pull (SC-4)', () => {
+  test('extension.ts registers versioncon.pull as a dedicated command', () => {
+    assert.match(
+      EXTENSION_SOURCE,
+      /registerCommand\(\s*'versioncon\.pull'\s*,\s*async\s*\(\s*\)\s*=>/,
+      'expected registerCommand("versioncon.pull", async () => ...) in extension.ts',
+    );
+    // versioncon.sync MUST still exist — pull and sync are separate commands.
+    assert.match(
+      EXTENSION_SOURCE,
+      /registerCommand\(\s*'versioncon\.sync'\s*,/,
+      'versioncon.sync handler must still exist alongside the new versioncon.pull',
+    );
+  });
+
+  test('versioncon.pull reuses the PUSH-11 conflict prompt literals verbatim', () => {
+    const block = pullHandlerBlock();
+    assert.ok(
+      block.includes("'Keep mine'"),
+      'pull handler must include the "Keep mine" PUSH-11 option literal',
+    );
+    assert.ok(
+      block.includes("'Take branch'"),
+      'pull handler must include the "Take branch" PUSH-11 option literal',
+    );
+    assert.ok(
+      block.includes("'Show diff'"),
+      'pull handler must include the "Show diff" PUSH-11 option literal',
+    );
+    // Also confirm the modal-detail message literal matches the sync handler's
+    // wording — T-04.3-06 mitigation depends on a faithful reuse.
+    assert.ok(
+      block.includes('The branch has a different version of this file than your workspace. Choose how to resolve:'),
+      'pull handler must reuse the PUSH-11 modal detail wording verbatim',
+    );
+  });
+
+  test('versioncon.pull v1 documents that branch-side deletions are NOT propagated', () => {
+    const block = pullHandlerBlock();
+    assert.match(
+      block,
+      /vc\.pull v1[\s\S]{0,200}branch-side deletions[\s\S]{0,200}NOT propagated/,
+      'pull handler must document the v1 scope decision that branch-side deletions are not propagated to the workspace',
+    );
+  });
+
+  test('versioncon.cmd.pull alias retargets to versioncon.pull (not versioncon.sync)', () => {
+    // The Wave 1 alias used to target versioncon.sync; Wave 2 retargets to
+    // the new dedicated versioncon.pull (SC-4 contract). Pin the new mapping.
+    assert.match(
+      ALIASES_SOURCE,
+      /registerCommand\(\s*'versioncon\.cmd\.pull'\s*,[\s\S]{0,200}?executeCommand\(\s*'versioncon\.pull'\s*\)/,
+      'aliases.ts must route versioncon.cmd.pull to versioncon.pull (no longer versioncon.sync)',
+    );
+    // Negative assertion — the OLD mapping must NOT be present anywhere in
+    // the cmd.pull registerCommand region (it's fine for other commands to
+    // continue calling versioncon.sync from elsewhere in the codebase).
+    const cmdPullIdx = ALIASES_SOURCE.indexOf("'versioncon.cmd.pull'");
+    assert.ok(cmdPullIdx >= 0, 'cmd.pull declaration missing from aliases.ts');
+    const cmdPullSlice = ALIASES_SOURCE.slice(cmdPullIdx, cmdPullIdx + 200);
+    assert.ok(
+      !/executeCommand\(\s*'versioncon\.sync'\s*\)/.test(cmdPullSlice),
+      'cmd.pull must no longer route to versioncon.sync — Wave 2 retargeted it to versioncon.pull',
+    );
+  });
+});

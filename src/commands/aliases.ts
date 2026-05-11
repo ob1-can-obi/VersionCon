@@ -9,9 +9,10 @@ import * as vscode from 'vscode';
  * permission gates, error handling, and UI side-effects all stay in one
  * place (the canonical handler).
  *
- * Mapping (defined by 04.3-01-PLAN.md must_haves):
+ * Mapping (defined by 04.3-01-PLAN.md must_haves; cmd.pull retargeted by
+ * 04.3-02 to the dedicated versioncon.pull command — SC-4 contract):
  *   versioncon.cmd.push     → versioncon.push
- *   versioncon.cmd.pull     → versioncon.sync
+ *   versioncon.cmd.pull     → versioncon.pull     (was versioncon.sync — Wave 2 retarget)
  *   versioncon.cmd.checkout → versioncon.switchBranch
  *   versioncon.cmd.branch   → versioncon.createBranch
  *   versioncon.cmd.log      → versioncon.showPushHistory
@@ -29,7 +30,7 @@ export function registerGitStyleAliases(context: vscode.ExtensionContext): void 
       vscode.commands.executeCommand('versioncon.push'),
     ),
     vscode.commands.registerCommand('versioncon.cmd.pull', () =>
-      vscode.commands.executeCommand('versioncon.sync'),
+      vscode.commands.executeCommand('versioncon.pull'),
     ),
     vscode.commands.registerCommand('versioncon.cmd.checkout', () =>
       vscode.commands.executeCommand('versioncon.switchBranch'),

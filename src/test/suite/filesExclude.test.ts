@@ -275,7 +275,10 @@ suite('Phase 4.3 Wave 1 — git-style command aliases (SC-2)', () => {
     // Each alias must register a command that executeCommands the canonical id.
     const mapping: Array<{ alias: string; canonical: string }> = [
       { alias: 'versioncon.cmd.push', canonical: 'versioncon.push' },
-      { alias: 'versioncon.cmd.pull', canonical: 'versioncon.sync' },
+      // Phase 4.3 Wave 2 retargeted cmd.pull from versioncon.sync to the
+      // new dedicated versioncon.pull (SC-4 contract). Sync remains its own
+      // command; cmd.pull now routes to the workspace-diff pull.
+      { alias: 'versioncon.cmd.pull', canonical: 'versioncon.pull' },
       { alias: 'versioncon.cmd.checkout', canonical: 'versioncon.switchBranch' },
       { alias: 'versioncon.cmd.branch', canonical: 'versioncon.createBranch' },
       { alias: 'versioncon.cmd.log', canonical: 'versioncon.showPushHistory' },

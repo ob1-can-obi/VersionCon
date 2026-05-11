@@ -142,12 +142,20 @@ suite('Phase 4.3 Wave 3 — extension wiring (SC-5)', () => {
 
   test('debounce timer is 500ms (matches SPEC SC-5)', () => {
     // SC-5 mandates "within 500ms of a workspace file save". Pinning the
-    // literal 500 close to the diff call so the test fails if someone tweaks
-    // it without updating the spec.
+    // literal 500 inside a setTimeout that wraps a WorkspaceDiffer call.
+    // Byte-cap is generous (1500 between WorkspaceDiffer and the `, 500)`
+    // tail) because the async-IIFE body is multi-line with try/catch.
     assert.match(
       EXTENSION_SOURCE,
-      /setTimeout\([\s\S]{0,800}?WorkspaceDiffer[\s\S]{0,400}?,\s*500\s*\)/,
+      /setTimeout\([\s\S]{0,800}?WorkspaceDiffer[\s\S]{0,1500}?,\s*500\s*\)/,
       'expected setTimeout with 500ms literal wrapping a WorkspaceDiffer call (SC-5)',
+    );
+    // Defense-in-depth: also pin the specific localChangesDebounce assignment
+    // so a refactor that drops the debounce identifier still trips the test.
+    assert.match(
+      EXTENSION_SOURCE,
+      /localChangesDebounce\s*=\s*setTimeout\(/,
+      'expected localChangesDebounce = setTimeout(...) assignment',
     );
   });
 

@@ -8,6 +8,7 @@ import { JoinPanel } from './ui/JoinPanel.js';
 import { SidebarProvider } from './ui/SidebarProvider.js';
 import { StatusBarManager } from './ui/StatusBarManager.js';
 import { ChatPanel } from './ui/ChatPanel.js';
+import { LocalChangesStatusBar } from './ui/LocalChangesStatusBar.js';
 import { SessionHistory } from './storage/SessionHistory.js';
 import { SessionHost } from './host/SessionHost.js';
 import { SessionClient } from './client/SessionClient.js';
@@ -82,6 +83,10 @@ let activePushHistory: { getLatestRecord: () => { id: string } | undefined } | n
 // reach them.
 let presenceTreeProvider: PresenceTreeProvider | null = null;
 let activityLogProvider: ActivityLogProvider | null = null;
+// Phase 4.3 (SC-5): module-level so the workspace IIFE's FileSystemWatcher
+// can refresh the same instance constructed at activate() scope. Singleton
+// (one bar per VS Code window).
+let localChangesStatusBar: LocalChangesStatusBar | null = null;
 // Phase 4: chat unread count + panel-active flag. Plan 04-14 wires the
 // `onPanelActivated` callback through ChatPanelRefs to flip
 // `chatPanelIsActive`; until that fires this stays false so chat-received
@@ -297,6 +302,14 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider('versioncon.presence', presenceTreeProvider),
     vscode.window.registerTreeDataProvider('versioncon.activityLog', activityLogProvider),
   );
+
+  // --- Phase 4.3 (SC-5): local-changes status-bar indicator ---
+  // Constructed BEFORE the workspace IIFE so the watcher wiring inside the
+  // IIFE can reference the module-level singleton without nullability noise.
+  // Lifecycle: VS Code disposes it on extension deactivate via
+  // context.subscriptions.
+  localChangesStatusBar = new LocalChangesStatusBar();
+  context.subscriptions.push(localChangesStatusBar);
 
   // First activation in this workspace: nudge the Team Sync container to the
   // secondary (right) sidebar. VS Code does not let extensions declare an
@@ -2787,6 +2800,47 @@ export function activate(context: vscode.ExtensionContext): void {
       watcher.onDidChange(debouncedRefresh);
       watcher.onDidDelete(debouncedRefresh);
       context.subscriptions.push(watcher);
+
+      // --- Phase 4.3 SC-5: workspace-wide watcher → WorkspaceDiffer →
+      // LocalChangesStatusBar. Distinct from the branchTree watcher above:
+      // different root (whole workspace, not .versioncon/branches/), different
+      // debounce window (500ms per SC-5 not 50ms), different consumer (status
+      // bar, not branch tree). WorkspaceDiffer's exclusion list filters out
+      // .versioncon/.vscode/node_modules/etc internally so we do NOT need to
+      // narrow the glob here. ---
+      const wsWatcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(workspaceFolder, '**/*'),
+      );
+      let localChangesDebounce: ReturnType<typeof setTimeout> | null = null;
+      const recomputeLocalChanges = (): void => {
+        if (localChangesDebounce) { clearTimeout(localChangesDebounce); }
+        localChangesDebounce = setTimeout(() => {
+          void (async () => {
+            try {
+              const differ = new WorkspaceDiffer();
+              const diff = await differ.diff(
+                workspaceFolder.uri.fsPath,
+                fsLayer.getBranchDir(),
+              );
+              localChangesStatusBar?.refresh(diff);
+            } catch (err) {
+              // Diff failure must never break the watcher — log and bail so the
+              // next event will try again. Pre-existing pattern from the
+              // sync handler and Plan 04.3-02 push auto-stage.
+              console.error('[versioncon] LocalChangesStatusBar refresh failed', err);
+            }
+          })();
+        }, 500);
+      };
+      wsWatcher.onDidCreate(recomputeLocalChanges);
+      wsWatcher.onDidChange(recomputeLocalChanges);
+      wsWatcher.onDidDelete(recomputeLocalChanges);
+      context.subscriptions.push(wsWatcher);
+      // One-shot initial refresh so the status bar reflects state at
+      // activation — without this the user has to touch a file before the
+      // indicator appears, which violates SC-5's "appears within 500ms"
+      // intent for the first-render case.
+      recomputeLocalChanges();
     })();
   }
 }

@@ -189,7 +189,13 @@ Plans:
   2. A reviewer can approve the change, request changes, or leave line-level comments — all from inside VS Code without opening a browser
   3. When an admin configures a branch to require review before merge, the merge action is blocked until at least one reviewer approves
   4. Review comments appear in the in-app chat thread so the team can follow the conversation without switching panels
-**Plans**: TBD
+**Plans:** 5 plans (planned 2026-05-11 via /gsd-plan-phase 6 autonomous run after Phase 5)
+Plans:
+- [ ] 06-01-PLAN.md — Wave 1: Types + wire protocol + ReviewStore persistence (review.ts, ReviewStore.ts, SystemEventSubKind +5, ProtocolMessage +5, BranchInfo.requireReview)
+- [ ] 06-02-PLAN.md — Wave 2: SessionHost relay — 4 inbound review-* handlers, T-06-01 server-trusted memberId override, T-06-03 30/min rate-limit + 500-cap, T-06-05 host-only state-sync, supersede + permission gate + system chat events
+- [ ] 06-03-PLAN.md — Wave 2 (parallel): SessionClient routing 5 wire→event mappings + ReviewState client cache with apply* mutators + getActiveReviewForPush
+- [ ] 06-04-PLAN.md — Wave 3: ReviewPanel webview (CSP + markdown-it html:false reuse) + side-by-side diff via vscode.diff against push-snapshots/ + versioncon.openReview command + extension.ts review-event wiring
+- [ ] 06-05-PLAN.md — Wave 4: vscode.commentController per-review lifecycle + requireReview merge gate at 3 entry points (mergeBranch/quickMergeFiles/structuredMergeBranch) + versioncon.setBranchRequireReview admin command + chat system event on merge-block
 **UI hint**: yes
 
 ### Phase 7: Cloud Mode + Relay Server

@@ -1,0 +1,433 @@
+/*
+ * Phase 6 Plan 06-04 — ReviewPanel webview styles.
+ *
+ * UI-SPEC §4.1 hard rule: NO hex codes; every color routes through
+ * var(--vscode-*) so the panel respects the user's active theme.
+ * UI-SPEC §4.4 spacing: multiples of 4. UI-SPEC §4.3 typography: VS Code
+ * font-family + font-size; weights 400/600.
+ *
+ * Markdown body is rendered by main.ts via markdown-it html:false (T-06-02
+ * mitigation; the html:false config literal lives in main.ts so the
+ * source-grep test in reviewPanel.test.ts catches drift). CSP nonce required
+ * for all <style> blocks if any — we avoid inline <style> entirely.
+ */
+
+:root {
+  --gap-xs: 4px;
+  --gap-sm: 8px;
+  --gap-md: 12px;
+  --gap-lg: 16px;
+  --gap-xl: 20px;
+  --gap-2xl: 24px;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+}
+
+#review-root {
+  display: flex;
+  flex-direction: column;
+  padding: var(--gap-lg);
+  gap: var(--gap-lg);
+}
+
+/* ----- Header ----- */
+#review-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-xs);
+  border-bottom: 1px solid var(--vscode-panel-border);
+  padding-bottom: var(--gap-md);
+}
+
+.review-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-md);
+}
+
+#review-title {
+  margin: 0;
+  font-size: 1.2em;
+  font-weight: 600;
+}
+
+.review-meta {
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ----- Status badge (5 states matching ReviewStatus) ----- */
+.status-badge {
+  display: inline-block;
+  padding: 2px var(--gap-sm);
+  border-radius: 3px;
+  font-size: 0.85em;
+  font-weight: 600;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+
+.status-open {
+  color: var(--vscode-charts-blue);
+  border-color: var(--vscode-charts-blue);
+  background: transparent;
+}
+
+.status-approved {
+  color: var(--vscode-charts-green);
+  border-color: var(--vscode-charts-green);
+  background: transparent;
+}
+
+.status-changes-requested {
+  color: var(--vscode-charts-orange);
+  border-color: var(--vscode-charts-orange);
+  background: transparent;
+}
+
+.status-resolved {
+  color: var(--vscode-descriptionForeground);
+  border-color: var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background);
+}
+
+.status-abandoned {
+  color: var(--vscode-descriptionForeground);
+  border-color: var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background);
+  text-decoration: line-through;
+}
+
+/* ----- Section headers ----- */
+section h3 {
+  margin: 0 0 var(--gap-sm) 0;
+  font-size: 1em;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+/* ----- File list ----- */
+.review-file-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.review-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--gap-sm) var(--gap-md);
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--vscode-foreground);
+}
+
+.review-file-row:hover,
+.review-file-row:focus {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-list-focusOutline);
+  outline: none;
+}
+
+.review-file-row .file-path {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-file-row .file-status {
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  margin-left: var(--gap-md);
+}
+
+.review-file-row .file-status-added {
+  color: var(--vscode-charts-green);
+}
+
+.review-file-row .file-status-modified {
+  color: var(--vscode-charts-orange);
+}
+
+.review-file-row .file-status-deleted {
+  color: var(--vscode-charts-red);
+}
+
+/* ----- Vote list ----- */
+.review-vote-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-xs);
+}
+
+.review-vote-row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-md);
+  padding: var(--gap-xs) var(--gap-sm);
+  background: var(--vscode-editorWidget-background);
+  border-radius: 3px;
+}
+
+.review-vote-row .vote-author {
+  font-weight: 600;
+}
+
+.review-vote-row .vote-kind {
+  font-size: 0.85em;
+  padding: 1px var(--gap-sm);
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+
+.review-vote-row .vote-kind-approved {
+  color: var(--vscode-charts-green);
+  border-color: var(--vscode-charts-green);
+}
+
+.review-vote-row .vote-kind-changes-requested {
+  color: var(--vscode-charts-orange);
+  border-color: var(--vscode-charts-orange);
+}
+
+.review-vote-row .vote-kind-commented {
+  color: var(--vscode-descriptionForeground);
+  border-color: var(--vscode-panel-border);
+}
+
+/* ----- Comment groups ----- */
+.review-comment-groups {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-md);
+}
+
+.review-comment-group {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+  background: var(--vscode-editorWidget-background);
+  padding: var(--gap-sm);
+}
+
+.review-comment-group-header {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  margin-bottom: var(--gap-sm);
+  border-bottom: 1px solid var(--vscode-panel-border);
+  padding-bottom: var(--gap-xs);
+}
+
+.comment-file-label {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.9em;
+  color: var(--vscode-foreground);
+}
+
+.comment-line-badge {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  padding: 1px var(--gap-xs);
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  border-radius: 3px;
+}
+
+.review-comment-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-xs);
+  padding: var(--gap-xs) 0;
+  border-top: 1px dashed var(--vscode-panel-border);
+}
+
+.review-comment-item:first-child {
+  border-top: 0;
+}
+
+.comment-author-row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+}
+
+.comment-author {
+  font-weight: 600;
+}
+
+.comment-timestamp {
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.comment-body {
+  font-size: 0.95em;
+  color: var(--vscode-foreground);
+}
+
+.comment-body p {
+  margin: var(--gap-xs) 0;
+}
+
+.comment-body code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  background: var(--vscode-textBlockQuote-background);
+  padding: 1px var(--gap-xs);
+  border-radius: 2px;
+}
+
+.comment-body pre {
+  background: var(--vscode-textBlockQuote-background);
+  padding: var(--gap-sm);
+  border-radius: 3px;
+  overflow-x: auto;
+}
+
+/* ----- Comment composer ----- */
+.review-comment-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-sm);
+  margin-top: var(--gap-md);
+  padding-top: var(--gap-md);
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+.composer-row {
+  display: flex;
+  gap: var(--gap-sm);
+}
+
+.review-comment-composer input,
+.review-comment-composer textarea {
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  padding: var(--gap-xs) var(--gap-sm);
+  border-radius: 2px;
+}
+
+.review-comment-composer input {
+  flex: 1;
+}
+
+#comment-line-input {
+  flex: 0 0 80px;
+}
+
+.review-comment-composer textarea {
+  resize: vertical;
+  min-height: 60px;
+}
+
+#comment-submit-btn {
+  align-self: flex-end;
+  padding: var(--gap-xs) var(--gap-md);
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: 1px solid transparent;
+  border-radius: 2px;
+  cursor: pointer;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+#comment-submit-btn:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+#comment-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ----- Vote bar + Resolve bar ----- */
+.review-vote-bar,
+.review-resolve-bar {
+  display: flex;
+  gap: var(--gap-sm);
+  padding-top: var(--gap-md);
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+.vote-btn,
+.resolve-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-xs);
+  padding: var(--gap-sm) var(--gap-md);
+  background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+  border: 1px solid transparent;
+  border-radius: 2px;
+  cursor: pointer;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+.vote-btn:hover,
+.resolve-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
+}
+
+.vote-btn:disabled,
+.resolve-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.vote-approve {
+  border-color: var(--vscode-charts-green);
+}
+
+.vote-changes {
+  border-color: var(--vscode-charts-orange);
+}
+
+.resolve-merged {
+  border-color: var(--vscode-charts-green);
+}
+
+.resolve-abandoned {
+  border-color: var(--vscode-descriptionForeground);
+}
+
+/* ----- Empty state ----- */
+.review-empty {
+  padding: var(--gap-2xl);
+  text-align: center;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* Hidden helper */
+[hidden] {
+  display: none !important;
+}

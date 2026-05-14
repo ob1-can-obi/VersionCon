@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="%%CSP%%">
+  <link href="%%CODICON_CSS_URI%%" rel="stylesheet">
+  <link href="%%CSS_URI%%" rel="stylesheet">
+  <title>Review</title>
+</head>
+<body>
+  <div id="review-root">
+    <header id="review-header">
+      <div class="review-title-row">
+        <h2 id="review-title">Review</h2>
+        <span id="review-status-badge" class="status-badge status-open">open</span>
+      </div>
+      <div id="review-meta" class="review-meta"></div>
+    </header>
+
+    <section id="review-files-section">
+      <h3>Files (<span id="review-file-count">0</span>)</h3>
+      <ul id="review-file-list" class="review-file-list"></ul>
+    </section>
+
+    <section id="review-votes-section">
+      <h3>Votes (<span id="review-vote-count">0</span>)</h3>
+      <ul id="review-vote-list" class="review-vote-list"></ul>
+    </section>
+
+    <section id="review-comments-section">
+      <h3>Comments (<span id="review-comment-count">0</span>)</h3>
+      <ul id="review-comment-groups" class="review-comment-groups"></ul>
+      <div id="review-comment-composer" class="review-comment-composer">
+        <div class="composer-row">
+          <input type="text" id="comment-file-input" placeholder="File path (e.g. src/foo.ts)" aria-label="File path">
+          <input type="number" id="comment-line-input" placeholder="Line" min="1" aria-label="Line number">
+        </div>
+        <textarea id="comment-body-input" rows="3" placeholder="Add a comment (markdown supported)…" aria-label="Comment body"></textarea>
+        <button id="comment-submit-btn" type="button" disabled>Send comment</button>
+      </div>
+    </section>
+
+    <section id="review-vote-bar" class="review-vote-bar">
+      <button id="vote-approve" class="vote-btn vote-approve" type="button">
+        <span class="codicon codicon-check"></span> Approve
+      </button>
+      <button id="vote-changes" class="vote-btn vote-changes" type="button">
+        <span class="codicon codicon-warning"></span> Request Changes
+      </button>
+      <button id="vote-comment" class="vote-btn vote-comment" type="button">
+        <span class="codicon codicon-comment"></span> Comment Only
+      </button>
+    </section>
+
+    <section id="review-resolve-bar" class="review-resolve-bar" hidden>
+      <button id="resolve-merged" class="resolve-btn resolve-merged" type="button">
+        <span class="codicon codicon-git-merge"></span> Resolve as Merged
+      </button>
+      <button id="resolve-abandoned" class="resolve-btn resolve-abandoned" type="button">
+        <span class="codicon codicon-discard"></span> Abandon
+      </button>
+    </section>
+
+    <div id="review-empty" class="review-empty" hidden>
+      Loading review…
+    </div>
+  </div>
+  <script nonce="%%NONCE%%" src="%%JS_URI%%"></script>
+</body>
+</html>

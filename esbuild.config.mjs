@@ -50,6 +50,30 @@ async function copyChatAssets() {
   );
 }
 
+// Phase 6 Plan 06-04: copy review webview static assets (HTML template, CSS,
+// codicon font + CSS) into dist/ so they sit alongside the bundled JS and the
+// extension's localResourceRoots reaches them. Mirrors copyChatAssets verbatim
+// with chat → review path swaps.
+async function copyReviewAssets() {
+  await mkdir('dist/webview/review/codicon', { recursive: true });
+  await copyFile(
+    'node_modules/@vscode/codicons/dist/codicon.css',
+    'dist/webview/review/codicon/codicon.css',
+  );
+  await copyFile(
+    'node_modules/@vscode/codicons/dist/codicon.ttf',
+    'dist/webview/review/codicon/codicon.ttf',
+  );
+  await copyFile(
+    'src/ui/webview/review/index.html',
+    'dist/webview/review/index.html',
+  );
+  await copyFile(
+    'src/ui/webview/review/main.css',
+    'dist/webview/review/main.css',
+  );
+}
+
 /**
  * onEnd plugin that re-copies chat assets after every successful rebuild.
  * Required for watch mode so editing index.html / main.css triggers a copy.
@@ -73,6 +97,24 @@ const chatAssetsPlugin = {
         await copyTestFixtures();
       } catch (err) {
         console.error('[esbuild] copyTestFixtures failed:', err);
+      }
+    });
+  },
+};
+
+// Phase 6 Plan 06-04: review-assets-plugin — sibling to chat-assets-plugin.
+// Recopies review webview assets on every watch rebuild so editing
+// index.html / main.css triggers a copy. Avoids extending the chat plugin so
+// the two webview bundles remain independent.
+const reviewAssetsPlugin = {
+  name: 'review-assets-plugin',
+  setup(build) {
+    build.onEnd(async (result) => {
+      if (result.errors && result.errors.length > 0) return;
+      try {
+        await copyReviewAssets();
+      } catch (err) {
+        console.error('[esbuild] copyReviewAssets failed:', err);
       }
     });
   },
@@ -146,6 +188,24 @@ const chatCtx = await esbuild.context({
   plugins: [chatAssetsPlugin],
 });
 
+// Phase 6 Plan 06-04: review webview JS bundle. Mirrors the chat bundle's
+// format/platform/target so the bundle runs inside the WebviewPanel iframe
+// under the SAME strict CSP shape as chat. markdown-it is bundled (it is
+// already a dependency from Plan 04-10) — NO new dependencies introduced by
+// this plan. The two bundles total ~400KB; fits within VS Code's ext-host
+// memory budget.
+const reviewCtx = await esbuild.context({
+  entryPoints: ['src/ui/webview/review/main.ts'],
+  bundle: true,
+  outfile: 'dist/webview/review/main.js',
+  format: 'iife',
+  platform: 'browser',
+  target: ['es2022'],
+  sourcemap: isWatch ? 'inline' : false,
+  minify: !isWatch,
+  plugins: [reviewAssetsPlugin],
+});
+
 // Phase 5 Plan 05-04 (Wave 4): forked AST worker bundle. CJS / platform:node
 // so it runs inside a child_process.fork()'d Node process. `external: vscode`
 // is defense-in-depth — the worker has zero vscode imports (verified by
@@ -192,20 +252,23 @@ const workerCtx = await esbuild.context({
 });
 
 if (isWatch) {
-  await Promise.all([extCtx.watch(), chatCtx.watch(), workerCtx.watch()]);
+  await Promise.all([extCtx.watch(), chatCtx.watch(), reviewCtx.watch(), workerCtx.watch()]);
   // Initial copy in case watchers don't fire onEnd before the user edits.
   await copyChatAssets();
+  await copyReviewAssets();
   await copyTreeSitterGrammars();
   await copyTestFixtures();
   console.log('Watching...');
 } else {
-  await Promise.all([extCtx.rebuild(), chatCtx.rebuild(), workerCtx.rebuild()]);
+  await Promise.all([extCtx.rebuild(), chatCtx.rebuild(), reviewCtx.rebuild(), workerCtx.rebuild()]);
   // Belt-and-suspenders — onEnd already ran, but explicit copy guarantees
   // assets are present even if the plugin failed silently.
   await copyChatAssets();
+  await copyReviewAssets();
   await copyTreeSitterGrammars();
   await copyTestFixtures();
   await extCtx.dispose();
   await chatCtx.dispose();
+  await reviewCtx.dispose();
   await workerCtx.dispose();
 }

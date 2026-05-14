@@ -230,6 +230,11 @@
         "command": "versioncon.importFromGitRemote",
         "title": "VersionCon: Import from Git Remote",
         "category": "VersionCon"
+      },
+      {
+        "command": "versioncon.openReview",
+        "title": "VersionCon: Open Review",
+        "category": "VersionCon"
       }
     ],
     "menus": {

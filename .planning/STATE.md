@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed plan 04-11 (Phase 4 feature-complete — versioncon.manageChat full QuickPick implementation, 4 modal confirms, two-layer host gating, per-user clear-my-view, dual-path export, ChatLog wired into extension.ts; 22 new tests, 284 passing total). All 11 Phase 4 plans done; awaiting verifier + multi-host UAT.
-last_updated: "2026-05-09T09:41:02.254Z"
-last_activity: 2026-05-09 -- Phase 04.1 execution started
+stopped_at: Phase 5 (Dependency-Aware Conflict Detection / AST) shipped autonomously. 5 plans, 25 code commits (754c0e8..7d4d75b), +245 tests (439 → 684 passing). Vendored web-tree-sitter WASMs for JavaScript / TypeScript / TSX / Python. PythonAdapter + JavaScriptAdapter + TypeScriptAdapter (with TSX routing) extract function/class/variable/import/export/call symbols. FallbackAdapter + Java/C++ register-but-fallback stubs cover SC-3. AstWorker runs as forked child_process (SC-2 isolation guarantee, sub-50ms broadcast remains synchronous), with 3-strike crash-circuit + 5s per-file slowloris timeout + segment-aware path validation (T-05-01..05 mitigated). AstAnalyzer wired into SessionHost.broadcastPush; chat-message-amend wire type carries affectedSymbols + unsupportedLanguages payload; ChatPanel + ActivityLog upgrade their labels when payload present, fall back to file-count when absent. Phase 6 (Inline Code Review) is next.
+last_updated: "2026-05-14T07:45:00.000Z"
+last_activity: 2026-05-14 -- Phase 06 (Inline Code Review) complete autonomously
 progress:
-  total_phases: 9
-  completed_phases: 3
-  total_plans: 36
-  completed_plans: 32
-  percent: 89
+  total_phases: 13
+  completed_phases: 5
+  total_plans: 46
+  completed_plans: 44
+  percent: 96
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-04)
 
 **Core value:** Teams collaborate on code without merge conflict pain — dependency-aware tracking means you only stop coding when changes genuinely affect what you're working on.
-**Current focus:** Phase 04.1 — host-identity-and-creation-wizard
+**Current focus:** Phase 06 — inline-code-review
 
 ## Current Position
 
-Phase: 04.1 (host-identity-and-creation-wizard) — EXECUTING
-Plan: 1 of 4
-Status: Executing Phase 04.1
-Next: /gsd-execute-phase 4.1 — Wave 1: 04.1-01 (types + protocol). Wave 2 parallel: 04.1-02 (host pre-registration) ∥ 04.1-03 (wizard displayName + plumbing). Wave 3: 04.1-04 (regression suite, 11 tests). After 4.1 ships, resume Phase 4 multi-window UAT (Tests 2-6 in 04-UAT.md).
-Last activity: 2026-05-09 -- Phase 04.1 execution started
+Phase: 06 (inline-code-review) — COMPLETE
+Plan: 5 of 5 (Phase 6 feature-complete)
+Status: Phase 6 done; ready for /gsd-verify-work 6 or Phase 7 planning
+Next: /gsd-verify-work 6 — UAT pass against the 4 SCs from 06-SPEC.md, OR /gsd-plan-phase 7 (Cloud Mode + Relay Server)
+Last activity: 2026-05-14 -- Phase 06 (Inline Code Review) shipped autonomously; 5 plans, 824 → 867 passing (+43 tests in Wave 4)
 
-Progress: [█████████░] 88%
+Progress: [██████████] 96%
 
 ## Performance Metrics
 
@@ -131,6 +131,13 @@ Recent decisions affecting current work:
 - [Plan 04-11]: Per-branch ChatLog reconstruction on switchBranch — chat-log.json is per-branch, so switching branches rebuilds the ChatLog and re-wires it into the host alongside fsLayer.setBranchDir. Late-arriving wiring resolves both ways (IIFE wires host if active; wireHostEvents wires chat-log if loaded).
 - [Plan 04-11]: ChatLog wiring landed in extension.ts in this plan, not Plan 04-10 — Plan 04-09 deferred to 04-10, but 04-10's host chat-message handler null-guarded chatLog so the wiring never landed. Plan 04-11 needs activeChatLog for clearAll/truncate*/exportToFile to do anything meaningful, so it became a Rule 2 deviation here.
 - [Plan 04-11]: UI-SPEC literal verification via source-grep tests — extension.ts read as a string, modal copy + button labels asserted against UI-SPEC §6.5 + §6.4. Catches future drift away from the spec without needing a VS Code extension host to mount the QuickPick. Pattern reusable for any future spec'd UI strings.
+- [Plan 06-05]: checkRequireReviewGate extracted to src/state/requireReviewGate.ts as a pure function with a deps object — cleaner test surface AND a single source of truth shared by the 3 merge entry points. Same pattern as Plan 04-06 computeFileOverlap.
+- [Plan 06-05]: SessionHost.appendAndBroadcastSystemEvent visibility widened private → public to let extension.ts merge-block paths fire system chat events from the activate IIFE. JSDoc pins the explicit scope (only SessionHost instance methods AND extension.ts with an activeHost ref). Smaller diff than adding a public wrapper.
+- [Plan 06-05]: Resolved-review status explicitly does NOT count as approved for the gate. ReviewState.getActiveReviewForPush filters resolved+abandoned, so the gate naturally falls into the 'no review opened' branch when an admin override resolves a 'changes-requested' review. Next merge still blocks until an explicit approve vote lands — pinned by behavior test.
+- [Plan 06-05]: Reused 'review-resolved' SystemEventSubKind for the merge-block system event rather than introducing a 6th sub-kind. The body string carries the merge-block specifics; new sub-kind would churn Wave 1 + Wave 2 contract surfaces.
+- [Plan 06-05]: Singleton-per-pushId vscode.CommentController lifecycle managed at module scope (activeReviewController + activeReviewThreadDisposables + activeReviewPushIdForController). Wired into ReviewPanel.addOwnedDisposable via a synthetic disposable that clears all 3 refs on dispose — singleton mirrors ReviewPanel.currentPanel pattern.
+- [Plan 06-05]: Full rebuild of inline CommentThreads on every review event (vs. diff-and-patch) — bounded by host's 500-cap. Diff-and-patch would need a per-comment-id → thread map kept in sync with ReviewState; not justified for v1.
+- [Plan 06-05]: v1 contract: NO bare-line gutter 'Add comment' affordance. commentingRangeProvider returns [] for all lines. Users compose new threads via the ReviewPanel webview's per-file-row composer. Gutter add-comment is a Phase 6.x deliverable.
 
 ### Roadmap Evolution
 
@@ -162,6 +169,7 @@ None yet.
 | 4.1 | Host Identity + Creation Wizard (INSERTED) | 2026-05-09 | 4 | (across waves) | +20 |
 | 4.3 | Git-Style Commands + File Explorer Workflow + Cloud Bridge (INSERTED) | 2026-05-11 | 5 | 9e20df0..69ffeaf (14 commits) | +89 (350→439) |
 | 5 | Dependency-Aware Conflict Detection (AST) | 2026-05-11 | 5 | 754c0e8..7d4d75b (25 commits) | +245 (439→684) |
+| 6 | Inline Code Review | 2026-05-14 | 5 | 24c257d..c72e0ed (Wave 1-4 across many) | +183 (684→867) |
 
 ## Deferred Items
 

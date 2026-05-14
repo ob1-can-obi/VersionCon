@@ -19,7 +19,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 4.1 (INSERTED): Host Identity + Creation Wizard** - Wizard prompts host for displayName; session creator is host by construction (not first WebSocket auth) (4/4 plans done; UAT 3/3 pass; UAT Test 3 gap closed by quick task 260510-sdm)
 - [x] **Phase 4.3 (INSERTED): Git-Style Commands + File Explorer Workflow + Cloud Bridge** - Hide `.versioncon/` from VS Code File Explorer; git-style command aliases; workspace-diff-driven push/pull (no drag required); status-bar "N local changes" indicator; one-way export to a real Git remote (host-only) so v2-of-project starts with `git pull` + fresh session (5/5 plans done; 14 commits 9e20df0..69ffeaf; 350 → 439 passing, +89 new tests)
 - [x] **Phase 5: Dependency-Aware Conflict Detection (AST)** - AST child process, per-language parsers, function-level conflict attribution, smart push summary (5/5 plans done; 25 code commits 754c0e8..7d4d75b; 439 → 684 passing, +245 new tests; SC-1 attribution + SC-2 sub-50ms broadcast + SC-3 fallback + SC-4 skipPolicy + SC-5 smart summary all verified)
-- [ ] **Phase 6: Inline Code Review** - Diff + approve flow, line comments, mandatory review gate, review threads in chat
+- [x] **Phase 6: Inline Code Review** - Diff + approve flow, line comments, mandatory review gate, review threads in chat (5/5 plans done; 824 → 867 passing in Wave 4; SC-1 vscode.diff + SC-2 panel composer/inline gutter + SC-3 requireReview merge gate at 3 entry points + SC-4 chat system events all satisfied end-to-end; UAT folds into a future /gsd-verify-work 6 pass)
 - [ ] **Phase 7: Cloud Mode + Relay Server** - Relay deployment, JWT auth, CloudTransport, same UX as LAN over internet
 - [ ] **Phase 8: AI Agent API (MCP Integration)** - Embedded MCP server, read-only tools for branch state, dependency graph, activity
 
@@ -191,11 +191,11 @@ Plans:
   4. Review comments appear in the in-app chat thread so the team can follow the conversation without switching panels
 **Plans:** 5 plans (planned 2026-05-11 via /gsd-plan-phase 6 autonomous run after Phase 5)
 Plans:
-- [ ] 06-01-PLAN.md — Wave 1: Types + wire protocol + ReviewStore persistence (review.ts, ReviewStore.ts, SystemEventSubKind +5, ProtocolMessage +5, BranchInfo.requireReview)
-- [ ] 06-02-PLAN.md — Wave 2: SessionHost relay — 4 inbound review-* handlers, T-06-01 server-trusted memberId override, T-06-03 30/min rate-limit + 500-cap, T-06-05 host-only state-sync, supersede + permission gate + system chat events
-- [ ] 06-03-PLAN.md — Wave 2 (parallel): SessionClient routing 5 wire→event mappings + ReviewState client cache with apply* mutators + getActiveReviewForPush
-- [ ] 06-04-PLAN.md — Wave 3: ReviewPanel webview (CSP + markdown-it html:false reuse) + side-by-side diff via vscode.diff against push-snapshots/ + versioncon.openReview command + extension.ts review-event wiring
-- [ ] 06-05-PLAN.md — Wave 4: vscode.commentController per-review lifecycle + requireReview merge gate at 3 entry points (mergeBranch/quickMergeFiles/structuredMergeBranch) + versioncon.setBranchRequireReview admin command + chat system event on merge-block
+- [x] 06-01-PLAN.md — Wave 1: Types + wire protocol + ReviewStore persistence (review.ts, ReviewStore.ts, SystemEventSubKind +5, ProtocolMessage +5, BranchInfo.requireReview)
+- [x] 06-02-PLAN.md — Wave 2: SessionHost relay — 4 inbound review-* handlers, T-06-01 server-trusted memberId override, T-06-03 30/min rate-limit + 500-cap, T-06-05 host-only state-sync, supersede + permission gate + system chat events
+- [x] 06-03-PLAN.md — Wave 2 (parallel): SessionClient routing 5 wire→event mappings + ReviewState client cache with apply* mutators + getActiveReviewForPush
+- [x] 06-04-PLAN.md — Wave 3: ReviewPanel webview (CSP + markdown-it html:false reuse) + side-by-side diff via vscode.diff against push-snapshots/ + versioncon.openReview command + extension.ts review-event wiring
+- [x] 06-05-PLAN.md — Wave 4: vscode.commentController per-review lifecycle + requireReview merge gate at 3 entry points (mergeBranch/quickMergeFiles/structuredMergeBranch) + versioncon.setBranchRequireReview admin command + chat system event on merge-block
 **UI hint**: yes
 
 ### Phase 7: Cloud Mode + Relay Server

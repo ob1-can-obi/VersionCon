@@ -152,6 +152,40 @@ export class BranchManager {
   }
 
   /**
+   * Phase 6 REVIEW-04 (Plan 06-05): toggle the per-branch requireReview gate.
+   *
+   * When true, the three merge entry points
+   * (versioncon.mergeBranch / quickMergeFiles / structuredMergeBranch) refuse
+   * to merge INTO this branch unless the source branch's most-recent push has
+   * an approving ReviewRequest (status:'approved'). Admin-toggleable via
+   * versioncon.setBranchRequireReview (admin = canCreateBranch === true; the
+   * v1 admin proxy per 06-SPEC.md frontmatter line 15).
+   *
+   * Independent of lockBranch — locked branches restrict WHO can push;
+   * requireReview restricts WHAT can merge in. Both gates compose.
+   *
+   * No wire broadcast on toggle for v1 — the gate is read on the local host
+   * process during merge attempts. A future plan can add wire propagation
+   * (`branch-require-review-changed`) so peer joiners see the toggle live
+   * without a state-sync round-trip.
+   */
+  async setRequireReview(name: string, requireReview: boolean): Promise<void> {
+    const branch = this.metadata.find(b => b.name === name);
+    if (!branch) throw new Error(`Branch "${name}" does not exist`);
+    branch.requireReview = requireReview;
+    await this.saveMetadata();
+  }
+
+  /**
+   * Phase 6 REVIEW-04 (Plan 06-05): reader for the requireReview flag.
+   * Returns false for branches that have never had the flag set (legacy
+   * branch-metadata.json without the field) — undefined is treated as false.
+   */
+  getRequireReview(name: string): boolean {
+    return this.metadata.find(b => b.name === name)?.requireReview === true;
+  }
+
+  /**
    * Phase 4.3 SC-7: register a branch whose contents were materialized by an
    * external process (e.g. GitBridge.importFromRemote cloning into the dest
    * dir). Does NOT create the dir or copy any contents — caller has already

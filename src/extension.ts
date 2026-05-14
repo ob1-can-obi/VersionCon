@@ -26,6 +26,7 @@ import { SyncTracker } from './filesystem/SyncTracker.js';
 import { ChatLog } from './filesystem/ChatLog.js';
 import { ReviewStore } from './filesystem/ReviewStore.js';
 import { ReviewState } from './state/ReviewState.js';
+import { checkRequireReviewGate } from './state/requireReviewGate.js';
 import { ReviewPanel } from './ui/ReviewPanel.js';
 import { AstAnalyzer } from './ast/AstAnalyzer.js';
 import { createTimestamp } from './network/protocol.js';
@@ -2385,6 +2386,31 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
           }
 
+          // Phase 6 Plan 06-05 — requireReview gate. When target.requireReview
+          // is true AND the source branch's most-recent push lacks an
+          // approving ReviewRequest, block the merge with a non-modal error
+          // toast AND fire a system chat event so the team sees the rejection.
+          if (activePushHistoryFull) {
+            const gate = await checkRequireReviewGate(
+              sourceItem.label, targetItem.label,
+              { branchManager, pushHistory: activePushHistoryFull, reviewState },
+            );
+            if (!gate.allow) {
+              void vscode.window.showErrorMessage(`VersionCon: ${gate.reason}`);
+              if (activeHost) {
+                activeHost.appendAndBroadcastSystemEvent(
+                  'review-resolved',
+                  `Merge blocked: needs review approval — ${sourceItem.label} → ${targetItem.label}`,
+                  Date.now(),
+                  { branch: targetItem.label },
+                  currentSelfMemberId,
+                  currentSelfDisplayName,
+                );
+              }
+              return;
+            }
+          }
+
           const confirm = await vscode.window.showWarningMessage(
             `Merge "${sourceItem.label}" into "${targetItem.label}"?`,
             { modal: true },
@@ -2411,6 +2437,58 @@ export function activate(context: vscode.ExtensionContext): void {
             );
           } catch (err) {
             const msg = err instanceof Error ? err.message : 'Merge failed';
+            void vscode.window.showErrorMessage(`VersionCon: ${msg}`);
+          }
+        }),
+      );
+
+      // Phase 6 Plan 06-05 — versioncon.setBranchRequireReview admin command.
+      // Toggles BranchInfo.requireReview per-branch. Admin-gated via
+      // permissions.canCreateBranch (the v1 admin proxy per 06-SPEC.md
+      // frontmatter line 15). Persists via BranchManager.setRequireReview
+      // through the existing saveMetadata path.
+      context.subscriptions.push(
+        vscode.commands.registerCommand('versioncon.setBranchRequireReview', async () => {
+          // Admin gate — canCreateBranch is the v1 admin proxy (06-SPEC.md).
+          if (!permissions.canCreateBranch(currentMemberId)) {
+            void vscode.window.showErrorMessage(
+              'VersionCon: Only admins can change the require-review setting.',
+            );
+            return;
+          }
+          const branches = branchManager.listBranches();
+          if (branches.length === 0) {
+            void vscode.window.showInformationMessage('No branches available.');
+            return;
+          }
+          const branchItem = await vscode.window.showQuickPick(
+            branches.map(b => ({
+              label: b.name,
+              description: b.requireReview
+                ? '(currently requires review)'
+                : '(no review required)',
+            })),
+            { placeHolder: 'Select a branch' },
+          );
+          if (!branchItem) return;
+          const choice = await vscode.window.showQuickPick(
+            [
+              { label: 'Yes — require review before merging into this branch', value: true },
+              { label: 'No  — allow merges without review',                    value: false },
+            ],
+            { placeHolder: `Require review for merges into "${branchItem.label}"?` },
+          );
+          if (!choice) return;
+          try {
+            await branchManager.setRequireReview(branchItem.label, choice.value);
+            if (activeBranchListProvider) activeBranchListProvider.refresh();
+            void vscode.window.showInformationMessage(
+              `VersionCon: ${branchItem.label} ${
+                choice.value ? 'now requires' : 'no longer requires'
+              } review before merges.`,
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Failed to update require-review';
             void vscode.window.showErrorMessage(`VersionCon: ${msg}`);
           }
         }),
@@ -2450,6 +2528,29 @@ export function activate(context: vscode.ExtensionContext): void {
             const allowed = targetInfo.lockedPushers?.includes(currentMemberId) ?? false;
             if (!allowed && currentMemberId !== hostMemberId) {
               void vscode.window.showErrorMessage(`Branch "${targetItem.label}" is locked. You cannot merge into it.`);
+              return;
+            }
+          }
+
+          // 3c. Phase 6 Plan 06-05 — requireReview gate (same shape as the
+          // full-merge mergeBranch entry point above).
+          if (activePushHistoryFull) {
+            const gate = await checkRequireReviewGate(
+              sourceItem.label, targetItem.label,
+              { branchManager, pushHistory: activePushHistoryFull, reviewState },
+            );
+            if (!gate.allow) {
+              void vscode.window.showErrorMessage(`VersionCon: ${gate.reason}`);
+              if (activeHost) {
+                activeHost.appendAndBroadcastSystemEvent(
+                  'review-resolved',
+                  `Merge blocked: needs review approval — ${sourceItem.label} → ${targetItem.label}`,
+                  Date.now(),
+                  { branch: targetItem.label },
+                  currentSelfMemberId,
+                  currentSelfDisplayName,
+                );
+              }
               return;
             }
           }
@@ -2531,6 +2632,29 @@ export function activate(context: vscode.ExtensionContext): void {
             const allowed = targetInfo.lockedPushers?.includes(currentMemberId) ?? false;
             if (!allowed && currentMemberId !== hostMemberId) {
               void vscode.window.showErrorMessage(`Branch "${targetItem.label}" is locked. You cannot merge into it.`);
+              return;
+            }
+          }
+
+          // Phase 6 Plan 06-05 — requireReview gate (same shape as the other
+          // two merge entry points; gate runs BEFORE any file enumeration).
+          if (activePushHistoryFull) {
+            const gate = await checkRequireReviewGate(
+              sourceItem.label, targetItem.label,
+              { branchManager, pushHistory: activePushHistoryFull, reviewState },
+            );
+            if (!gate.allow) {
+              void vscode.window.showErrorMessage(`VersionCon: ${gate.reason}`);
+              if (activeHost) {
+                activeHost.appendAndBroadcastSystemEvent(
+                  'review-resolved',
+                  `Merge blocked: needs review approval — ${sourceItem.label} → ${targetItem.label}`,
+                  Date.now(),
+                  { branch: targetItem.label },
+                  currentSelfMemberId,
+                  currentSelfDisplayName,
+                );
+              }
               return;
             }
           }

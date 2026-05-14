@@ -235,6 +235,11 @@
         "command": "versioncon.openReview",
         "title": "VersionCon: Open Review",
         "category": "VersionCon"
+      },
+      {
+        "command": "versioncon.setBranchRequireReview",
+        "title": "VersionCon: Set Branch Require-Review",
+        "category": "VersionCon"
       }
     ],
     "menus": {

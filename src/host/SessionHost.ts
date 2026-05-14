@@ -1479,7 +1479,20 @@ export class SessionHost implements SessionEventEmitter {
     );
   }
 
-  private appendAndBroadcastSystemEvent(
+  /**
+   * Append a system event to the chat log and broadcast it to all members.
+   *
+   * Public visibility widened in Plan 06-05: extension.ts's three merge entry
+   * points (versioncon.mergeBranch / quickMergeFiles / structuredMergeBranch)
+   * call this from the activate IIFE when the requireReview gate blocks a
+   * merge, so the team sees the rejection in chat (REVIEW-04 / SC-3 /
+   * 06-SPEC.md). The host is the only legitimate caller of this method from
+   * outside the class — pin via the convention that ONLY SessionHost instance
+   * methods AND extension.ts (with an activeHost reference) construct system
+   * events. Other call sites would regress the "host is the trust authority
+   * for chat-log writes" posture (Plan 04-04 / T-04-04-04 invariant).
+   */
+  public appendAndBroadcastSystemEvent(
     subKind: SystemEventSubKind,
     body: string,
     timestamp: number,

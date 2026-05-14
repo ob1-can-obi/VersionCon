@@ -396,6 +396,45 @@ export class SessionClient implements SessionEventEmitter {
         break;
       }
 
+      // --- Phase 6: Review wire → typed events (Plan 06-03) ---
+      // Payload shapes match the wire shape exactly — no field renames.
+      // Identity + timestamps are host-stamped at relay (Plan 06-02,
+      // T-06-01 mitigation). SessionClient is a wire-to-event forwarder;
+      // it does not re-validate fields.
+
+      case 'review-opened':
+        this.emit('review-opened', { review: msg.review });
+        break;
+
+      case 'review-comment':
+        this.emit('review-comment', {
+          reviewId: msg.reviewId,
+          comment: msg.comment,
+        });
+        break;
+
+      case 'review-vote':
+        this.emit('review-vote', {
+          reviewId: msg.reviewId,
+          vote: msg.vote,
+        });
+        break;
+
+      case 'review-resolved':
+        this.emit('review-resolved', {
+          reviewId: msg.reviewId,
+          resolvedBy: msg.resolvedBy,
+          resolvedReason: msg.resolvedReason,
+        });
+        break;
+
+      case 'review-state-sync':
+        this.emit('review-state-sync', {
+          branch: msg.branch,
+          reviews: msg.reviews,
+        });
+        break;
+
       default:
         // Unknown message types are silently ignored
         break;

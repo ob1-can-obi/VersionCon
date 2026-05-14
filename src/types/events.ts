@@ -3,6 +3,11 @@ import type { PushFileEntry } from './push.js';
 import type { BranchInfo } from './branch.js';
 import type { ChatRecord, PresenceInfo } from './chat.js';
 import type { AffectedSymbol } from '../ast/types.js';
+import type {
+  ReviewRequest,
+  ReviewComment,
+  ReviewVoteRecord,
+} from './review.js';
 
 // All session lifecycle events
 export interface SessionEventMap {
@@ -45,6 +50,24 @@ export interface SessionEventMap {
   'chat-history': { branch: string; records: ChatRecord[] };
   /** A remote member's active editor or branch changed; client updates the presence tree. */
   'presence-update': PresenceInfo;
+  // Phase 6 (Plan 06-03): Inline code review client events. SessionClient
+  // routes the matching wire types into these typed events. Payload shapes
+  // are identity-mapped from the wire frames Wave 1 declared — no field
+  // renames needed.
+  /** Author opened a review on a push. */
+  'review-opened': { review: ReviewRequest };
+  /** Reviewer left a line-level comment on an open review. */
+  'review-comment': { reviewId: string; comment: ReviewComment };
+  /** Reviewer approved / requested changes / left a commented-only marker. */
+  'review-vote': { reviewId: string; vote: ReviewVoteRecord };
+  /** Review closed by push author OR admin override. */
+  'review-resolved': {
+    reviewId: string;
+    resolvedBy: string;
+    resolvedReason: 'merged' | 'abandoned';
+  };
+  /** Host → client post-auth replay of all reviews for the active branch. */
+  'review-state-sync': { branch: string; reviews: ReviewRequest[] };
 }
 
 // Typed event key

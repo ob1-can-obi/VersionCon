@@ -139,8 +139,12 @@ suite('Phase 6 Wave 2 — SessionClient review routing (Plan 06-03)', () => {
       },
       () => {},
     );
-    assert.ok(received !== null);
-    assert.strictEqual(received!.vote.vote, 'changes-requested');
+    const got = received as unknown as {
+      reviewId: string;
+      vote: ReviewVoteRecord;
+    } | null;
+    assert.ok(got !== null);
+    assert.strictEqual(got!.vote.vote, 'changes-requested');
   });
 
   test('review-resolved wire → review-resolved event with all 3 fields', () => {
@@ -190,7 +194,13 @@ suite('Phase 6 Wave 2 — SessionClient review routing (Plan 06-03)', () => {
       },
       () => {},
     );
-    assert.strictEqual(received!.resolvedReason, 'abandoned');
+    const got = received as unknown as {
+      reviewId: string;
+      resolvedBy: string;
+      resolvedReason: 'merged' | 'abandoned';
+    } | null;
+    assert.ok(got !== null);
+    assert.strictEqual(got!.resolvedReason, 'abandoned');
   });
 
   test('review-state-sync wire → review-state-sync event with branch + reviews', () => {

@@ -24,8 +24,12 @@ import { PushHistory } from './filesystem/PushHistory.js';
 import { PushService } from './filesystem/PushService.js';
 import { SyncTracker } from './filesystem/SyncTracker.js';
 import { ChatLog } from './filesystem/ChatLog.js';
+import { ReviewStore } from './filesystem/ReviewStore.js';
+import { ReviewState } from './state/ReviewState.js';
+import { ReviewPanel } from './ui/ReviewPanel.js';
 import { AstAnalyzer } from './ast/AstAnalyzer.js';
 import { createTimestamp } from './network/protocol.js';
+import type { ReviewRequest, ReviewComment, ReviewVoteRecord } from './types/review.js';
 import { ActivityLogProvider } from './ui/ActivityLogProvider.js';
 import { PresenceTreeProvider } from './ui/PresenceTreeProvider.js';
 import { computeFileOverlap, getOpenTabPaths } from './utils/fileOverlap.js';
@@ -77,7 +81,17 @@ let activeHostIdentity: HostIdentity | null = null;
 // services into a freshly-created SessionHost. Set by the async IIFE after
 // permissions/pushHistory are loaded.
 let activePermissions: { canPushToBranch: (memberId: string, branchName: string) => boolean } | null = null;
+// Phase 3 narrow shape kept for host.setPushHistory. Phase 6 Plan 06-04 reads
+// the full PushHistory instance via activePushHistoryFull (typed below) so the
+// review panel command can look up PushRecord by id.
 let activePushHistory: { getLatestRecord: () => { id: string } | undefined } | null = null;
+// Phase 6 Plan 06-04: full PushHistory handle (mirrors activePushHistory but
+// exposes getRecord/getRecords). Constructed inside the workspace IIFE.
+let activePushHistoryFull: PushHistory | null = null;
+// Phase 6 Plan 06-04: workspace .versioncon dir resolved once per workspace.
+// Used by ReviewPanel.createOrShow + the openReview command to construct
+// snapshot URI paths.
+let activeVersionconDir: string | null = null;
 
 // Phase 4: provider singletons constructed once in activate() so wire helpers
 // (which run after the workspace IIFE) and outer-scope event handlers can both
@@ -129,6 +143,13 @@ let workspaceStateRef: WorkspaceState | null = null;
 // chat log. Null until the IIFE constructs it; remains null when no workspace
 // folder is open.
 let activeChatLog: ChatLog | null = null;
+// Phase 6 Plan 06-04: per-branch ReviewStore (host-side persistence) +
+// module-level ReviewState (client-side cache). The ReviewStore is wired
+// into activeHost.setReviewStore on session start + every branch switch.
+// The ReviewState is a single in-memory cache shared by every wire-event
+// listener (client + host) and read by ReviewPanel.refresh.
+let activeReviewStore: ReviewStore | null = null;
+let reviewState: ReviewState | null = null;
 
 /**
  * Phase 5 Plan 05-05 (SC-5): module-scope mirror of the host-side AstAnalyzer.
@@ -326,6 +347,235 @@ function updatePresenceContext(): void {
   void vscode.commands.executeCommand('setContext', 'versioncon.presence.alone', others.length === 0);
 }
 
+/**
+ * Phase 6 Plan 06-04: refresh the open ReviewPanel (if any) from the current
+ * module-level reviewState + the matching PushRecord (looked up via
+ * activePushHistoryFull, which may be null on first activation). No-op if no
+ * panel is open OR no reviewState is wired.
+ */
+function refreshReviewPanelIfOpen(): void {
+  const panel = ReviewPanel.currentPanel;
+  if (!panel || !reviewState) return;
+  const push = activePushHistoryFull?.getRecord(panel.scopedPushId);
+  panel.refresh(reviewState, push);
+}
+
+/**
+ * Phase 6 Plan 06-04: ReviewPanel routing callbacks. Routes vote/comment/
+ * resolve actions to either the active host (via handleLocalReview* helpers)
+ * or the active client (via SessionClient.sendMessage). Host-trusted
+ * identity override applies on both paths (T-06-01 mitigation).
+ */
+function buildReviewPanelCallbacks(): import('./ui/ReviewPanel.js').ReviewPanelCallbacks {
+  return {
+    onVoteRequested: (reviewId, vote) => {
+      const frame = {
+        type: 'review-vote' as const,
+        reviewId,
+        // Webview-originated frames carry EMPTY reviewerMemberId/displayName
+        // — the host (Plan 06-02 OWNER) overrides at relay. T-06-01.
+        vote: {
+          reviewerMemberId: '',
+          reviewerDisplayName: '',
+          vote,
+          votedAt: 0,
+        } as ReviewVoteRecord,
+        timestamp: 0,
+      };
+      if (activeHost) {
+        void activeHost.handleLocalReviewVote(frame);
+      } else if (activeClient) {
+        activeClient.sendMessage(frame);
+      } else {
+        void vscode.window.showWarningMessage(
+          'No active session — start or join one to vote.',
+        );
+      }
+    },
+    onCommentRequested: (reviewId, filePath, line, body) => {
+      const comment: ReviewComment = {
+        id: crypto.randomUUID(),
+        reviewId,
+        authorMemberId: '',          // host overrides — T-06-01
+        authorDisplayName: '',       // host overrides — T-06-01
+        filePath,
+        line,
+        body,
+        createdAt: 0,                // host stamps — T-06-01
+      };
+      const frame = {
+        type: 'review-comment' as const,
+        reviewId,
+        comment,
+        timestamp: 0,
+      };
+      if (activeHost) {
+        void activeHost.handleLocalReviewComment(frame);
+      } else if (activeClient) {
+        activeClient.sendMessage(frame);
+      } else {
+        void vscode.window.showWarningMessage(
+          'No active session — start or join one to comment.',
+        );
+      }
+    },
+    onResolveRequested: (reviewId, resolvedReason) => {
+      const frame = {
+        type: 'review-resolved' as const,
+        reviewId,
+        resolvedBy: '',              // host overrides — T-06-01
+        resolvedReason,
+        timestamp: 0,
+      };
+      if (activeHost) {
+        void activeHost.handleLocalReviewResolved(frame);
+      } else if (activeClient) {
+        activeClient.sendMessage(frame);
+      } else {
+        void vscode.window.showWarningMessage(
+          'No active session — start or join one to resolve.',
+        );
+      }
+    },
+    getSelfMemberId: () => currentSelfMemberId,
+    getHostMemberId: () => hostMemberId,
+  };
+}
+
+/**
+ * Phase 6 Plan 06-04: implementation for the versioncon.openReview command.
+ * Resolves the active branch + ReviewState + PushHistory, then either opens
+ * the panel for the supplied pushId OR shows a QuickPick of open reviews +
+ * "Open a new review on a recent push" options. If the user picks a push
+ * that has no existing ReviewRequest, this routes a fresh review-opened
+ * frame through the active session (host or client path).
+ */
+async function openReviewCommandImpl(
+  context: vscode.ExtensionContext,
+  argPushId: string | null,
+): Promise<void> {
+  const rs = reviewState;
+  if (!rs) {
+    void vscode.window.showErrorMessage(
+      'VersionCon: review state not initialized — open a workspace folder first.',
+    );
+    return;
+  }
+  const versionconDir = activeVersionconDir;
+  if (!versionconDir) {
+    void vscode.window.showErrorMessage(
+      'VersionCon: open a workspace folder before opening a review.',
+    );
+    return;
+  }
+  const branch = currentBranchName ?? 'main';
+  const pushHistory = activePushHistoryFull;
+
+  // Resolve target pushId.
+  interface ReviewPickItem extends vscode.QuickPickItem {
+    pickKind: 'existing' | 'open-new';
+    pushIdValue: string;
+  }
+  let targetPushId: string | null = argPushId;
+  if (!targetPushId) {
+    const items: ReviewPickItem[] = [];
+    for (const r of rs.getReviewsForBranch(branch)) {
+      if (r.status === 'resolved' || r.status === 'abandoned') continue;
+      items.push({
+        pickKind: 'existing',
+        pushIdValue: r.pushId,
+        label: `$(comment-discussion) ${r.authorDisplayName} — push ${r.pushId.substring(0, 7)}`,
+        description: r.status,
+      });
+    }
+    if (pushHistory) {
+      for (const p of pushHistory.getRecords()) {
+        if (p.branch !== branch || p.memberId !== currentSelfMemberId) continue;
+        if (rs.getActiveReviewForPush(p.id)) continue;
+        items.push({
+          pickKind: 'open-new',
+          pushIdValue: p.id,
+          label: `$(add) Open a review on push ${p.id.substring(0, 7)}`,
+          description: `${p.files.length} files`,
+          detail: p.message,
+        });
+      }
+    }
+    if (items.length === 0) {
+      void vscode.window.showInformationMessage(
+        'No open reviews on this branch, and you have no pushes available to start a review on.',
+      );
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(items, {
+      placeHolder: 'Select a review to open, or start a new one on your push',
+    });
+    if (!picked) return;
+    if (picked.pickKind === 'open-new') {
+      await routeOpenReviewFor(picked.pushIdValue, branch);
+    }
+    targetPushId = picked.pushIdValue;
+  } else if (!rs.getReviewByPushId(targetPushId)) {
+    // Direct pushId arg but no review exists yet — gate to author + offer to open.
+    const record = pushHistory?.getRecord(targetPushId);
+    if (record && record.memberId === currentSelfMemberId) {
+      const confirm = await vscode.window.showInformationMessage(
+        `Open a review on push ${targetPushId.substring(0, 7)}?`,
+        'Open Review',
+        'Cancel',
+      );
+      if (confirm !== 'Open Review') return;
+      await routeOpenReviewFor(targetPushId, branch);
+    } else {
+      void vscode.window.showWarningMessage(
+        'No review exists for that push yet, and only the push author can open one.',
+      );
+      return;
+    }
+  }
+
+  if (!targetPushId) return;
+  const pushRecord = pushHistory?.getRecord(targetPushId);
+
+  const panel = ReviewPanel.createOrShow(
+    context,
+    targetPushId,
+    versionconDir,
+    buildReviewPanelCallbacks(),
+  );
+  panel.setScopedBranch(branch);
+  panel.refresh(rs, pushRecord);
+}
+
+/**
+ * Route a fresh review-opened wire frame through the active session for the
+ * given pushId. Best-effort: if no session is active, surface a warning and
+ * return. The host (Plan 06-02 OWNER) re-validates author identity at relay.
+ */
+async function routeOpenReviewFor(pushId: string, branch: string): Promise<void> {
+  const review: ReviewRequest = {
+    id: crypto.randomUUID(),
+    pushId,
+    branch,
+    authorMemberId: '',           // host overrides — T-06-01
+    authorDisplayName: '',        // host overrides — T-06-01
+    openedAt: 0,                  // host stamps — T-06-01
+    status: 'open',
+    votes: [],
+    comments: [],
+  };
+  const frame = { type: 'review-opened' as const, review, timestamp: 0 };
+  if (activeHost) {
+    await activeHost.handleLocalReviewOpen(frame);
+  } else if (activeClient) {
+    activeClient.sendMessage(frame);
+  } else {
+    void vscode.window.showWarningMessage(
+      'No active session — start or join one to open a review.',
+    );
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   // --- Core services ---
   const sessionHistory = new SessionHistory(context);
@@ -345,6 +595,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider('versioncon.presence', presenceTreeProvider),
     vscode.window.registerTreeDataProvider('versioncon.activityLog', activityLogProvider),
   );
+
+  // --- Phase 6 Plan 06-04: module-level ReviewState cache. Constructed once
+  // per extension activation; fed by both wireClientEvents (joiner path) and
+  // wireHostEvents (host path) when their respective ReviewState-touching
+  // wire frames arrive. Read by ReviewPanel.refresh on every review-* event.
+  reviewState = new ReviewState();
 
   // --- Phase 4.3 (SC-5): local-changes status-bar indicator ---
   // Constructed BEFORE the workspace IIFE so the watcher wiring inside the
@@ -521,6 +777,25 @@ export function activate(context: vscode.ExtensionContext): void {
         },
       });
     }),
+  );
+
+  // --- Phase 6 Plan 06-04: versioncon.openReview command ---
+  // Two invocation paths:
+  //   - No arg: QuickPick over reviews from ReviewState.getReviewsForBranch
+  //     (filtered to status !== 'resolved' / 'abandoned'), with a "Start a
+  //     new review on a recent push" option for the current user's pushes
+  //     that don't yet have one.
+  //   - With pushId arg: open the panel directly for that pushId. If no
+  //     ReviewRequest yet exists for the pushId, prompt the user to open
+  //     one (only allowed if they are the push author per 06-SPEC.md
+  //     "Author opens it" locked decision).
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      'versioncon.openReview',
+      (argPushId?: string) => {
+        void openReviewCommandImpl(context, typeof argPushId === 'string' ? argPushId : null);
+      },
+    ),
   );
 
   // Phase 4 (Plan 04-11): versioncon.manageChat — five-action QuickPick per
@@ -872,6 +1147,49 @@ export function activate(context: vscode.ExtensionContext): void {
     host.on('member-left', (data: { memberId: string }) => {
       presenceTreeProvider?.removeMember(data.memberId);
       updatePresenceContext();
+    });
+
+    // ----- Phase 6 Plan 06-04: review event wiring (host path) -----
+    // The host's own process also needs ReviewState updates so its
+    // ReviewPanel reflects events that originated on peer joiners (the host
+    // does not receive its own broadcasts over the wire). Mirrors the
+    // chat-message-amend echo pattern.
+
+    host.on('review-state-sync', (data) => {
+      if (!reviewState) return;
+      reviewState.applyStateSync(data.branch, data.reviews);
+      refreshReviewPanelIfOpen();
+    });
+
+    host.on('review-opened', (data) => {
+      if (!reviewState) return;
+      reviewState.applyOpened(data.review);
+      if (ReviewPanel.currentPanel?.scopedPushId === data.review.pushId) {
+        refreshReviewPanelIfOpen();
+      }
+    });
+
+    host.on('review-comment', (data) => {
+      if (!reviewState) return;
+      reviewState.applyComment(data.reviewId, data.comment);
+      refreshReviewPanelIfOpen();
+    });
+
+    host.on('review-vote', (data) => {
+      if (!reviewState) return;
+      reviewState.applyVote(data.reviewId, data.vote);
+      refreshReviewPanelIfOpen();
+    });
+
+    host.on('review-resolved', (data) => {
+      if (!reviewState) return;
+      reviewState.applyResolved(
+        data.reviewId,
+        data.resolvedBy,
+        data.resolvedReason,
+        Date.now(),
+      );
+      refreshReviewPanelIfOpen();
     });
 
     host.on('session-ended', () => {
@@ -1235,6 +1553,48 @@ export function activate(context: vscode.ExtensionContext): void {
       for (const r of data.records) clientChatRecords.push(r);
       ChatPanel.currentPanel?.setHistory(clientChatRecords.slice());
     });
+
+    // ----- Phase 6 Plan 06-04: review event wiring (client path) -----
+    // 5 listeners forwarding into ReviewState.apply* + ReviewPanel.refresh.
+    // T-06-05 wire-source trust: these events fire only from SessionClient.
+    // handleMessage which is fed by the single host ws — no peer-to-peer path.
+
+    client.on('review-state-sync', (data) => {
+      if (!reviewState) return;
+      reviewState.applyStateSync(data.branch, data.reviews);
+      refreshReviewPanelIfOpen();
+    });
+
+    client.on('review-opened', (data) => {
+      if (!reviewState) return;
+      reviewState.applyOpened(data.review);
+      if (ReviewPanel.currentPanel?.scopedPushId === data.review.pushId) {
+        refreshReviewPanelIfOpen();
+      }
+    });
+
+    client.on('review-comment', (data) => {
+      if (!reviewState) return;
+      reviewState.applyComment(data.reviewId, data.comment);
+      refreshReviewPanelIfOpen();
+    });
+
+    client.on('review-vote', (data) => {
+      if (!reviewState) return;
+      reviewState.applyVote(data.reviewId, data.vote);
+      refreshReviewPanelIfOpen();
+    });
+
+    client.on('review-resolved', (data) => {
+      if (!reviewState) return;
+      reviewState.applyResolved(
+        data.reviewId,
+        data.resolvedBy,
+        data.resolvedReason,
+        Date.now(),
+      );
+      refreshReviewPanelIfOpen();
+    });
   }
 
   // --- Commands ---
@@ -1360,10 +1720,11 @@ export function activate(context: vscode.ExtensionContext): void {
       // the currently-active host (if any) immediately.
       activePermissions = permissions;
       activePushHistory = pushHistory;
-      if (activeHost) {
-        activeHost.setPermissions(permissions);
-        activeHost.setPushHistory(pushHistory);
-      }
+      // Phase 6 Plan 06-04: also expose the full handle + versionconDir so the
+      // openReview command (registered at activate scope) can look up
+      // PushRecord by id and construct snapshot URIs.
+      activePushHistoryFull = pushHistory;
+      activeVersionconDir = versionconDir;
 
       const branchProvider = new BranchTreeProvider(fsLayer);
       branchProvider.setBranchDir(activeBranchDir);
@@ -1384,6 +1745,26 @@ export function activate(context: vscode.ExtensionContext): void {
       await activeChatLog.load();
       if (activeHost) {
         activeHost.setChatLog(activeChatLog, activeBranchName);
+      }
+
+      // Phase 6 Plan 06-04: construct + load the active branch's ReviewStore
+      // and wire it into the host. Mirrors the activeChatLog wiring above.
+      // load() walks .versioncon/branches/{branch}/reviews/*.json; missing dir
+      // is treated as empty so first-launch is safe. The store is wired into
+      // the host so review-* relay handlers can persist mutations.
+      activeReviewStore = new ReviewStore(versionconDir);
+      await activeReviewStore.load(activeBranchName);
+      if (activeHost) {
+        activeHost.setReviewStore(activeReviewStore, activeBranchName);
+      }
+      // Seed the in-memory ReviewState cache from disk so the host's own
+      // ReviewPanel can render reviews persisted from prior sessions before
+      // any wire frames arrive.
+      if (reviewState) {
+        reviewState.applyStateSync(
+          activeBranchName,
+          activeReviewStore.getAll().filter(r => r.branch === activeBranchName),
+        );
       }
 
       // Phase 5 Plan 05-05 (SC-5): construct the host-side AST analyzer once
@@ -1923,6 +2304,19 @@ export function activate(context: vscode.ExtensionContext): void {
           await activeChatLog.load();
           if (activeHost) {
             activeHost.setChatLog(activeChatLog, selected.label);
+          }
+          // Phase 6 Plan 06-04: review store is per-branch too — rebuild for
+          // the new branch and re-wire into the host.
+          activeReviewStore = new ReviewStore(versionconDir);
+          await activeReviewStore.load(selected.label);
+          if (activeHost) {
+            activeHost.setReviewStore(activeReviewStore, selected.label);
+          }
+          if (reviewState) {
+            reviewState.applyStateSync(
+              selected.label,
+              activeReviewStore.getAll().filter(r => r.branch === selected.label),
+            );
           }
           sendPresenceUpdate(vscode.window.activeTextEditor);
           void vscode.window.showInformationMessage(`Switched to branch "${selected.label}".`);

@@ -538,330 +538,39 @@ export class SessionHost implements SessionEventEmitter {
           // Exclude sender — they already know their own active editor.
           this.broadcast(sanitized, memberId);
         } else if (msg.type === 'review-opened') {
-          // T-06-01: server-trusted author override + host-stamped openedAt.
-          // Drop silently if reviewStore not wired or msg.review is malformed
-          // — same posture as parseMessage null-return.
-          if (!this.reviewStore) return;
-          if (!msg.review || typeof msg.review !== 'object') return;
-          if (typeof msg.review.pushId !== 'string' || msg.review.pushId.length === 0) return;
-          if (typeof msg.review.id !== 'string' || msg.review.id.length === 0) return;
-          if (typeof msg.review.branch !== 'string' || msg.review.branch.length === 0) return;
+          // Plan 06-04: extracted into processReviewOpened so the public
+          // handleLocalReviewOpen helper can reuse the same body.
           const cm = this.members.get(memberId);
           if (!cm) return;
-          const displayName = cm.member.displayName;
-          const stampedTs = createTimestamp();
-          // Supersede: if a non-resolved ReviewRequest already exists for
-          // this pushId, close it first with status:'abandoned'. This is the
-          // "re-push supersedes" rule from 06-SPEC.md frontmatter.
-          const prior = this.reviewStore.getReview(msg.review.pushId);
-          if (prior && prior.status !== 'resolved' && prior.status !== 'abandoned') {
-            const abandoned: ReviewRequest = {
-              ...prior,
-              status: 'abandoned',
-              resolvedAt: stampedTs,
-              resolvedBy: memberId,
-              resolvedReason: 'abandoned',
-            };
-            try {
-              await this.reviewStore.upsertRequest(abandoned);
-            } catch (err) {
-              console.error('[SessionHost] review-opened prior-abandon persist failed', err);
-            }
-          }
-          // T-06-01: host-trusted construction. Defensive: clamp
-          // votes/comments — a misbehaving client could pre-populate the
-          // request with fake entries. By contract, "open" arrives empty.
-          const sanitized: ReviewRequest = {
-            ...msg.review,
-            authorMemberId: memberId,
-            authorDisplayName: displayName,
-            openedAt: stampedTs,
-            status: 'open',
-            votes: [],
-            comments: [],
-          };
-          try {
-            await this.reviewStore.upsertRequest(sanitized);
-          } catch (err) {
-            console.error('[SessionHost] review-opened persist failed', err);
-            return; // don't broadcast a state we couldn't persist
-          }
-          this.broadcast({ type: 'review-opened', timestamp: stampedTs, review: sanitized });
-          const shortId = sanitized.pushId.substring(0, 7);
-          this.appendAndBroadcastSystemEvent(
-            'review-opened',
-            `${displayName} opened a review on push ${shortId}`,
-            stampedTs,
-            { pushId: sanitized.pushId, branch: sanitized.branch },
-            memberId,
-            displayName,
-          );
+          await this.processReviewOpened(memberId, cm.member.displayName, msg);
         } else if (msg.type === 'review-comment') {
-          // T-06-01 + T-06-03 + T-06-04 (partial) — author override,
-          // rate-limit, 500-cap, path-traversal gate.
-          //
-          // Frame-level shape checks run synchronously before the per-review
-          // serializer kicks in — malformed frames must not enqueue a no-op
-          // onto the chain (would block legitimate concurrent comments).
-          if (!this.reviewStore) return;
-          if (!msg.comment || typeof msg.comment !== 'object') return;
-          if (typeof msg.reviewId !== 'string' || msg.reviewId.length === 0) return;
-          if (typeof msg.comment.body !== 'string'
-              || msg.comment.body.length === 0
-              || msg.comment.body.length > 16_384) return;
-          const safePath = this.validateRelativePath(msg.comment.filePath);
-          if (safePath === null) return;
-          if (typeof msg.comment.line !== 'number'
-              || !Number.isInteger(msg.comment.line)
-              || msg.comment.line < 1
-              || msg.comment.line > 1_000_000) return;
-
+          // Plan 06-04: extracted into processReviewComment so the public
+          // handleLocalReviewComment helper can reuse the same body.
           const cmComment = this.members.get(memberId);
           if (!cmComment) return;
-          const displayNameComment = cmComment.member.displayName;
-
-          // Capture frame-level values for the serialized op (avoid closures
-          // over `msg` which has narrow-after-await pitfalls). Capture
-          // memberId into a string-typed local so TS sees the narrowed type
-          // inside the async callback (memberId itself remains `string | null`
-          // in the enclosing closure for the auth-timeout path).
-          const reviewId = msg.reviewId;
-          const commentBody = msg.comment.body;
-          const commentLine = msg.comment.line;
-          const commentIdIn = msg.comment.id;
-          const senderId: string = memberId;
-
-          // Per-review write chain — Rule 1 fix for concurrent comment writes
-          // overwriting each other's baseline. See enqueueReviewWrite docs.
-          await this.enqueueReviewWrite(reviewId, async () => {
-            const reviewStore = this.reviewStore;
-            if (!reviewStore) return;
-            const allReviews = reviewStore.getAll();
-            const parent = allReviews.find(r => r.id === reviewId);
-            if (!parent) return;
-            const stampedTsComment = createTimestamp();
-
-            // T-06-03 hard cap (per-review) — read-then-check INSIDE the
-            // serialized section so the 501st concurrent comment is correctly
-            // rejected.
-            if (parent.comments.length >= SessionHost.REVIEW_COMMENT_CAP) {
-              sendMessage((d) => cmComment.ws.send(d), {
-                type: 'error',
-                code: 'REVIEW_COMMENT_CAP',
-                message: `Review has reached the ${SessionHost.REVIEW_COMMENT_CAP}-comment cap.`,
-                timestamp: stampedTsComment,
-              });
-              return;
-            }
-            // T-06-03 rate-limit (per-member sliding 60s window) — also
-            // INSIDE the serialized section because checkReviewCommentRate
-            // mutates state and concurrent callers from the same member
-            // would otherwise race.
-            if (!this.checkReviewCommentRate(senderId, stampedTsComment)) {
-              sendMessage((d) => cmComment.ws.send(d), {
-                type: 'error',
-                code: 'REVIEW_RATE_LIMIT',
-                message: `You can post at most ${SessionHost.REVIEW_COMMENT_RATE_PER_MIN} review comments per minute.`,
-                timestamp: stampedTsComment,
-              });
-              return;
-            }
-
-            const sanitizedComment = {
-              id: typeof commentIdIn === 'string' && commentIdIn.length > 0
-                ? commentIdIn : crypto.randomUUID(),
-              reviewId: parent.id,
-              authorMemberId: senderId,
-              authorDisplayName: displayNameComment,
-              filePath: safePath,
-              line: commentLine,
-              body: commentBody,
-              createdAt: stampedTsComment,
-            };
-            const updated: ReviewRequest = {
-              ...parent,
-              comments: [...parent.comments, sanitizedComment],
-            };
-            try {
-              await reviewStore.upsertRequest(updated);
-            } catch (err) {
-              console.error('[SessionHost] review-comment persist failed', err);
-              return;
-            }
-            this.broadcast({
-              type: 'review-comment',
-              timestamp: stampedTsComment,
-              reviewId: parent.id,
-              comment: sanitizedComment,
-            });
-            const shortIdComment = parent.pushId.substring(0, 7);
-            this.appendAndBroadcastSystemEvent(
-              'review-comment',
-              `${displayNameComment} commented on push ${shortIdComment} (${safePath}:${commentLine})`,
-              stampedTsComment,
-              { pushId: parent.pushId, branch: parent.branch },
-              senderId,
-              displayNameComment,
-            );
-          });
+          await this.processReviewComment(
+            memberId,
+            cmComment.member.displayName,
+            cmComment.ws,
+            msg,
+          );
         } else if (msg.type === 'review-vote') {
-          // T-06-01: server-trusted reviewer override + host-stamped votedAt.
-          if (!this.reviewStore) return;
-          if (!msg.vote || typeof msg.vote !== 'object') return;
-          if (typeof msg.reviewId !== 'string' || msg.reviewId.length === 0) return;
-          if (msg.vote.vote !== 'approved'
-              && msg.vote.vote !== 'changes-requested'
-              && msg.vote.vote !== 'commented') return;
+          // Plan 06-04: extracted into processReviewVote so the public
+          // handleLocalReviewVote helper can reuse the same body.
           const cmVote = this.members.get(memberId);
           if (!cmVote) return;
-          const displayNameVote = cmVote.member.displayName;
-          const voteKind = msg.vote.vote;
-          const voteReviewId = msg.reviewId;
-          const voterId: string = memberId;
-
-          await this.enqueueReviewWrite(voteReviewId, async () => {
-            const reviewStore = this.reviewStore;
-            if (!reviewStore) return;
-            const allReviews = reviewStore.getAll();
-            const parent = allReviews.find(r => r.id === voteReviewId);
-            if (!parent) return;
-            if (parent.status === 'resolved' || parent.status === 'abandoned') return;
-            const stampedTsVote = createTimestamp();
-            const sanitizedVote = {
-              reviewerMemberId: voterId,
-              reviewerDisplayName: displayNameVote,
-              vote: voteKind,
-              votedAt: stampedTsVote,
-            };
-            // Dedupe by reviewerMemberId — latest vote wins.
-            const otherVotes = parent.votes.filter(v => v.reviewerMemberId !== voterId);
-            const newVotes = [...otherVotes, sanitizedVote];
-            // Status transition rules (standard PR-review semantics):
-            //   - any 'changes-requested' vote → status='changes-requested'
-            //   - else if at least one 'approved' vote → status='approved'
-            //   - else (commented-only or no votes) → status remains 'open'
-            let newStatus = parent.status;
-            if (newVotes.some(v => v.vote === 'changes-requested')) {
-              newStatus = 'changes-requested';
-            } else if (newVotes.some(v => v.vote === 'approved')) {
-              newStatus = 'approved';
-            } else {
-              newStatus = 'open';
-            }
-            const updated: ReviewRequest = { ...parent, votes: newVotes, status: newStatus };
-            try {
-              await reviewStore.upsertRequest(updated);
-            } catch (err) {
-              console.error('[SessionHost] review-vote persist failed', err);
-              return;
-            }
-            this.broadcast({
-              type: 'review-vote',
-              timestamp: stampedTsVote,
-              reviewId: parent.id,
-              vote: sanitizedVote,
-            });
-            const shortIdVote = parent.pushId.substring(0, 7);
-            const subKindVote: SystemEventSubKind =
-              voteKind === 'approved' ? 'review-approved' :
-              voteKind === 'changes-requested' ? 'review-changes-requested' :
-              'review-comment';
-            const verb =
-              voteKind === 'approved' ? 'approved' :
-              voteKind === 'changes-requested' ? 'requested changes on' :
-              'commented on';
-            this.appendAndBroadcastSystemEvent(
-              subKindVote,
-              `${displayNameVote} ${verb} the review of push ${shortIdVote}`,
-              stampedTsVote,
-              { pushId: parent.pushId, branch: parent.branch },
-              voterId,
-              displayNameVote,
-            );
-          });
+          await this.processReviewVote(memberId, cmVote.member.displayName, msg);
         } else if (msg.type === 'review-resolved') {
-          // Permission gate (06-SPEC.md frontmatter line 15 locked decision):
-          //   - push author can resolve their own review (merged | abandoned)
-          //   - admin (canCreateBranch === true) can OVERRIDE
-          //     'changes-requested' to 'merged' — emits an additional
-          //     chat-logged justification system event
-          if (!this.reviewStore) return;
-          if (typeof msg.reviewId !== 'string' || msg.reviewId.length === 0) return;
-          if (msg.resolvedReason !== 'merged' && msg.resolvedReason !== 'abandoned') return;
+          // Plan 06-04: extracted into processReviewResolved so the public
+          // handleLocalReviewResolved helper can reuse the same body.
           const cmResolve = this.members.get(memberId);
           if (!cmResolve) return;
-          const displayNameResolve = cmResolve.member.displayName;
-          const resolveReviewId = msg.reviewId;
-          const resolveReason = msg.resolvedReason;
-          const resolverId: string = memberId;
-
-          await this.enqueueReviewWrite(resolveReviewId, async () => {
-            const reviewStore = this.reviewStore;
-            if (!reviewStore) return;
-            const allReviews = reviewStore.getAll();
-            const parent = allReviews.find(r => r.id === resolveReviewId);
-            if (!parent) return;
-            if (parent.status === 'resolved' || parent.status === 'abandoned') return;
-            const stampedTsResolve = createTimestamp();
-
-            const isAuthor = resolverId === parent.authorMemberId;
-            const isAdminOverride =
-              !isAuthor &&
-              this.permissions?.canCreateBranch?.(resolverId) === true &&
-              parent.status === 'changes-requested' &&
-              resolveReason === 'merged';
-            if (!isAuthor && !isAdminOverride) {
-              sendMessage((d) => cmResolve.ws.send(d), {
-                type: 'error',
-                code: 'REVIEW_PERMISSION_DENIED',
-                message: 'Only the push author can resolve their review (admins can override changes-requested to merged).',
-                timestamp: stampedTsResolve,
-              });
-              return;
-            }
-            const updated: ReviewRequest = {
-              ...parent,
-              status: 'resolved',
-              resolvedBy: resolverId,
-              resolvedAt: stampedTsResolve,
-              resolvedReason: resolveReason,
-            };
-            try {
-              await reviewStore.upsertRequest(updated);
-            } catch (err) {
-              console.error('[SessionHost] review-resolved persist failed', err);
-              return;
-            }
-            this.broadcast({
-              type: 'review-resolved',
-              timestamp: stampedTsResolve,
-              reviewId: parent.id,
-              resolvedBy: resolverId,
-              resolvedReason: resolveReason,
-            });
-            const shortIdResolve = parent.pushId.substring(0, 7);
-            this.appendAndBroadcastSystemEvent(
-              'review-resolved',
-              `${displayNameResolve} resolved the review of push ${shortIdResolve} (${resolveReason})`,
-              stampedTsResolve,
-              { pushId: parent.pushId, branch: parent.branch },
-              resolverId,
-              displayNameResolve,
-            );
-            // Admin-override secondary system event — makes the override
-            // visible to all members per 06-SPEC.md "chat-logged
-            // justification" requirement.
-            if (isAdminOverride) {
-              this.appendAndBroadcastSystemEvent(
-                'review-resolved',
-                `${displayNameResolve} OVERRODE changes-requested for review of push ${shortIdResolve} — merged`,
-                stampedTsResolve,
-                { pushId: parent.pushId, branch: parent.branch },
-                resolverId,
-                displayNameResolve,
-              );
-            }
-          });
+          await this.processReviewResolved(
+            memberId,
+            cmResolve.member.displayName,
+            cmResolve.ws,
+            msg,
+          );
         } else if (msg.type === 'sync-request') {
           // PUSH-09 reconnect path: respond with empty files (snapshot is
           // delivered out-of-band) plus the latest push id so the client can
@@ -1385,6 +1094,389 @@ export class SessionHost implements SessionEventEmitter {
     stamps.push(nowMs);
     this.reviewCommentTimestamps.set(memberId, stamps);
     return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 6 Plan 06-04: review-* processors shared between the onmessage
+  // wire path and the public handleLocalReview* helpers.
+  //
+  // The wire path resolves memberId + displayName from this.members; the
+  // local path resolves them from this.hostMemberId + this.hostDisplayName.
+  // Both paths funnel into the SAME processReview* helper so identity
+  // override + persistence + system-event broadcast + rate-limit + cap
+  // checks have a single source of truth (T-06-01 enforced; T-06-03 cap
+  // applies to host-as-actor too, per the "host is just another member"
+  // trust model from Plan 04-04).
+  // ---------------------------------------------------------------------------
+
+  private async processReviewOpened(
+    memberId: string,
+    displayName: string,
+    msg: ProtocolMessage & { type: 'review-opened' },
+  ): Promise<void> {
+    if (!this.reviewStore) return;
+    if (!msg.review || typeof msg.review !== 'object') return;
+    if (typeof msg.review.pushId !== 'string' || msg.review.pushId.length === 0) return;
+    if (typeof msg.review.id !== 'string' || msg.review.id.length === 0) return;
+    if (typeof msg.review.branch !== 'string' || msg.review.branch.length === 0) return;
+    const stampedTs = createTimestamp();
+    // Supersede: prior non-resolved review on same pushId is closed with
+    // status:'abandoned' (06-SPEC.md frontmatter "re-push supersedes" rule).
+    const prior = this.reviewStore.getReview(msg.review.pushId);
+    if (prior && prior.status !== 'resolved' && prior.status !== 'abandoned') {
+      const abandoned: ReviewRequest = {
+        ...prior,
+        status: 'abandoned',
+        resolvedAt: stampedTs,
+        resolvedBy: memberId,
+        resolvedReason: 'abandoned',
+      };
+      try {
+        await this.reviewStore.upsertRequest(abandoned);
+      } catch (err) {
+        console.error('[SessionHost] review-opened prior-abandon persist failed', err);
+      }
+    }
+    // T-06-01 sanitize. By contract "open" arrives empty; clamp defensively.
+    const sanitized: ReviewRequest = {
+      ...msg.review,
+      authorMemberId: memberId,
+      authorDisplayName: displayName,
+      openedAt: stampedTs,
+      status: 'open',
+      votes: [],
+      comments: [],
+    };
+    try {
+      await this.reviewStore.upsertRequest(sanitized);
+    } catch (err) {
+      console.error('[SessionHost] review-opened persist failed', err);
+      return;
+    }
+    this.broadcast({ type: 'review-opened', timestamp: stampedTs, review: sanitized });
+    // Plan 06-04: also emit a typed event so extension.ts can mirror the
+    // review into the host's own ReviewState cache + refresh the host's
+    // open ReviewPanel. The host does NOT receive its own wire broadcast —
+    // mirrors the chat-message-amend echo pattern at SessionHost line 1657.
+    this.emit('review-opened', { review: sanitized });
+    const shortId = sanitized.pushId.substring(0, 7);
+    this.appendAndBroadcastSystemEvent(
+      'review-opened',
+      `${displayName} opened a review on push ${shortId}`,
+      stampedTs,
+      { pushId: sanitized.pushId, branch: sanitized.branch },
+      memberId,
+      displayName,
+    );
+  }
+
+  private async processReviewComment(
+    memberId: string,
+    displayName: string,
+    ws: WebSocket | null,
+    msg: ProtocolMessage & { type: 'review-comment' },
+  ): Promise<void> {
+    if (!this.reviewStore) return;
+    if (!msg.comment || typeof msg.comment !== 'object') return;
+    if (typeof msg.reviewId !== 'string' || msg.reviewId.length === 0) return;
+    if (typeof msg.comment.body !== 'string'
+        || msg.comment.body.length === 0
+        || msg.comment.body.length > 16_384) return;
+    const safePath = this.validateRelativePath(msg.comment.filePath);
+    if (safePath === null) return;
+    if (typeof msg.comment.line !== 'number'
+        || !Number.isInteger(msg.comment.line)
+        || msg.comment.line < 1
+        || msg.comment.line > 1_000_000) return;
+
+    const reviewId = msg.reviewId;
+    const commentBody = msg.comment.body;
+    const commentLine = msg.comment.line;
+    const commentIdIn = msg.comment.id;
+
+    await this.enqueueReviewWrite(reviewId, async () => {
+      const reviewStore = this.reviewStore;
+      if (!reviewStore) return;
+      const allReviews = reviewStore.getAll();
+      const parent = allReviews.find(r => r.id === reviewId);
+      if (!parent) return;
+      const stampedTs = createTimestamp();
+
+      if (parent.comments.length >= SessionHost.REVIEW_COMMENT_CAP) {
+        if (ws) {
+          sendMessage((d) => ws.send(d), {
+            type: 'error',
+            code: 'REVIEW_COMMENT_CAP',
+            message: `Review has reached the ${SessionHost.REVIEW_COMMENT_CAP}-comment cap.`,
+            timestamp: stampedTs,
+          });
+        }
+        return;
+      }
+      if (!this.checkReviewCommentRate(memberId, stampedTs)) {
+        if (ws) {
+          sendMessage((d) => ws.send(d), {
+            type: 'error',
+            code: 'REVIEW_RATE_LIMIT',
+            message: `You can post at most ${SessionHost.REVIEW_COMMENT_RATE_PER_MIN} review comments per minute.`,
+            timestamp: stampedTs,
+          });
+        }
+        return;
+      }
+
+      const sanitizedComment = {
+        id: typeof commentIdIn === 'string' && commentIdIn.length > 0
+          ? commentIdIn : crypto.randomUUID(),
+        reviewId: parent.id,
+        authorMemberId: memberId,
+        authorDisplayName: displayName,
+        filePath: safePath,
+        line: commentLine,
+        body: commentBody,
+        createdAt: stampedTs,
+      };
+      const updated: ReviewRequest = {
+        ...parent,
+        comments: [...parent.comments, sanitizedComment],
+      };
+      try {
+        await reviewStore.upsertRequest(updated);
+      } catch (err) {
+        console.error('[SessionHost] review-comment persist failed', err);
+        return;
+      }
+      this.broadcast({
+        type: 'review-comment',
+        timestamp: stampedTs,
+        reviewId: parent.id,
+        comment: sanitizedComment,
+      });
+      this.emit('review-comment', { reviewId: parent.id, comment: sanitizedComment });
+      const shortId = parent.pushId.substring(0, 7);
+      this.appendAndBroadcastSystemEvent(
+        'review-comment',
+        `${displayName} commented on push ${shortId} (${safePath}:${commentLine})`,
+        stampedTs,
+        { pushId: parent.pushId, branch: parent.branch },
+        memberId,
+        displayName,
+      );
+    });
+  }
+
+  private async processReviewVote(
+    memberId: string,
+    displayName: string,
+    msg: ProtocolMessage & { type: 'review-vote' },
+  ): Promise<void> {
+    if (!this.reviewStore) return;
+    if (!msg.vote || typeof msg.vote !== 'object') return;
+    if (typeof msg.reviewId !== 'string' || msg.reviewId.length === 0) return;
+    if (msg.vote.vote !== 'approved'
+        && msg.vote.vote !== 'changes-requested'
+        && msg.vote.vote !== 'commented') return;
+    const voteKind = msg.vote.vote;
+    const reviewId = msg.reviewId;
+
+    await this.enqueueReviewWrite(reviewId, async () => {
+      const reviewStore = this.reviewStore;
+      if (!reviewStore) return;
+      const allReviews = reviewStore.getAll();
+      const parent = allReviews.find(r => r.id === reviewId);
+      if (!parent) return;
+      if (parent.status === 'resolved' || parent.status === 'abandoned') return;
+      const stampedTs = createTimestamp();
+      const sanitizedVote = {
+        reviewerMemberId: memberId,
+        reviewerDisplayName: displayName,
+        vote: voteKind,
+        votedAt: stampedTs,
+      };
+      const otherVotes = parent.votes.filter(v => v.reviewerMemberId !== memberId);
+      const newVotes = [...otherVotes, sanitizedVote];
+      // Status transition rules (mirrored by client ReviewState.applyVote):
+      //   - any 'changes-requested' vote → status='changes-requested'
+      //   - else if any 'approved' vote → status='approved'
+      //   - else ('commented' alone) → status='open'
+      let newStatus = parent.status;
+      if (newVotes.some(v => v.vote === 'changes-requested')) {
+        newStatus = 'changes-requested';
+      } else if (newVotes.some(v => v.vote === 'approved')) {
+        newStatus = 'approved';
+      } else {
+        newStatus = 'open';
+      }
+      const updated: ReviewRequest = { ...parent, votes: newVotes, status: newStatus };
+      try {
+        await reviewStore.upsertRequest(updated);
+      } catch (err) {
+        console.error('[SessionHost] review-vote persist failed', err);
+        return;
+      }
+      this.broadcast({
+        type: 'review-vote',
+        timestamp: stampedTs,
+        reviewId: parent.id,
+        vote: sanitizedVote,
+      });
+      this.emit('review-vote', { reviewId: parent.id, vote: sanitizedVote });
+      const shortId = parent.pushId.substring(0, 7);
+      const subKind: SystemEventSubKind =
+        voteKind === 'approved' ? 'review-approved' :
+        voteKind === 'changes-requested' ? 'review-changes-requested' :
+        'review-comment';
+      const verb =
+        voteKind === 'approved' ? 'approved' :
+        voteKind === 'changes-requested' ? 'requested changes on' :
+        'commented on';
+      this.appendAndBroadcastSystemEvent(
+        subKind,
+        `${displayName} ${verb} the review of push ${shortId}`,
+        stampedTs,
+        { pushId: parent.pushId, branch: parent.branch },
+        memberId,
+        displayName,
+      );
+    });
+  }
+
+  private async processReviewResolved(
+    memberId: string,
+    displayName: string,
+    ws: WebSocket | null,
+    msg: ProtocolMessage & { type: 'review-resolved' },
+  ): Promise<void> {
+    if (!this.reviewStore) return;
+    if (typeof msg.reviewId !== 'string' || msg.reviewId.length === 0) return;
+    if (msg.resolvedReason !== 'merged' && msg.resolvedReason !== 'abandoned') return;
+    const reviewId = msg.reviewId;
+    const resolveReason = msg.resolvedReason;
+
+    await this.enqueueReviewWrite(reviewId, async () => {
+      const reviewStore = this.reviewStore;
+      if (!reviewStore) return;
+      const allReviews = reviewStore.getAll();
+      const parent = allReviews.find(r => r.id === reviewId);
+      if (!parent) return;
+      if (parent.status === 'resolved' || parent.status === 'abandoned') return;
+      const stampedTs = createTimestamp();
+
+      const isAuthor = memberId === parent.authorMemberId;
+      const isAdminOverride =
+        !isAuthor &&
+        this.permissions?.canCreateBranch?.(memberId) === true &&
+        parent.status === 'changes-requested' &&
+        resolveReason === 'merged';
+      if (!isAuthor && !isAdminOverride) {
+        if (ws) {
+          sendMessage((d) => ws.send(d), {
+            type: 'error',
+            code: 'REVIEW_PERMISSION_DENIED',
+            message: 'Only the push author can resolve their review (admins can override changes-requested to merged).',
+            timestamp: stampedTs,
+          });
+        }
+        return;
+      }
+      const updated: ReviewRequest = {
+        ...parent,
+        status: 'resolved',
+        resolvedBy: memberId,
+        resolvedAt: stampedTs,
+        resolvedReason: resolveReason,
+      };
+      try {
+        await reviewStore.upsertRequest(updated);
+      } catch (err) {
+        console.error('[SessionHost] review-resolved persist failed', err);
+        return;
+      }
+      this.broadcast({
+        type: 'review-resolved',
+        timestamp: stampedTs,
+        reviewId: parent.id,
+        resolvedBy: memberId,
+        resolvedReason: resolveReason,
+      });
+      this.emit('review-resolved', {
+        reviewId: parent.id,
+        resolvedBy: memberId,
+        resolvedReason: resolveReason,
+      });
+      const shortId = parent.pushId.substring(0, 7);
+      this.appendAndBroadcastSystemEvent(
+        'review-resolved',
+        `${displayName} resolved the review of push ${shortId} (${resolveReason})`,
+        stampedTs,
+        { pushId: parent.pushId, branch: parent.branch },
+        memberId,
+        displayName,
+      );
+      if (isAdminOverride) {
+        this.appendAndBroadcastSystemEvent(
+          'review-resolved',
+          `${displayName} OVERRODE changes-requested for review of push ${shortId} — merged`,
+          stampedTs,
+          { pushId: parent.pushId, branch: parent.branch },
+          memberId,
+          displayName,
+        );
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 6 Plan 06-04: public handleLocalReview* helpers — invoked by the
+  // host's own extension.ts when the host clicks vote/comment/resolve in the
+  // ReviewPanel. The host is not in this.members (host identity lives in
+  // this.hostMemberId + this.hostDisplayName), so each helper routes the
+  // shared processReview* with the host's identity stamped onto the override
+  // fields. Each helper is fire-and-forget from the caller's perspective;
+  // failures are swallowed in the same way as the wire path (T-04-04 chat-
+  // log-null-tolerant posture extended to review-*).
+  // ---------------------------------------------------------------------------
+
+  async handleLocalReviewOpen(
+    msg: ProtocolMessage & { type: 'review-opened' },
+  ): Promise<void> {
+    await this.processReviewOpened(
+      this.hostMemberId ?? 'host',
+      this.hostDisplayName,
+      msg,
+    );
+  }
+
+  async handleLocalReviewComment(
+    msg: ProtocolMessage & { type: 'review-comment' },
+  ): Promise<void> {
+    await this.processReviewComment(
+      this.hostMemberId ?? 'host',
+      this.hostDisplayName,
+      null,
+      msg,
+    );
+  }
+
+  async handleLocalReviewVote(
+    msg: ProtocolMessage & { type: 'review-vote' },
+  ): Promise<void> {
+    await this.processReviewVote(
+      this.hostMemberId ?? 'host',
+      this.hostDisplayName,
+      msg,
+    );
+  }
+
+  async handleLocalReviewResolved(
+    msg: ProtocolMessage & { type: 'review-resolved' },
+  ): Promise<void> {
+    await this.processReviewResolved(
+      this.hostMemberId ?? 'host',
+      this.hostDisplayName,
+      null,
+      msg,
+    );
   }
 
   private appendAndBroadcastSystemEvent(

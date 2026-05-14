@@ -28,6 +28,7 @@ import { ReviewStore } from './filesystem/ReviewStore.js';
 import { ReviewState } from './state/ReviewState.js';
 import { checkRequireReviewGate } from './state/requireReviewGate.js';
 import { ReviewPanel } from './ui/ReviewPanel.js';
+import { registerInlineCommentsForReview } from './ui/inlineReviewComments.js';
 import { AstAnalyzer } from './ast/AstAnalyzer.js';
 import { createTimestamp } from './network/protocol.js';
 import type { ReviewRequest, ReviewComment, ReviewVoteRecord } from './types/review.js';
@@ -151,6 +152,16 @@ let activeChatLog: ChatLog | null = null;
 // listener (client + host) and read by ReviewPanel.refresh.
 let activeReviewStore: ReviewStore | null = null;
 let reviewState: ReviewState | null = null;
+// Phase 6 Plan 06-05: per-open-review vscode.CommentController + its per-thread
+// disposables. Constructed when versioncon.openReview opens a panel for a
+// pushId; disposed when the ReviewPanel disposes (via addOwnedDisposable) OR
+// when the openReview command opens a different pushId. activeReviewController
+// is null when no ReviewPanel is open. activeReviewThreadDisposables tracks
+// the per-thread disposables for full-rebuild-on-refresh semantics — when a
+// new review-comment lands, we dispose existing threads and re-populate.
+let activeReviewController: vscode.CommentController | null = null;
+let activeReviewThreadDisposables: vscode.Disposable[] = [];
+let activeReviewPushIdForController: string | null = null;
 
 /**
  * Phase 5 Plan 05-05 (SC-5): module-scope mirror of the host-side AstAnalyzer.
@@ -362,6 +373,42 @@ function refreshReviewPanelIfOpen(): void {
 }
 
 /**
+ * Phase 6 Plan 06-05: rebuild the inline CommentController threads from the
+ * current review snapshot. Full rebuild on every refresh — disposes existing
+ * thread disposables, then re-registers via registerInlineCommentsForReview.
+ * Bounded by host's 500-comment-per-review cap (Plan 06-02), so the cost is
+ * negligible. No-op when no controller is active OR no panel matches.
+ */
+function rebuildInlineReviewComments(): void {
+  const panel = ReviewPanel.currentPanel;
+  if (!panel || !activeReviewController || !reviewState) return;
+  if (activeReviewPushIdForController !== panel.scopedPushId) return;
+  const review =
+    reviewState.getActiveReviewForPush(panel.scopedPushId)
+      ?? reviewState.getReviewByPushId(panel.scopedPushId);
+  if (!review) return;
+  const branch = currentBranchName ?? review.branch;
+  if (!activeVersionconDir) return;
+  const branchDir = path.join(activeVersionconDir, 'branches', branch);
+  // Dispose prior threads before re-populating.
+  for (const d of activeReviewThreadDisposables) {
+    try { d.dispose(); } catch { /* ignore */ }
+  }
+  activeReviewThreadDisposables = registerInlineCommentsForReview(
+    activeReviewController,
+    review,
+    branchDir,
+    (filePath, line, body) => {
+      // Reuse the existing onCommentRequested wire path so replies travel the
+      // same identity-override + rate-limit + 500-cap pipeline as the panel
+      // composer (Plan 06-02 OWNER).
+      const callbacks = buildReviewPanelCallbacks();
+      callbacks.onCommentRequested(review.id, filePath, line, body);
+    },
+  );
+}
+
+/**
  * Phase 6 Plan 06-04: ReviewPanel routing callbacks. Routes vote/comment/
  * resolve actions to either the active host (via handleLocalReview* helpers)
  * or the active client (via SessionClient.sendMessage). Host-trusted
@@ -546,6 +593,46 @@ async function openReviewCommandImpl(
   );
   panel.setScopedBranch(branch);
   panel.refresh(rs, pushRecord);
+
+  // Phase 6 Plan 06-05 — construct + attach the per-review CommentController
+  // alongside the panel. Disposed via panel.addOwnedDisposable so the inline
+  // gutter UI tears down when the user closes the review.
+  // If a controller is already active for a different pushId, dispose it
+  // (singleton invariant mirrors ReviewPanel.currentPanel).
+  if (
+    activeReviewController
+    && activeReviewPushIdForController !== targetPushId
+  ) {
+    for (const d of activeReviewThreadDisposables) {
+      try { d.dispose(); } catch { /* ignore */ }
+    }
+    activeReviewThreadDisposables = [];
+    try { activeReviewController.dispose(); } catch { /* ignore */ }
+    activeReviewController = null;
+    activeReviewPushIdForController = null;
+  }
+  if (!activeReviewController) {
+    activeReviewController = vscode.comments.createCommentController(
+      `versioncon.review.${targetPushId}`,
+      `Review: push ${targetPushId.substring(0, 7)}`,
+    );
+    activeReviewPushIdForController = targetPushId;
+    // Owned by the panel — closing the panel disposes the controller too.
+    // Wrap in a synthetic Disposable that ALSO clears the module-level
+    // refs so a subsequent openReview can construct a fresh controller.
+    panel.addOwnedDisposable({
+      dispose: () => {
+        for (const d of activeReviewThreadDisposables) {
+          try { d.dispose(); } catch { /* ignore */ }
+        }
+        activeReviewThreadDisposables = [];
+        try { activeReviewController?.dispose(); } catch { /* ignore */ }
+        activeReviewController = null;
+        activeReviewPushIdForController = null;
+      },
+    });
+  }
+  rebuildInlineReviewComments();
 }
 
 /**
@@ -795,6 +882,58 @@ export function activate(context: vscode.ExtensionContext): void {
       'versioncon.openReview',
       (argPushId?: string) => {
         void openReviewCommandImpl(context, typeof argPushId === 'string' ? argPushId : null);
+      },
+    ),
+  );
+
+  // --- Phase 6 Plan 06-05: versioncon.review.replyToComment command ---
+  // Invoked by VS Code's built-in "Reply" UI on a CommentThread when
+  // thread.canReply === true. The CommentReply carries the thread's URI +
+  // range; we map back to {filePath, line} relative to the active branch
+  // dir and forward through the same wire-frame path as the panel composer
+  // (host-trusted identity override applies — T-06-01 mitigation in Plan 06-02).
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      'versioncon.review.replyToComment',
+      (reply: vscode.CommentReply) => {
+        if (!reply || !reply.thread || typeof reply.text !== 'string') return;
+        if (!activeVersionconDir || !reviewState) {
+          void vscode.window.showWarningMessage(
+            'VersionCon: review state not initialized.',
+          );
+          return;
+        }
+        const panel = ReviewPanel.currentPanel;
+        if (!panel) {
+          void vscode.window.showWarningMessage(
+            'VersionCon: open the review panel to reply.',
+          );
+          return;
+        }
+        const review =
+          reviewState.getActiveReviewForPush(panel.scopedPushId)
+            ?? reviewState.getReviewByPushId(panel.scopedPushId);
+        if (!review) {
+          void vscode.window.showWarningMessage(
+            'VersionCon: no active review for this push.',
+          );
+          return;
+        }
+        const branch = currentBranchName ?? review.branch;
+        const branchDir = path.join(activeVersionconDir, 'branches', branch);
+        const filePath = path
+          .relative(branchDir, reply.thread.uri.fsPath)
+          .replace(/\\/g, '/');
+        const range = reply.thread.range;
+        if (!range) {
+          void vscode.window.showWarningMessage(
+            'VersionCon: thread has no line range — cannot reply.',
+          );
+          return;
+        }
+        const line = range.start.line + 1;
+        const callbacks = buildReviewPanelCallbacks();
+        callbacks.onCommentRequested(review.id, filePath, line, reply.text);
       },
     ),
   );
@@ -1160,6 +1299,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!reviewState) return;
       reviewState.applyStateSync(data.branch, data.reviews);
       refreshReviewPanelIfOpen();
+      rebuildInlineReviewComments();
     });
 
     host.on('review-opened', (data) => {
@@ -1167,6 +1307,7 @@ export function activate(context: vscode.ExtensionContext): void {
       reviewState.applyOpened(data.review);
       if (ReviewPanel.currentPanel?.scopedPushId === data.review.pushId) {
         refreshReviewPanelIfOpen();
+        rebuildInlineReviewComments();
       }
     });
 
@@ -1174,6 +1315,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!reviewState) return;
       reviewState.applyComment(data.reviewId, data.comment);
       refreshReviewPanelIfOpen();
+      rebuildInlineReviewComments();
     });
 
     host.on('review-vote', (data) => {
@@ -1564,6 +1706,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!reviewState) return;
       reviewState.applyStateSync(data.branch, data.reviews);
       refreshReviewPanelIfOpen();
+      rebuildInlineReviewComments();
     });
 
     client.on('review-opened', (data) => {
@@ -1571,6 +1714,7 @@ export function activate(context: vscode.ExtensionContext): void {
       reviewState.applyOpened(data.review);
       if (ReviewPanel.currentPanel?.scopedPushId === data.review.pushId) {
         refreshReviewPanelIfOpen();
+        rebuildInlineReviewComments();
       }
     });
 
@@ -1578,6 +1722,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!reviewState) return;
       reviewState.applyComment(data.reviewId, data.comment);
       refreshReviewPanelIfOpen();
+      rebuildInlineReviewComments();
     });
 
     client.on('review-vote', (data) => {

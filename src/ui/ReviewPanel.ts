@@ -297,6 +297,18 @@ export class ReviewPanel {
   }
 
   /**
+   * Phase 6 Plan 06-05: register an external disposable into this panel's
+   * cleanup chain. Used by extension.ts to link the per-review
+   * vscode.CommentController + its per-thread disposables to the panel's
+   * lifecycle, so closing the ReviewPanel automatically tears down the
+   * inline comment surface. Mirrors the chat-panel's owned-disposable
+   * pattern without exposing the disposables array directly.
+   */
+  addOwnedDisposable(d: vscode.Disposable): void {
+    this.disposables.push(d);
+  }
+
+  /**
    * Build the webview HTML. Reads dist/webview/review/index.html (copied by
    * esbuild's review-assets onEnd plugin), replaces the 5 placeholders with
    * runtime values + a fresh nonce.

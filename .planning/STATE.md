@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-05-04)
 
 ## Current Position
 
-Phase: 06 (inline-code-review) — COMPLETE
-Plan: 5 of 5 (Phase 6 feature-complete)
-Status: Phase 6 done; ready for /gsd-verify-work 6 or Phase 7 planning
-Next: /gsd-verify-work 6 — UAT pass against the 4 SCs from 06-SPEC.md, OR /gsd-plan-phase 7 (Cloud Mode + Relay Server)
-Last activity: 2026-05-14 -- Phase 06 (Inline Code Review) shipped autonomously; 5 plans, 824 → 867 passing (+43 tests in Wave 4)
+Phase: 07 (cloud-mode-relay-server) — CONTEXT GATHERED
+Plan: 0 of TBD (ready for /gsd-plan-phase 7)
+Status: Phase 7 context locked; STATE.md operational-model blocker resolved
+Next: /gsd-plan-phase 7 — research + plan implementation
+Last activity: 2026-05-17 -- Phase 7 discussion complete; CONTEXT.md written with self-host/Fly.io/JWT/host-as-client-to-relay decisions, L3+L4 deferred to future security phase with seams shipped
 
 Progress: [██████████] 96%
 
@@ -152,7 +152,7 @@ None yet.
 - [Phase 4 UAT 2026-05-11]: 3 blocker gaps surfaced during multi-window UAT (999.3 peer presence propagation, 999.4 displayName "You" fallback, 999.5 joiner onboarding) — all CLOSED same-day inline at commit a420eb5. Tests 2-6 unblocked; retest pending. Test suite at 350 passing.
 - [Phase 2]: Cross-webview drag-and-drop VS Code 1.90+ regression (issue #256444) requires a throwaway spike before full UI implementation
 - [Phase 5]: tree-sitter-java and tree-sitter-cpp WASM compatibility with web-tree-sitter@0.26 — partially mitigated via SC-3 fallback path. Phase 5 ships Java + C++ adapters that register the language IDs and route to FallbackAdapter (line-level diff, no AST). Real grammars deferred to Phase 5.x. Adding them later is a one-WASM-plus-one-adapter PR; the AstFactory seam is in place.
-- [Phase 7]: Cloud relay operational model (hosting platform, cost model, self-host option) is not yet decided — needs decision before Phase 7 planning
+- [Phase 7]: ~~Cloud relay operational model not yet decided~~ — RESOLVED 2026-05-17 via /gsd-discuss-phase 7. Self-host only for v1, Fly.io primary deploy target, Docker image works anywhere. L3 E2E + L4 enterprise deferred to a future dedicated security phase (architectural seams shipped in Phase 7). See `.planning/phases/07-cloud-mode-relay-server/07-CONTEXT.md`.
 - [Phase 8]: VS Code MCP API is new (2025) — McpStdioServerDefinition vs McpHttpServerDefinition tradeoffs need research during Phase 8 planning
 
 ### Quick Tasks Completed

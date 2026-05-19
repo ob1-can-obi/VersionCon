@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 7 Wave 1 COMPLETE — 07-01 (Transport seam), 07-02 (CloudEnvelope), 07-03 (TokenService — jose-backed HS256 JWT) all shipped. 892 / 0 / 66 tests passing (+8 from 07-03's 'Phase 7 — token service' suite). src/auth/TokenService.ts exports TokenService (newSecret/issue/verify) + TokenClaims; algorithm-confusion defense enforced via `algorithms: ['HS256']` literal + source-grep gate; relay-portable (zero VS Code imports). NOTE: jose pinned at ^5.10.0 instead of planned ^6.2.3 because jose@6 is ESM-only and the extension compiles to CJS — API surface identical (Rule 3 deviation, see 07-03-SUMMARY.md). Wave 2 unblocked.
-last_updated: "2026-05-19T05:15:00.000Z"
-last_activity: 2026-05-19 -- Plan 07-03 complete; TokenService + 8-case suite shipped (commits 25ff180 + 9935789 RED + c3c2bf8 GREEN); Wave 1 done (3/3 plans)
+stopped_at: Phase 7 Wave 2 STARTED — 07-04 (CloudTransport) shipped. 906 / 0 / 66 tests passing (+14 from new 'Phase 7 — cloud transport' suite). src/network/CloudTransport.ts implements ClientTransport (07-01 drop-in alongside LanClientTransport) with Bearer-header auth (T-07-03), CloudEnvelope wrap/unwrap (07-02), maxPayload 1 MiB (T-07-08), close-code → state mapping (4404 → session-not-found terminal, 1006 → relay-unreachable + reconnect, 1000 → disconnected), ReconnectManager reuse from heartbeat.ts (Pattern C — no hand-rolled backoff). Three-commit chain: da144cb RED + a5beef9 GREEN + 11086f4 REFACTOR. CloudTransport is byte-shape-only and relay-portable (zero vscode/UI imports). Wave 2 in progress; 07-05 / 07-06 / 07-07 unblocked.
+last_updated: "2026-05-19T05:24:30.000Z"
+last_activity: 2026-05-19 -- Plan 07-04 complete; CloudTransport + 14-case suite shipped (commits da144cb RED + a5beef9 GREEN + 11086f4 REFACTOR); Wave 2 1/4 plans done
 progress:
   total_phases: 13
   completed_phases: 5
   total_plans: 59
-  completed_plans: 47
-  percent: 80
+  completed_plans: 48
+  percent: 81
 ---
 
 # Project State
@@ -25,21 +25,21 @@ See: .planning/PROJECT.md (updated 2026-05-04)
 
 ## Current Position
 
-Phase: 07 (cloud-mode-relay-server) — EXECUTING (Wave 1 COMPLETE)
-Plan: 3 of 13 done (07-01 ✓, 07-02 ✓, 07-03 ✓; Wave 2 next)
-Status: Wave 1 fully shipped. TokenService is the L1 security foundation — host issuer + (future relay) verifier share one module. 892 tests pass cleanly. Wave 2 plans (07-04 CloudTransport, 07-05 wizard cloud step, 07-06 join + UriHandler, 07-07 status bar) can begin.
-Next: /gsd-execute-phase 7 — run 07-04 (CloudTransport outbound WSS + envelope wrap + ReconnectManager reuse)
-Last activity: 2026-05-19 -- /gsd-execute-phase 7 plan 07-03 complete (TokenService + 8-case suite; jose@^5.10.0 due to ESM/CJS); commits 25ff180 + 9935789 + c3c2bf8
+Phase: 07 (cloud-mode-relay-server) — EXECUTING (Wave 2 IN PROGRESS)
+Plan: 4 of 13 done (07-01 ✓, 07-02 ✓, 07-03 ✓, 07-04 ✓; 07-05 / 07-06 / 07-07 unblocked)
+Status: Wave 2 started. CloudTransport (07-04) is the byte-shape seam that lets SessionClient flip from LAN to cloud — outbound WSS, Bearer-header JWT, CloudEnvelope wrap/unwrap, 4-state lifecycle (connected/session-not-found/relay-unreachable/disconnected), ReconnectManager reuse. 906 tests pass (892 + 14 new). 07-05 (wizard cloud step), 07-06 (join + UriHandler), 07-07 (StatusBarManager) can begin.
+Next: /gsd-execute-phase 7 — run 07-05 (wizard cloud step) OR 07-06 (join + UriHandler) OR 07-07 (StatusBarManager) — all three are parallel-ready
+Last activity: 2026-05-19 -- /gsd-execute-phase 7 plan 07-04 complete (CloudTransport + 14-case suite); commits da144cb + a5beef9 + 11086f4
 
-Progress: [██████████] 97%
+Progress: [██████████] 98%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 18
-- Average duration: 4.7 min
-- Total execution time: 1.44 hours
+- Total plans completed: 19
+- Average duration: 4.8 min
+- Total execution time: 1.57 hours
 
 **By Phase:**
 
@@ -50,8 +50,8 @@ Progress: [██████████] 97%
 
 **Recent Trend:**
 
-- Last 5 plans: 07-03 (~6 min — TokenService + 8-case JWT test suite), 07-01 (~30 min — surgical refactor of two ~2000-line controllers), 07-02 (CloudEnvelope), 06-05 (Wave 4 mandatory review gate), 06-04 (ReviewPanel UI)
-- Trend: 07-03 is the smallest Phase-7 plan (~145-line test + 76-line module + dep bump). One Rule 3 deviation (jose ESM/CJS — version bump-down 6.x → 5.x with identical API) and one Rule 2 (role post-check). Asymmetric RED is by design — rejection-only tests use no error matcher so the suite survives jose minor-version upgrades. 892 tests pass (884 + 8 new).
+- Last 5 plans: 07-04 (~8 min — CloudTransport + 14-case suite incl. StubWebSocket + SpyReconnectManager helpers), 07-03 (~6 min — TokenService + 8-case JWT test suite), 07-01 (~30 min — surgical refactor of two ~2000-line controllers), 07-02 (CloudEnvelope), 06-05 (Wave 4 mandatory review gate)
+- Trend: 07-04 is a clean additive plan — zero modifications to existing files, two new files (~436 + ~592 LOC), three-commit TDD chain (RED + GREEN + REFACTOR). One Rule 1 deviation (maxPayload split between const decl + usage broke source-grep; inlined post-GREEN) and one Rule 1 inline-fix (JSDoc literal `?token=` substring caught by its own test). No Rule 2/3/4 deviations. 906 tests pass (892 + 14 new). Two-run flake check: identical.
 
 *Updated after each plan completion*
 
@@ -147,6 +147,11 @@ Recent decisions affecting current work:
 - [Plan 07-03]: verify() post-checks `payload.role ∈ {'host','member'}` and throws `'Missing role claim'` otherwise. jose's `jwtVerify` only checks signature + standard claims (iss/aud/exp) — custom claims like `role` aren't validated. Without this post-check a buggy or compromised issuer could mint tokens with `role: 'admin'` and they'd pass jose verification. Rule 2 defense-in-depth.
 - [Plan 07-03]: RS256 test feeds Node's KeyObject directly into `SignJWT.sign(privateKey)` — no `importPKCS8` round-trip needed. Confirmed jose 5.10.0 accepts `KeyObject` arguments for asymmetric signing keys. Plan 07-09 (relay verifier integration tests) can use the same shortcut to construct adversarial RS256 tokens for its own algorithm-confusion gate.
 - [Plan 07-03]: Rejection-test assertions use bare `assert.rejects(() => svc.verify(...))` with NO error matcher — survives jose minor-version upgrades that rename error classes (e.g. `JWTClaimValidationFailed`). Tradeoff: asymmetric RED phase (4 of 8 tests passed via stub-throw rejection in RED commit 9935789). Documented as design choice, not TDD violation.
+- [Plan 07-04]: `maxPayload: 1024 * 1024` inlined at the WebSocket construction site (NOT a module-level `MAX_PAYLOAD_BYTES` constant). Plan §Verification grep matches `maxPayload:\s*1024\s*\*\s*1024` AT THE CALL SITE — a named constant would split the grep between declaration and usage. Inlining keeps the T-07-08 mitigation auditable on one line. REFACTOR commit 11086f4 made the change post-GREEN.
+- [Plan 07-04]: Added narrow `ReconnectManagerLike` interface (scheduleReconnect + abort only) for the test-seam injection parameter. Production constructs `new ReconnectManager()` from heartbeat.ts (Pattern C reuse — source-grep gate enforced). Tests inject a `SpyReconnectManager` that structurally satisfies the narrow interface without implementing the full class — keeps the test fully synchronous and the spy ~15 LOC.
+- [Plan 07-04]: `markIntentionalClose()` is on the `CloudTransport` class but NOT widened onto the `ClientTransport` interface from 07-01. 07-01 deliberately did not add it (LAN semantics work via SessionClient.intentionalClose + transport.close()). Cloud mode adds it because ReconnectManager can schedule retries even after a code=1000 close in some edge cases. 07-06's SessionClient.disconnectInternal will downcast via `instanceof CloudTransport` to call it — 07-06's wiring problem, not this plan's.
+- [Plan 07-04]: Receive path re-serializes `env.payload` to `Buffer` (NOT a typed ProtocolMessage delivery). 07-01's `ClientTransport.onMessage` contract is `Buffer` so SessionClient's upstream `parseMessage(raw.toString())` is byte-identical for LAN and cloud. The JSON.stringify of an already-parsed object is microseconds and out of any hot path. Widening ClientTransport to accept ProtocolMessage directly would force a 07-01 refactor — defer.
+- [Plan 07-04]: SessionHost in cloud mode is an OPEN QUESTION deferred to 07-05. SessionHost's constructor expects `HostTransport` (many connections, server-side); CloudTransport implements `ClientTransport` (single connection, client-side). D-04 says host is "client to relay" — so 07-05 will need a `CloudHostAdapter implements HostTransport` that wraps a single CloudTransport and demultiplexes inbound envelopes by sender. This plan deliberately ships only the CloudTransport (07-04 scope); the adapter is 07-05b's call.
 
 ### Roadmap Evolution
 
@@ -190,7 +195,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-19T05:15:00Z
-Stopped at: Plan 07-03 (TokenService — jose-backed HS256 JWT) complete. Wave 1 done (3/3 plans: 07-01 Transport seam, 07-02 CloudEnvelope, 07-03 TokenService). 892 tests passing (884 + 8 new in 'Phase 7 — token service' suite); 0 failing; 66 pending. Three-commit chain: 25ff180 (skeleton + jose dep) + 9935789 (RED — 8-case suite) + c3c2bf8 (GREEN — issue+verify implemented). src/auth/TokenService.ts exports TokenService (newSecret/issue/verify) + TokenClaims; algorithm-confusion defense enforced via `algorithms: ['HS256']` literal + grep gate; no VS Code imports (relay-portable for plan 07-09). NOTE: jose pinned at ^5.10.0 (CJS-compatible) instead of planned ^6.2.3 (ESM-only) — API surface identical. Wave 2 (07-04 CloudTransport, 07-05 wizard cloud step, 07-06 join + UriHandler, 07-07 status bar) unblocked.
+Last session: 2026-05-19T05:24:30Z
+Stopped at: Plan 07-04 (CloudTransport) complete. Wave 2 1/4 plans done. 906 tests passing (892 + 14 new in 'Phase 7 — cloud transport' suite); 0 failing; 66 pending. Three-commit TDD chain: da144cb (RED — 14-case suite) + a5beef9 (GREEN — CloudTransport implementation) + 11086f4 (REFACTOR — inline maxPayload literal). src/network/CloudTransport.ts implements ClientTransport (drop-in alongside LanClientTransport from 07-01): outbound `wss://` with Authorization Bearer header (T-07-03 mitigation), maxPayload 1 MiB (T-07-08), CloudEnvelope wrap/unwrap (07-02), close-code → state mapping via exported `mapCloseCodeToState` (4404 → 'session-not-found' terminal, 1000 → 'disconnected', 1006/other → 'relay-unreachable' + reconnect), ReconnectManager reuse from heartbeat.ts (PATTERNS Pattern C — no hand-rolled Math.pow backoff; source-grep gate enforces). CloudTransport is byte-shape-only (zero msg.type discrimination) and relay-portable (zero vscode/UI imports). markIntentionalClose() public on CloudTransport but NOT widened onto ClientTransport. 07-05 (wizard cloud step), 07-06 (join + UriHandler), 07-07 (StatusBarManager — `onStateChange` returns the exact 4-tuple state union, ready) unblocked. 07-05b CloudHostAdapter (host-fanout) deferred for 07-05's discretion.
 Resume file: None
-Last activity: 2026-05-19 -- Plan 07-03 complete; Wave 1 fully shipped
+Last activity: 2026-05-19 -- Plan 07-04 complete; Wave 2 started

@@ -240,13 +240,26 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
               ws.close(4400, 'session-register-verify-secret-wrong-length');
               return;
             }
-            const registered = registry.register(
+            // Review HI-05: pass claims.sub as hostMemberId so the registry
+            // can bind host identity on first register and reject re-attach
+            // attempts whose JWT sub doesn't match.
+            const registerResult = registry.register(
               claims.aud,
               ws,
               new Uint8Array(verifySecret),
+              claims.sub,
             );
-            if (!registered) {
-              ws.close(4429, 'session-cap-reached');
+            if (!registerResult.ok) {
+              // Review HI-04 + HI-05: differentiated close codes per reason.
+              if (registerResult.reason === 'host-identity-mismatch') {
+                logger.warn({
+                  event: 'host-identity-mismatch',
+                  sessionId: claims.aud,
+                });
+                ws.close(4403, 'host-identity-mismatch');
+              } else {
+                ws.close(4429, 'session-cap-reached');
+              }
               return;
             }
             attachedSessionId = claims.aud;
@@ -266,9 +279,17 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
             ws.close(4400, 'session-id-aud-mismatch');
             return;
           }
+          // Review HI-04: differentiated close codes per reject reason.
           const attached = registry.attachMember(sid, claims.sub, ws);
-          if (!attached) {
-            ws.close(4429, 'attach-rejected');
+          if (!attached.ok) {
+            if (attached.reason === 'unknown-session') {
+              ws.close(4404, 'session-not-found');
+            } else if (attached.reason === 'grace-active') {
+              ws.close(4503, 'grace-period-active');
+            } else {
+              // member-cap
+              ws.close(4429, 'member-cap-reached');
+            }
             return;
           }
           attachedSessionId = sid;

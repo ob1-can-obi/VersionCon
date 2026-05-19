@@ -26,6 +26,20 @@
 import type { WebSocket } from 'ws';
 import * as limits from './limits.js';
 
+/**
+ * Review HI-05 + HI-04: discriminated result types for register() and
+ * attachMember(). Callers (server.ts) inspect `reason` to choose the WSS
+ * close code so the client surface (CloudTransport.mapCloseCodeToState)
+ * can distinguish terminal from retryable failures.
+ */
+export type RegisterResult =
+  | { ok: true }
+  | { ok: false; reason: 'session-cap' | 'host-identity-mismatch' };
+
+export type AttachMemberResult =
+  | { ok: true }
+  | { ok: false; reason: 'unknown-session' | 'grace-active' | 'member-cap' };
+
 export interface Session {
   sessionId: string;
   hostSocket: WebSocket | null;             // null during grace window after host detach
@@ -42,24 +56,66 @@ export class SessionRegistry {
   private readonly sessions: Map<string, Session> = new Map();
 
   /**
-   * Register a session with the given host socket. Returns `true` on success,
-   * `false` when the session cap (limits.canRegisterSession) is exceeded —
-   * caller (server.ts) closes the WSS with code 4429 on `false` (T-07-07).
+   * Register a session with the given host socket.
    *
-   * If a session for `sessionId` already exists with a live `hostSocket`, the
+   * Returns a discriminated result:
+   *   - `{ ok: true }` — register accepted (new session OR re-attach by the
+   *     original host identity).
+   *   - `{ ok: false, reason: 'session-cap' }` — global session cap reached.
+   *     Caller (server.ts) closes the WSS with code 4429.
+   *   - `{ ok: false, reason: 'host-identity-mismatch' }` — review HI-05:
+   *     attempt to re-attach with a JWT whose `sub` does NOT match the
+   *     original host's `sub`. The caller closes 4403 — this is a security
+   *     event, not a routing problem.
+   *
+   * If a session for `sessionId` already exists with a live `hostSocket` AND
+   * the supplied `hostMemberId` matches the originally-registered one, the
    * older host socket is closed (1008 host-replaced) — matches Phase 4.1's
-   * anti-spoof posture. If it exists with `hostSocket: null` (in a grace
-   * window — 07-10's host-drop grace timer), the new socket is promoted to
-   * host and the pending grace timer is cancelled via cancelGracePeriod().
-   * Re-attach does NOT count against the session cap.
+   * anti-spoof posture for a legitimate host reconnect from the same identity.
+   * If it exists with `hostSocket: null` (in a grace window — 07-10's
+   * host-drop grace timer), the new socket is promoted to host and the
+   * pending grace timer is cancelled via cancelGracePeriod(). Re-attach does
+   * NOT count against the session cap.
+   *
+   * Review HI-05 — hostMemberId binding: when the session is first registered,
+   * the supplied `hostMemberId` (= claims.sub of the host JWT) is captured
+   * on the Session record. Every subsequent register() call against the same
+   * sessionId MUST supply the same hostMemberId, or the call is rejected.
+   * This closes the "any host-role JWT bearer evicts the host AND rotates
+   * verifySecret" hijack: even if an attacker obtains a valid host-role JWT
+   * for the session (e.g. via XSS / leaked log line), their `sub` cannot
+   * match the registered hostMemberId, so the secret rotation is refused.
+   *
+   * Backwards-compat: callers that pass `undefined` for `hostMemberId` get
+   * the pre-HI-05 lenient behavior (no identity binding). The relay always
+   * passes `claims.sub` from the verified JWT (server.ts).
    *
    * The caller (server.ts via 07-09's auth) is responsible for verifying the
    * JWT `role` claim is `host` BEFORE calling this method. The registry
    * itself performs no auth.
    */
-  register(sessionId: string, hostSocket: WebSocket, verifySecret: Uint8Array): boolean {
+  register(
+    sessionId: string,
+    hostSocket: WebSocket,
+    verifySecret: Uint8Array,
+    hostMemberId?: string,
+  ): RegisterResult {
     const existing = this.sessions.get(sessionId);
     if (existing) {
+      // Review HI-05: identity gate on re-attach. The original hostMemberId
+      // was captured on first register; reject any subsequent register call
+      // whose claims.sub does not match. The pre-fix code allowed ANY valid
+      // host-role JWT to evict the current host and rotate verifySecret,
+      // which silently locked out joiners who held tokens signed by the old
+      // secret. Identity binding closes that hijack path.
+      if (
+        hostMemberId !== undefined &&
+        existing.hostMemberId !== undefined &&
+        existing.hostMemberId !== hostMemberId
+      ) {
+        return { ok: false, reason: 'host-identity-mismatch' };
+      }
+
       // Re-attach branch — does NOT count toward cap. Cancel any pending
       // grace timer and rebind the host slot.
       if (existing.hostSocket !== null) {
@@ -74,11 +130,17 @@ export class SessionRegistry {
       existing.hostSocket = hostSocket;
       existing.verifySecret = verifySecret;
       existing.lastActivity = Date.now();
-      return true;
+      // First-write-wins for hostMemberId — if the caller supplies it and
+      // the session record was created pre-HI-05 (or first register supplied
+      // undefined), capture it now so future re-attaches enforce the bind.
+      if (existing.hostMemberId === undefined && hostMemberId !== undefined) {
+        existing.hostMemberId = hostMemberId;
+      }
+      return { ok: true };
     }
     // New session — apply session cap (T-07-07).
     if (!limits.canRegisterSession(this.activeSessionCount())) {
-      return false;
+      return { ok: false, reason: 'session-cap' };
     }
     this.sessions.set(sessionId, {
       sessionId,
@@ -89,32 +151,57 @@ export class SessionRegistry {
       lastActivity: Date.now(),
       graceTimer: null,
       registeredAt: Date.now(),
+      hostMemberId,
     });
-    return true;
+    return { ok: true };
   }
 
   /**
-   * Attach a member socket to an existing session. Returns `true` on success,
-   * `false` on reject (caller closes the WSS with code 4429 or 4503).
+   * Attach a member socket to an existing session.
    *
-   * Reject conditions (07-10):
-   *   - Unknown sessionId — silent no-op, returns false (no auto-create;
-   *     a Phase 4.1 invariant violation prevention).
-   *   - Member cap (limits.canAttachMember) reached — T-07-13 mitigation,
-   *     caller closes with 4429.
-   *   - Session is in host-drop grace window (graceTimer !== null) — T-07-14
-   *     mitigation, caller closes with 4503 'grace-period-active'. New joiners
-   *     are rejected while existing members wait for the host to return.
+   * Returns a discriminated result:
+   *   - `{ ok: true }` — member attached.
+   *   - `{ ok: false, reason: 'unknown-session' }` — sessionId not in
+   *     registry (no auto-create). Caller closes 4404 'session-not-found'.
+   *     CloudTransport maps 4404 to terminal `session-not-found` state — no
+   *     reconnect, no retry storm.
+   *   - `{ ok: false, reason: 'grace-active' }` — session is in host-drop
+   *     grace window. Caller closes 4503 'grace-period-active'. The state
+   *     is transient — the host may return within the window, so the client
+   *     surface should permit a longer-backoff retry (HI-04 follow-up in
+   *     CloudTransport.mapCloseCodeToState).
+   *   - `{ ok: false, reason: 'member-cap' }` — limits.canAttachMember
+   *     rejected (T-07-13). Caller closes 4429 'member-cap-reached'. The
+   *     state is semi-terminal (members must leave before joiners succeed).
+   *
+   * Review HI-04: the pre-fix code returned a bare `false` for all three
+   * reject conditions and the caller closed every case with 4429
+   * 'attach-rejected'. CloudTransport.mapCloseCodeToState then mapped 4429
+   * to `relay-unreachable`, triggering an immediate retry — which hit the
+   * same condition, busy-looping until rate-limited. Differentiated close
+   * codes let the client surface distinguish terminal failures (unknown
+   * session — give up) from transient ones (grace window — back off).
    */
-  attachMember(sessionId: string, memberId: string, memberSocket: WebSocket): boolean {
+  attachMember(
+    sessionId: string,
+    memberId: string,
+    memberSocket: WebSocket,
+  ): AttachMemberResult {
     const s = this.sessions.get(sessionId);
-    if (!s) return false; // no auto-create
-    if (s.graceTimer !== null) return false; // host in grace; reject new joiners (T-07-14)
-    if (!limits.canAttachMember(s.memberSockets.length)) return false; // member cap (T-07-13)
+    if (!s) return { ok: false, reason: 'unknown-session' }; // no auto-create
+    if (s.graceTimer !== null) {
+      // T-07-14: reject new joiners while host is in grace; existing members
+      // wait for the host to return. Caller closes 4503.
+      return { ok: false, reason: 'grace-active' };
+    }
+    if (!limits.canAttachMember(s.memberSockets.length)) {
+      // T-07-13 member cap. Caller closes 4429.
+      return { ok: false, reason: 'member-cap' };
+    }
     s.memberSockets.push(memberSocket);
     s.memberSocketIds.set(memberSocket, memberId);
     s.lastActivity = Date.now();
-    return true;
+    return { ok: true };
   }
 
   /**

@@ -76,7 +76,26 @@ export type CloudConnectionState =
   | 'connected'
   | 'session-not-found'
   | 'relay-unreachable'
-  | 'disconnected';
+  | 'disconnected'
+  // Review HI-04 (LO-01 follow-through): semi-terminal states added to
+  // differentiate retry policy. The pre-fix code mapped every non-1000/4404
+  // close to `relay-unreachable` (immediate exponential backoff). For
+  // member-cap (4429) that produced a tight retry loop pinned at the cap;
+  // for grace-active (4503) it produced spam against the relay during
+  // host-drop recovery. The new states carry distinct semantics:
+  //
+  //   - 'member-cap-reached'   — terminal-ish. Members must leave before
+  //                              joiners succeed. No automatic retry; the
+  //                              client surface should prompt the user.
+  //   - 'grace-period-active'  — transient. Host is in the 60s drop-grace
+  //                              window. Retry with longer backoff (caller
+  //                              schedules via ReconnectManager but with
+  //                              an explicit longer floor).
+  //   - 'host-identity-mismatch' — terminal. Security failure (HI-05). No
+  //                              retry; user-visible.
+  | 'member-cap-reached'
+  | 'grace-period-active'
+  | 'host-identity-mismatch';
 
 /**
  * Structural-shape interface used by the constructor's discretionary
@@ -112,6 +131,11 @@ export function mapCloseCodeToState(
 ): CloudConnectionState {
   if (code === 4404) return 'session-not-found';
   if (code === 1000) return 'disconnected';
+  // Review HI-04 — differentiated relay rejects (matched against the
+  // discriminated reason in SessionRegistry.attachMember + register).
+  if (code === 4403) return 'host-identity-mismatch';
+  if (code === 4429) return 'member-cap-reached';
+  if (code === 4503) return 'grace-period-active';
   // 1006 abnormal closure (no close frame received), 1001 going-away, 1011
   // server error, 4401 invalid token, any other code, or pre-open
   // TCP/TLS failure → relay-unreachable. Pre-open failures arrive at the
@@ -283,14 +307,25 @@ export class CloudTransport implements ClientTransport {
           resolve(false);
         }
         if (this.intentionalClose) return;
-        // Schedule reconnect ONLY for transient-state closes. 'session-not-found'
-        // is terminal (the session is gone; retrying floods the relay) and
-        // 'disconnected' indicates a graceful 1000-close that the caller
-        // either initiated or accepted (T-07-reconnect-loop).
-        if (state === 'relay-unreachable') {
+        // Review HI-04: schedule reconnect ONLY for transient-state closes.
+        //   - 'session-not-found' (4404)       — terminal (session gone)
+        //   - 'member-cap-reached' (4429)      — semi-terminal (members must leave)
+        //   - 'host-identity-mismatch' (4403)  — terminal (security failure)
+        //   - 'disconnected' (1000)            — graceful, caller-initiated
+        //   - 'grace-period-active' (4503)     — transient; SHOULD retry (host
+        //                                       may return) but the
+        //                                       ReconnectManager's exponential
+        //                                       backoff is intentionally
+        //                                       sufficient here; we tag the
+        //                                       state distinctly so future
+        //                                       work can introduce a longer
+        //                                       floor without changing the
+        //                                       close-handler shape.
+        //   - 'relay-unreachable' (other)      — transient, standard retry
+        if (state === 'relay-unreachable' || state === 'grace-period-active') {
           this.reconnect.scheduleReconnect(
             () => this.connect(),
-            () => this.emitStateChange('relay-unreachable'),
+            () => this.emitStateChange(state),
           );
         }
       });

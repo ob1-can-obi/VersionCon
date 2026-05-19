@@ -299,15 +299,26 @@ export class SessionHost implements SessionEventEmitter {
    * cloud mode. LAN-mode hosts NEVER call this; they leave both fields null
    * and produce byte-identical auth-responses (no `token` key).
    *
-   * Idempotent guard: throws if a cloud issuer is already attached — protects
-   * against accidental double-call from the factory.
+   * Single-shot guard (NOT idempotent — review MD-07): throws on any second
+   * call, including a second call with the SAME (tokenService, sessionId)
+   * pair. This is intentional — re-attaching a fresh issuer mid-flight would
+   * silently invalidate every JWT this host already issued under the old
+   * verifySecret, locking out joiners with no observable signal. Callers
+   * MUST treat attachCloudIssuer as a one-time wiring step performed by the
+   * factory, never as a re-configuration surface.
    *
    * Method name explicitly DIFFERENT from the rejected mode-setter pattern
    * (per the 07-05b merge note). This is an ISSUER ATTACHMENT, not a flag.
    */
   attachCloudIssuer(tokenService: TokenService, sessionId: string): void {
     if (this.cloudTokenService !== null) {
-      throw new Error('attachCloudIssuer: cloud issuer already attached');
+      // Single-shot — see JSDoc. Failure is deliberate: silently dropping
+      // the second call would risk a verifySecret mismatch with existing
+      // joiner JWTs; throwing surfaces the misconfiguration loudly at the
+      // call site.
+      throw new Error(
+        'attachCloudIssuer: cloud issuer already attached (single-shot guard)',
+      );
     }
     this.cloudTokenService = tokenService;
     this.cloudSessionId = sessionId;

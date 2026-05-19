@@ -20,7 +20,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 4.3 (INSERTED): Git-Style Commands + File Explorer Workflow + Cloud Bridge** - Hide `.versioncon/` from VS Code File Explorer; git-style command aliases; workspace-diff-driven push/pull (no drag required); status-bar "N local changes" indicator; one-way export to a real Git remote (host-only) so v2-of-project starts with `git pull` + fresh session (5/5 plans done; 14 commits 9e20df0..69ffeaf; 350 → 439 passing, +89 new tests)
 - [x] **Phase 5: Dependency-Aware Conflict Detection (AST)** - AST child process, per-language parsers, function-level conflict attribution, smart push summary (5/5 plans done; 25 code commits 754c0e8..7d4d75b; 439 → 684 passing, +245 new tests; SC-1 attribution + SC-2 sub-50ms broadcast + SC-3 fallback + SC-4 skipPolicy + SC-5 smart summary all verified)
 - [x] **Phase 6: Inline Code Review** - Diff + approve flow, line comments, mandatory review gate, review threads in chat (5/5 plans done; 824 → 867 passing in Wave 4; SC-1 vscode.diff + SC-2 panel composer/inline gutter + SC-3 requireReview merge gate at 3 entry points + SC-4 chat system events all satisfied end-to-end; UAT folds into a future /gsd-verify-work 6 pass)
-- [ ] **Phase 7: Cloud Mode + Relay Server** - Relay deployment, JWT auth, CloudTransport, same UX as LAN over internet (Wave 1 complete: 07-01 ✓, 07-02 ✓, 07-03 ✓; Wave 2 in progress: 07-04 ✓, 07-05 ✓, 07-06 ✓; 953 / 0 / 66 tests passing)
+- [ ] **Phase 7: Cloud Mode + Relay Server** - Relay deployment, JWT auth, CloudTransport, same UX as LAN over internet (Wave 1 complete: 07-01 ✓, 07-02 ✓, 07-03 ✓; Wave 2 complete: 07-04 ✓, 07-05 ✓, 07-06 ✓, 07-07 ✓; 971 / 0 / 66 tests passing; ROADMAP SC-3 closed)
 - [ ] **Phase 8: AI Agent API (MCP Integration)** - Embedded MCP server, read-only tools for branch state, dependency graph, activity
 
 ## Phase Details
@@ -217,7 +217,7 @@ Plans:
 - [x] 07-04 CloudTransport (outbound WSS, Bearer header, envelope wrap, ReconnectManager reuse, close-code → state mapping) — commits da144cb RED + a5beef9 GREEN + 11086f4 REFACTOR; 906 / 0 / 66 tests passing
 - [x] 07-05 Wizard cloud step (LAN/Cloud radio + Relay URL field + Test-connection button + share-screen deep-link) — commits bf2d32c RED + 75d756e GREEN; 933 / 0 / 66 tests passing (+27 new); Phase 4.1 invariants preserved verbatim
 - [x] 07-06 Join panel cloud branch + UriHandler (`vscode://versioncon.versioncon/join?…` deep-link + confirmation prompt) — commits 980667a RED + 2dbc878 GREEN (Task 1) + 2d819b3 RED + 8cbe56f GREEN (Task 2); 953 / 0 / 66 tests passing (+20 new); T-07-10 mitigation locked (showInformationMessage BEFORE openPrefilled — call-order asserted)
-- 07-07 StatusBarManager 3 cloud states (connected / relay-unreachable / session-not-found with precedence)
+- [x] 07-07 StatusBarManager 3 cloud states (connected / relay-unreachable / session-not-found with precedence) — commits 370d1bb RED + c6103cb GREEN; 971 / 0 / 66 tests passing (+18 new); UI-SPEC §StatusBar text byte-identical via assert.strictEqual; precedence (sync-warning beats cloud, cloud-connected layers unread, terminal states suppress) + cloud-aware setSyncWarning(false) re-apply branch + setStatus clears cloud memory; Phase 4 LAN suite (8 tests) preserved; ROADMAP SC-3 closed
 
 **Wave 3** *(blocked on Wave 1; parallel with Wave 2 — relay package is independent)*:
 - 07-08 Relay skeleton (package.json, tsconfig, server.ts, SessionRegistry.ts, router.ts byte-pass-through)
@@ -261,7 +261,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 4. Presence, Chat + File-Level Conflict Notifications | 11/11 | Feature complete (UAT pending) | - |
 | 5. Dependency-Aware Conflict Detection (AST) | 0/TBD | Not started | - |
 | 6. Inline Code Review | 0/TBD | Not started | - |
-| 7. Cloud Mode + Relay Server | 6/13 | In Progress (Wave 1 ✓; Wave 2 in progress — 07-04 ✓, 07-05 ✓, 07-06 ✓) | - |
+| 7. Cloud Mode + Relay Server | 7/13 | In Progress (Wave 1 ✓; Wave 2 ✓ — 07-04/05/06/07 done) | - |
 | 8. AI Agent API (MCP Integration) | 0/TBD | Not started | - |
 
 ## Backlog

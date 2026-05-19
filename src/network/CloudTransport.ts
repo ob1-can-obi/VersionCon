@@ -94,14 +94,6 @@ export interface ReconnectManagerLike {
 }
 
 /**
- * Per-frame ceiling on inbound payload bytes. Defense in depth against
- * oversized frames (T-07-08; ASVS V13.1.4). Matches the relay-side limit
- * declared in 07-10 so a misbehaving peer cannot send frames that the relay
- * would have already truncated.
- */
-const MAX_PAYLOAD_BYTES = 1024 * 1024; // 1 MiB
-
-/**
  * Map a WSS close code (RFC 6455 §7.4 + custom 4xxx range) to the v1
  * three-state lifecycle. Exported for testability + grep auditability —
  * keeps the mapping in ONE place so the threat-model reviewer can scan a
@@ -204,9 +196,12 @@ export class CloudTransport implements ClientTransport {
       this.hadOpened = false;
 
       try {
+        // maxPayload locked to 1 MiB (T-07-08; ASVS V13.1.4). Inline literal
+        // so the threat-model source-grep finds the value at the call site.
+        // Mirrors the relay-side cap declared in 07-10.
         this.ws = new this.WebSocketCtor(this.relayUrl, {
           headers: { Authorization: `Bearer ${this.token}` },
-          maxPayload: MAX_PAYLOAD_BYTES,
+          maxPayload: 1024 * 1024,
           perMessageDeflate: false,
         });
       } catch {

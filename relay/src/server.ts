@@ -196,8 +196,77 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     // Member-role sockets attempting session-register are forcibly closed
     // with WSS code 4400. The router.ts source-grep gate still passes
     // (no `.payload` reads in router.ts).
+    //
+    // Review HI-01 — second named carve-out: member→host annotation. The
+    // relay rewrites `envelope.payload.memberId = claims.sub` on every
+    // member→host frame so the host-side CloudHostTransport demultiplexer
+    // can route inbound frames to the right VirtualConnection. The
+    // alternative (joiner supplies its own memberId) is unworkable because
+    // the joiner does not know its server-assigned sub until after auth-
+    // response — and even then we'd have to validate `payload.memberId ===
+    // claims.sub` to prevent spoofing. Annotating at the relay is the
+    // 07-05b plan's documented intent (§threat-model T-07-mid). The
+    // annotation is restricted to:
+    //   (a) MEMBER→HOST direction ONLY (host→member fan-out remains
+    //       byte-pass-through verbatim — host-issued frames already carry
+    //       their own memberId field where needed);
+    //   (b) the `memberId` field ONLY (no other payload field is read or
+    //       mutated by the relay);
+    //   (c) member-role sockets only (host-role frames are never annotated).
+    // If the joiner client already supplies `payload.memberId`, we validate
+    // it matches `claims.sub` and reject mismatches with close 4400 — this
+    // closes the spoof window (HI-01 follow-up).
     let firstFrameHandled = false;
     let attachedSessionId: string | undefined;
+    // Review HI-01: track role on the outer connection scope so subsequent
+    // frames know whether to apply the member→host memberId annotation. Set
+    // once on the first frame (from the verified claims.role).
+    let attachedRole: 'host' | 'member' | undefined;
+
+    /**
+     * Review HI-01: member→host annotation helper. Parses the envelope,
+     * sets `payload.memberId = claims.sub` (or validates a pre-existing one),
+     * and returns the re-serialized buffer. Returns null on:
+     *   - malformed JSON
+     *   - non-object payload
+     *   - payload.memberId already present AND not equal to claims.sub
+     *     (spoof attempt — caller closes 4400)
+     *
+     * This is the second named exception to T-07-02 byte-pass-through.
+     * router.ts continues to be byte-pass-through; the annotation happens
+     * BEFORE the buffer enters route(), preserving the router.ts invariant.
+     */
+    const annotateMemberFrame = (
+      raw: Buffer | string,
+      memberSub: string,
+    ): Buffer | null => {
+      try {
+        const text = typeof raw === 'string' ? raw : raw.toString('utf-8');
+        const obj = JSON.parse(text) as {
+          payload?: Record<string, unknown>;
+          [k: string]: unknown;
+        };
+        if (
+          !obj ||
+          typeof obj !== 'object' ||
+          !obj.payload ||
+          typeof obj.payload !== 'object' ||
+          Array.isArray(obj.payload)
+        ) {
+          return null;
+        }
+        const existing = obj.payload.memberId;
+        if (typeof existing === 'string' && existing.length > 0 && existing !== memberSub) {
+          // Spoof attempt — joiner tried to forge a memberId that is not
+          // their own JWT sub. Reject by signaling null to the caller.
+          return null;
+        }
+        obj.payload.memberId = memberSub;
+        return Buffer.from(JSON.stringify(obj), 'utf-8');
+      } catch {
+        return null;
+      }
+    };
 
     ws.on('message', (raw) => {
       if (!firstFrameHandled) {
@@ -216,6 +285,12 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
             ws.close(4401, 'no-claims');
             return;
           }
+
+          // Review HI-01: capture role at first-frame so subsequent-frame
+          // logic can apply the member→host annotation without re-reading
+          // claims (defense-in-depth — claims is already trusted via the
+          // verifyClient gate).
+          attachedRole = claims.role === 'host' ? 'host' : 'member';
 
           if (claims.role === 'host') {
             // T-07-02-exception: read envelope.payload.type / .sessionId / .verifySecret
@@ -293,7 +368,16 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
             return;
           }
           attachedSessionId = sid;
-          route(registry, sid, ws, raw as Buffer);
+          // Review HI-01: annotate the first member frame with
+          // payload.memberId = claims.sub before forwarding to route().
+          // router.ts remains byte-pass-through — the annotation happens
+          // at this carve-out layer in server.ts.
+          const annotated = annotateMemberFrame(raw as Buffer, claims.sub);
+          if (annotated === null) {
+            ws.close(4400, 'malformed-or-spoofed-member-frame');
+            return;
+          }
+          route(registry, sid, ws, annotated);
           return;
         } catch {
           ws.close(4400, 'malformed-first-frame');
@@ -323,6 +407,20 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       // unknown-session (4404), or grace-active (4503) cases.
       if (attachedSessionId !== undefined && sessionId !== attachedSessionId) {
         ws.close(4400, 'session-id-mismatch-post-attach');
+        return;
+      }
+      // Review HI-01: member→host annotation on every subsequent member
+      // frame. Host frames are forwarded verbatim (byte-pass-through is
+      // preserved for host→member fan-out — the host already addresses
+      // its outbound unicasts via envelope.target, no payload mutation
+      // required).
+      if (attachedRole === 'member' && claims) {
+        const annotated = annotateMemberFrame(raw as Buffer, claims.sub);
+        if (annotated === null) {
+          ws.close(4400, 'malformed-or-spoofed-member-frame');
+          return;
+        }
+        route(registry, sessionId, ws, annotated);
         return;
       }
       route(registry, sessionId, ws, raw as Buffer);

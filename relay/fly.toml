@@ -1,0 +1,64 @@
+# VersionCon Relay — Fly.io config.
+#
+# This relay holds session state in memory (Map<sessionId, Session>), so it
+# MUST NOT be auto-stopped — every active WebSocket session would die when
+# the machine idles. See relay/README.md "Operational caveats" for details.
+#
+# Key invariants (do NOT "optimize" these without reading the README first):
+#
+#   - auto_stop_machines = "off"     Sessions are stateful; never auto-stop.
+#                                    Fly.io's auto-stop is HTTP-request-based
+#                                    and does not count WebSocket traffic, so
+#                                    enabling it silently kills every live
+#                                    session after ~5-10 minutes of "idle".
+#                                    (RESEARCH §Pitfall 1)
+#
+#   - auto_start_machines = true     Machines manually stopped (fly machine
+#                                    stop) wake on incoming traffic. Combined
+#                                    with auto_stop=off this means the machine
+#                                    persists while any session is alive AND
+#                                    can be manually stopped for cost control
+#                                    during true off-hours. Fly.io's docs warn
+#                                    "both enabled or both disabled" but the
+#                                    actual constraint is: auto_stop=off with
+#                                    auto_start=true is a valid pairing —
+#                                    manual-stop, auto-wake. (CONTEXT D-03)
+#
+#   - min_machines_running = 1       At least one machine is always available
+#                                    so a joiner connecting "cold" doesn't
+#                                    hit a 502.
+#
+#   - force_https = true             TLS-terminate at the Fly edge via
+#                                    Let's Encrypt. Relay listens plain
+#                                    HTTP/WSS on 8080 internally; do NOT
+#                                    configure certificates inside the
+#                                    container.
+#
+# No secrets are stored in this file. Per-session JWT signing secrets are
+# generated at runtime via `crypto.randomBytes(32)` (07-03 TokenService)
+# and never persisted. ASVS V14.3 (no secrets in env files).
+
+app = "versioncon-relay"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

@@ -20,7 +20,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 4.3 (INSERTED): Git-Style Commands + File Explorer Workflow + Cloud Bridge** - Hide `.versioncon/` from VS Code File Explorer; git-style command aliases; workspace-diff-driven push/pull (no drag required); status-bar "N local changes" indicator; one-way export to a real Git remote (host-only) so v2-of-project starts with `git pull` + fresh session (5/5 plans done; 14 commits 9e20df0..69ffeaf; 350 → 439 passing, +89 new tests)
 - [x] **Phase 5: Dependency-Aware Conflict Detection (AST)** - AST child process, per-language parsers, function-level conflict attribution, smart push summary (5/5 plans done; 25 code commits 754c0e8..7d4d75b; 439 → 684 passing, +245 new tests; SC-1 attribution + SC-2 sub-50ms broadcast + SC-3 fallback + SC-4 skipPolicy + SC-5 smart summary all verified)
 - [x] **Phase 6: Inline Code Review** - Diff + approve flow, line comments, mandatory review gate, review threads in chat (5/5 plans done; 824 → 867 passing in Wave 4; SC-1 vscode.diff + SC-2 panel composer/inline gutter + SC-3 requireReview merge gate at 3 entry points + SC-4 chat system events all satisfied end-to-end; UAT folds into a future /gsd-verify-work 6 pass)
-- [ ] **Phase 7: Cloud Mode + Relay Server** - Relay deployment, JWT auth, CloudTransport, same UX as LAN over internet (Wave 1 complete: 07-01 ✓, 07-02 ✓, 07-03 ✓; Wave 2 complete: 07-04 ✓, 07-05 ✓, 07-06 ✓, 07-07 ✓; Wave 3 in progress: 07-08 ✓ relay skeleton; 971 / 0 / 66 extension tests + 21 relay tests passing; ROADMAP SC-3 closed)
+- [ ] **Phase 7: Cloud Mode + Relay Server** - Relay deployment, JWT auth, CloudTransport, same UX as LAN over internet (Wave 1 complete: 07-01 ✓, 07-02 ✓, 07-03 ✓; Wave 2 complete: 07-04 ✓, 07-05 ✓, 07-06 ✓, 07-07 ✓; Wave 3 in progress: 07-08 ✓ relay skeleton, 07-09 ✓ relay auth; 973 / 0 / 66 extension tests + 31 relay tests passing; ROADMAP SC-3 closed)
 - [ ] **Phase 8: AI Agent API (MCP Integration)** - Embedded MCP server, read-only tools for branch state, dependency graph, activity
 
 ## Phase Details
@@ -221,7 +221,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 1; parallel with Wave 2 — relay package is independent)*:
 - [x] 07-08 Relay skeleton (package.json, tsconfig, server.ts, SessionRegistry.ts, router.ts byte-pass-through) — commits 3c6d3da RED + aa40a96 GREEN(1/2) + c76f518 GREEN(2/2); 21 relay tests passing (router 6 + sessionRegistry 9 + server 6); T-07-02 source-grep gate (.payload zero in router.ts); T-07-09 distinct register/attachMember methods; T-07-16 verifyClient fails closed 503 when auth.js absent; jose pinned ^5.10.0 matching 07-03 deviation; extension suite 971/0/66 unchanged
-- 07-09 Relay auth.ts (jose JWT verify; algorithm-confusion + aud + exp; invite-code-locality source-grep)
+- [x] 07-09 Relay auth.ts (jose JWT verify; algorithm-confusion + aud + exp; invite-code-locality source-grep) — commits ec30a1a RED + ac055cf GREEN + 806c14a (Task 3 extension-side gate); 10 new relay tests + 2 new extension tests; 31 relay / 973 extension all green; T-07-01 / T-07-03 / T-07-04 / T-07-05 / T-07-09 / T-07-11 all mitigated; algorithms:['HS256'] non-optional pinned via 2-layer source-grep (relay/test/auth.test.js + src/test/suite/inviteCodeLocality.test.ts)
 - 07-10 Relay limits.ts (30/min IP, 1000 sessions, 50 members/session, 1 MiB frame cap, 30-min reaper, 60s grace)
 - 07-11 Relay logger.ts (pino + redact config; snapshot test: Bearer / payload / invite-code never appear)
 
@@ -261,7 +261,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 4. Presence, Chat + File-Level Conflict Notifications | 11/11 | Feature complete (UAT pending) | - |
 | 5. Dependency-Aware Conflict Detection (AST) | 0/TBD | Not started | - |
 | 6. Inline Code Review | 0/TBD | Not started | - |
-| 7. Cloud Mode + Relay Server | 8/13 | In Progress (Wave 1 ✓; Wave 2 ✓; Wave 3 — 07-08 relay skeleton done; 07-09/10/11 next) | - |
+| 7. Cloud Mode + Relay Server | 9/13 | In Progress (Wave 1 ✓; Wave 2 ✓; Wave 3 — 07-08 ✓ skeleton, 07-09 ✓ auth; 07-10/11 next) | - |
 | 8. AI Agent API (MCP Integration) | 0/TBD | Not started | - |
 
 ## Backlog

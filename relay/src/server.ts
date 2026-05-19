@@ -22,10 +22,44 @@
 
 import http from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { decodeJwt, jwtVerify } from 'jose';
 import { SessionRegistry } from './SessionRegistry.js';
 import { route } from './router.js';
 import * as limits from './limits.js';
 import { logger } from './logger.js';
+import { verifyToken } from './auth.js';
+
+// Review Phase 7 VERIFICATION BLOCKER 1 — host bootstrap chicken-and-egg.
+//
+// `verifyToken` (07-09) requires `registry.getSession(aud)` to succeed. But
+// the very first host connection establishes that session — there is no
+// session for `verifyToken` to look up. Resolving the chicken-and-egg:
+//
+//   verifyClient decodes the JWT WITHOUT signature verification to extract
+//   role + aud + sub. For host-role on a NEW session, accept the connection
+//   with "pending" claims; the first-frame carve-out then verifies the JWT
+//   signature against the session-register payload's verifySecret BEFORE
+//   calling registry.register(). For member-role OR host-re-register
+//   (session already exists), full `verifyToken` runs at verifyClient time.
+//
+// The unverified decode is safe to accept because:
+//   - shape-check (SESSION_ID_SHAPE + role in {host,member}) keeps log
+//     injection and crazy values out
+//   - the only state the unverified claims grant is "open WSS socket"; no
+//     registry writes happen until first-frame
+//   - first-frame carve-out runs jose.jwtVerify with `algorithms:['HS256']`
+//     and the freshly-extracted verifySecret BEFORE registry.register, so a
+//     forged JWT cannot register a session
+const SESSION_ID_SHAPE = /^vc-[a-z0-9-]{1,64}$/;
+type PendingHostBootstrapClaims = {
+  role: 'host';
+  aud: string;
+  sub: string;
+  _pendingHostBootstrap: true;
+  _rawJwt: string;
+};
+type VerifiedClaims = { role: 'host' | 'member'; aud: string; sub: string };
+type AnyClaims = VerifiedClaims | PendingHostBootstrapClaims;
 
 export interface StartServerOptions {
   /** Bind port. `0` requests an ephemeral port (used by tests). Defaults to env PORT or 8080. */
@@ -155,34 +189,107 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
         cb(false, 401, 'missing-test-claims');
         return;
       }
-      // Use a then/catch chain rather than an async verifyClient — older ws
-      // versions don't await the callback so we drive resolution explicitly.
-      // The auth module is resolved through a string-variable so the compiler
-      // does not require ./auth.js to exist at build time — 07-09 ships it.
-      const authModulePath: string = './auth.js';
-      import(authModulePath)
-        .then((authMod: unknown) => {
-          const verifyTokenFn = (authMod as { verifyToken?: unknown } | null)?.verifyToken;
-          if (typeof verifyTokenFn !== 'function') {
-            logger.error({ event: 'auth-not-wired', ip });
-            cb(false, 503, 'Relay auth not configured');
+      // Phase 7 VERIFICATION BLOCKER 1 hotfix — production auth gate.
+      //
+      // Decode the bearer token without verifying its signature to extract
+      // role + aud + sub. The decode is a SHAPE check only; the real trust
+      // boundary is either (a) jwtVerify in `verifyToken` (member, or host
+      // re-register), or (b) jwtVerify in the first-frame carve-out
+      // (host bootstrap — see ws.on('message') below).
+      const authHeader = info.req.headers.authorization;
+      if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
+        logger.warn({ event: 'auth-fail', reason: 'missing-bearer', ip });
+        cb(false, 401, 'unauthorized');
+        return;
+      }
+      const rawJwt = authHeader.slice('Bearer '.length).trim();
+      if (rawJwt.length === 0) {
+        logger.warn({ event: 'auth-fail', reason: 'empty-bearer', ip });
+        cb(false, 401, 'unauthorized');
+        return;
+      }
+      let unverifiedRole: 'host' | 'member';
+      let unverifiedAud: string;
+      let unverifiedSub: string;
+      try {
+        const decoded = decodeJwt(rawJwt);
+        if (decoded.role !== 'host' && decoded.role !== 'member') {
+          logger.warn({ event: 'auth-fail', reason: 'bad-role-shape', ip });
+          cb(false, 401, 'unauthorized');
+          return;
+        }
+        if (typeof decoded.aud !== 'string' || !SESSION_ID_SHAPE.test(decoded.aud)) {
+          logger.warn({ event: 'auth-fail', reason: 'bad-aud-shape', ip });
+          cb(false, 401, 'unauthorized');
+          return;
+        }
+        if (typeof decoded.sub !== 'string' || decoded.sub.length === 0) {
+          logger.warn({ event: 'auth-fail', reason: 'bad-sub-shape', ip });
+          cb(false, 401, 'unauthorized');
+          return;
+        }
+        unverifiedRole = decoded.role;
+        unverifiedAud = decoded.aud;
+        unverifiedSub = decoded.sub;
+      } catch {
+        logger.warn({ event: 'auth-fail', reason: 'malformed-jwt', ip });
+        cb(false, 401, 'unauthorized');
+        return;
+      }
+
+      // Host bootstrap path: session does not yet exist. Accept the
+      // connection with PENDING claims; first-frame carve-out re-verifies
+      // the JWT signature against the verifySecret from the session-register
+      // payload BEFORE calling registry.register. This is the only path
+      // that bypasses verifyToken — it is fenced by:
+      //   (a) role must literally === 'host' (from decoded JWT claim, NOT
+      //       from connection order — T-07-09 preserved);
+      //   (b) no session may exist for the unverified aud (otherwise this
+      //       is a host re-register attempt; fall through to verifyToken);
+      //   (c) the first-frame handler MUST jwtVerify before registry write.
+      const existingSession = registry.getSession(unverifiedAud);
+      if (unverifiedRole === 'host' && !existingSession) {
+        const pending: PendingHostBootstrapClaims = {
+          role: 'host',
+          aud: unverifiedAud,
+          sub: unverifiedSub,
+          _pendingHostBootstrap: true,
+          _rawJwt: rawJwt,
+        };
+        (info.req as unknown as { claims: AnyClaims }).claims = pending;
+        cb(true);
+        return;
+      }
+
+      // Member path OR host re-register: session exists, verifyToken can
+      // perform full signature + algorithm + audience + exp validation.
+      verifyToken(info.req, registry)
+        .then((tokenInfo) => {
+          if (tokenInfo === null) {
+            // verifyToken already logged the specific reason inside auth.ts.
+            cb(false, 401, 'unauthorized');
             return;
           }
-          // Once 07-09 ships verifyToken, this branch will call it and accept.
-          // For 07-08 alone we conservatively reject to surface misconfiguration.
-          cb(false, 503, 'Relay auth pending (07-09)');
+          const verified: VerifiedClaims = {
+            role: tokenInfo.role,
+            aud: tokenInfo.sessionId,
+            sub: tokenInfo.memberId,
+          };
+          (info.req as unknown as { claims: AnyClaims }).claims = verified;
+          cb(true);
         })
-        .catch(() => {
-          logger.error({ event: 'auth-not-wired', ip });
-          cb(false, 503, 'Relay auth not configured');
+        .catch((err) => {
+          // verifyToken is documented to never throw. Defense-in-depth:
+          // close fail-safe if jose's internals surprise us.
+          logger.error({ event: 'auth-internal-error', ip, errType: (err as Error).name });
+          cb(false, 401, 'unauthorized');
         });
     },
   });
 
   wss.on('connection', (ws: WebSocket, req) => {
     const ip = req.socket.remoteAddress ?? 'unknown';
-    const claims = (req as unknown as { claims?: { role: string; aud: string; sub: string } })
-      .claims;
+    const claims = (req as unknown as { claims?: AnyClaims }).claims;
     logger.info({ event: 'connection-open', ip });
 
     // Phase 7 Plan 07-05b — first-frame carve-out. This is the ONE place in
@@ -217,11 +324,22 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     // it matches `claims.sub` and reject mismatches with close 4400 — this
     // closes the spoof window (HI-01 follow-up).
     let firstFrameHandled = false;
+    // VERIFICATION BLOCKER 1 hotfix — host bootstrap defers the JWT signature
+    // verify to first-frame time. The first-frame branch is now async (jose's
+    // jwtVerify is a Promise). `firstFrameSettled` flips to true AFTER the
+    // async work resolves; any messages that arrive during the verify window
+    // are queued in `pendingFrames` and drained in order on settle. Subsequent
+    // frames check `firstFrameSettled` and buffer if needed.
+    let firstFrameSettled = false;
+    const pendingFrames: (Buffer | string)[] = [];
     let attachedSessionId: string | undefined;
     // Review HI-01: track role on the outer connection scope so subsequent
     // frames know whether to apply the member→host memberId annotation. Set
     // once on the first frame (from the verified claims.role).
     let attachedRole: 'host' | 'member' | undefined;
+    // Cached `sub` for subsequent member-frame annotation. Avoids passing the
+    // discriminated AnyClaims through to handleSubsequentFrame.
+    let memberSubForAnnotation: string | undefined;
 
     /**
      * Review HI-01: member→host annotation helper. Parses the envelope,
@@ -268,125 +386,166 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       }
     };
 
-    ws.on('message', (raw) => {
-      if (!firstFrameHandled) {
-        firstFrameHandled = true;
-        try {
-          const text =
-            typeof raw === 'string' ? raw : (raw as Buffer).toString('utf-8');
-          const env = JSON.parse(text) as {
-            sessionId?: unknown;
-            payload?: { type?: unknown; sessionId?: unknown; verifySecret?: unknown };
-          };
+    /**
+     * First-frame handler. Async because host bootstrap may need to
+     * jwtVerify against the session-register payload's verifySecret BEFORE
+     * registry.register is called. Returns when first-frame processing is
+     * fully settled (registry state may have been written). Any frames
+     * received during the async window are queued in `pendingFrames` by the
+     * outer ws.on('message') and drained after this resolves.
+     */
+    const handleFirstFrame = async (raw: Buffer | string): Promise<void> => {
+      try {
+        const text =
+          typeof raw === 'string' ? raw : (raw as Buffer).toString('utf-8');
+        const env = JSON.parse(text) as {
+          sessionId?: unknown;
+          payload?: { type?: unknown; sessionId?: unknown; verifySecret?: unknown };
+        };
 
-          // No claims attached? verifyClient should have rejected, but defense
-          // in depth: close hard if we got this far without claims.
-          if (!claims) {
-            ws.close(4401, 'no-claims');
-            return;
-          }
-
-          // Review HI-01: capture role at first-frame so subsequent-frame
-          // logic can apply the member→host annotation without re-reading
-          // claims (defense-in-depth — claims is already trusted via the
-          // verifyClient gate).
-          attachedRole = claims.role === 'host' ? 'host' : 'member';
-
-          if (claims.role === 'host') {
-            // T-07-02-exception: read envelope.payload.type / .sessionId / .verifySecret
-            // ONLY in this branch. Comment block per the plan's documented
-            // carve-out — the router.ts invariant is preserved.
-            if (env?.payload?.type !== 'session-register') {
-              ws.close(4400, 'host-first-frame-must-be-session-register');
-              return;
-            }
-            const payloadSid = env.payload.sessionId;
-            if (typeof payloadSid !== 'string' || payloadSid !== claims.aud) {
-              ws.close(4400, 'session-register-aud-mismatch');
-              return;
-            }
-            const verifySecretB64 = env.payload.verifySecret;
-            if (typeof verifySecretB64 !== 'string') {
-              ws.close(4400, 'session-register-missing-verify-secret');
-              return;
-            }
-            const verifySecret = Buffer.from(verifySecretB64, 'base64');
-            if (verifySecret.length !== 32) {
-              ws.close(4400, 'session-register-verify-secret-wrong-length');
-              return;
-            }
-            // Review HI-05: pass claims.sub as hostMemberId so the registry
-            // can bind host identity on first register and reject re-attach
-            // attempts whose JWT sub doesn't match.
-            const registerResult = registry.register(
-              claims.aud,
-              ws,
-              new Uint8Array(verifySecret),
-              claims.sub,
-            );
-            if (!registerResult.ok) {
-              // Review HI-04 + HI-05: differentiated close codes per reason.
-              if (registerResult.reason === 'host-identity-mismatch') {
-                logger.warn({
-                  event: 'host-identity-mismatch',
-                  sessionId: claims.aud,
-                });
-                ws.close(4403, 'host-identity-mismatch');
-              } else {
-                ws.close(4429, 'session-cap-reached');
-              }
-              return;
-            }
-            attachedSessionId = claims.aud;
-            // session-register frame is CONSUMED. Do NOT forward to router.
-            return;
-          }
-
-          // Member role — session-register is forbidden as a first frame.
-          if (env?.payload?.type === 'session-register') {
-            ws.close(4400, 'members-cannot-register-sessions');
-            return;
-          }
-
-          // Member role + non-register first frame — attach + route normally.
-          const sid = env?.sessionId;
-          if (typeof sid !== 'string' || sid !== claims.aud) {
-            ws.close(4400, 'session-id-aud-mismatch');
-            return;
-          }
-          // Review HI-04: differentiated close codes per reject reason.
-          const attached = registry.attachMember(sid, claims.sub, ws);
-          if (!attached.ok) {
-            if (attached.reason === 'unknown-session') {
-              ws.close(4404, 'session-not-found');
-            } else if (attached.reason === 'grace-active') {
-              ws.close(4503, 'grace-period-active');
-            } else {
-              // member-cap
-              ws.close(4429, 'member-cap-reached');
-            }
-            return;
-          }
-          attachedSessionId = sid;
-          // Review HI-01: annotate the first member frame with
-          // payload.memberId = claims.sub before forwarding to route().
-          // router.ts remains byte-pass-through — the annotation happens
-          // at this carve-out layer in server.ts.
-          const annotated = annotateMemberFrame(raw as Buffer, claims.sub);
-          if (annotated === null) {
-            ws.close(4400, 'malformed-or-spoofed-member-frame');
-            return;
-          }
-          route(registry, sid, ws, annotated);
-          return;
-        } catch {
-          ws.close(4400, 'malformed-first-frame');
+        // No claims attached? verifyClient should have rejected, but defense
+        // in depth: close hard if we got this far without claims.
+        if (!claims) {
+          ws.close(4401, 'no-claims');
           return;
         }
-      }
 
-      // Subsequent frames — DO NOT inspect payload, just learn sessionId from
-      // the envelope (existing 07-08 behavior). Then forward verbatim.
+        // Review HI-01: capture role at first-frame so subsequent-frame
+        // logic can apply the member→host annotation without re-reading
+        // claims (defense-in-depth — claims is already trusted via the
+        // verifyClient gate).
+        attachedRole = claims.role === 'host' ? 'host' : 'member';
+        if (claims.role === 'member') {
+          memberSubForAnnotation = claims.sub;
+        }
+
+        if (claims.role === 'host') {
+          // T-07-02-exception: read envelope.payload.type / .sessionId / .verifySecret
+          // ONLY in this branch. Comment block per the plan's documented
+          // carve-out — the router.ts invariant is preserved.
+          if (env?.payload?.type !== 'session-register') {
+            ws.close(4400, 'host-first-frame-must-be-session-register');
+            return;
+          }
+          const payloadSid = env.payload.sessionId;
+          if (typeof payloadSid !== 'string' || payloadSid !== claims.aud) {
+            ws.close(4400, 'session-register-aud-mismatch');
+            return;
+          }
+          const verifySecretB64 = env.payload.verifySecret;
+          if (typeof verifySecretB64 !== 'string') {
+            ws.close(4400, 'session-register-missing-verify-secret');
+            return;
+          }
+          const verifySecret = Buffer.from(verifySecretB64, 'base64');
+          if (verifySecret.length !== 32) {
+            ws.close(4400, 'session-register-verify-secret-wrong-length');
+            return;
+          }
+
+          // VERIFICATION BLOCKER 1 hotfix: for host BOOTSTRAP (no session
+          // existed at verifyClient time), the JWT signature has NOT been
+          // verified yet. Run jwtVerify against the verifySecret extracted
+          // from the session-register payload BEFORE writing to the
+          // registry. Without this, a forged JWT could register a session
+          // with attacker-controlled verifySecret. The check is fenced to
+          // the `_pendingHostBootstrap` branch — host re-register (existing
+          // session) went through verifyToken in verifyClient and reaches
+          // here with verified claims.
+          if ((claims as PendingHostBootstrapClaims)._pendingHostBootstrap) {
+            const rawJwt = (claims as PendingHostBootstrapClaims)._rawJwt;
+            try {
+              await jwtVerify(rawJwt, new Uint8Array(verifySecret), {
+                algorithms: ['HS256'],
+                audience: claims.aud,
+                clockTolerance: '30s',
+              });
+            } catch {
+              logger.warn({
+                event: 'host-bootstrap-signature-fail',
+                sessionId: claims.aud,
+              });
+              ws.close(4401, 'host-bootstrap-signature-fail');
+              return;
+            }
+          }
+
+          // Review HI-05: pass claims.sub as hostMemberId so the registry
+          // can bind host identity on first register and reject re-attach
+          // attempts whose JWT sub doesn't match.
+          const registerResult = registry.register(
+            claims.aud,
+            ws,
+            new Uint8Array(verifySecret),
+            claims.sub,
+          );
+          if (!registerResult.ok) {
+            // Review HI-04 + HI-05: differentiated close codes per reason.
+            if (registerResult.reason === 'host-identity-mismatch') {
+              logger.warn({
+                event: 'host-identity-mismatch',
+                sessionId: claims.aud,
+              });
+              ws.close(4403, 'host-identity-mismatch');
+            } else {
+              ws.close(4429, 'session-cap-reached');
+            }
+            return;
+          }
+          attachedSessionId = claims.aud;
+          // session-register frame is CONSUMED. Do NOT forward to router.
+          return;
+        }
+
+        // Member role — session-register is forbidden as a first frame.
+        if (env?.payload?.type === 'session-register') {
+          ws.close(4400, 'members-cannot-register-sessions');
+          return;
+        }
+
+        // Member role + non-register first frame — attach + route normally.
+        const sid = env?.sessionId;
+        if (typeof sid !== 'string' || sid !== claims.aud) {
+          ws.close(4400, 'session-id-aud-mismatch');
+          return;
+        }
+        // Review HI-04: differentiated close codes per reject reason.
+        const attached = registry.attachMember(sid, claims.sub, ws);
+        if (!attached.ok) {
+          if (attached.reason === 'unknown-session') {
+            ws.close(4404, 'session-not-found');
+          } else if (attached.reason === 'grace-active') {
+            ws.close(4503, 'grace-period-active');
+          } else {
+            // member-cap
+            ws.close(4429, 'member-cap-reached');
+          }
+          return;
+        }
+        attachedSessionId = sid;
+        // Review HI-01: annotate the first member frame with
+        // payload.memberId = claims.sub before forwarding to route().
+        // router.ts remains byte-pass-through — the annotation happens
+        // at this carve-out layer in server.ts.
+        const annotated = annotateMemberFrame(raw as Buffer, claims.sub);
+        if (annotated === null) {
+          ws.close(4400, 'malformed-or-spoofed-member-frame');
+          return;
+        }
+        route(registry, sid, ws, annotated);
+        return;
+      } catch {
+        ws.close(4400, 'malformed-first-frame');
+        return;
+      }
+    };
+
+    /**
+     * Subsequent-frame handler. DO NOT inspect payload — just learn
+     * sessionId from the envelope (existing 07-08 behavior). Then forward
+     * verbatim, with HI-01 member→host annotation applied to member frames.
+     */
+    const handleSubsequentFrame = (raw: Buffer | string): void => {
       let sessionId: string | undefined;
       try {
         const text = typeof raw === 'string' ? raw : (raw as Buffer).toString('utf-8');
@@ -400,11 +559,11 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       if (!sessionId) return;
       // Review MD-06: enforce envelope.sessionId === attachedSessionId on every
       // post-attach frame. The attach-time aud check already pins the socket
-      // to one session id (line 244 + line 222 above), so a frame addressed
-      // to a different session is either a defective client or a malicious
-      // attempt to probe the relay. Close 4400 with a discriminator reason
-      // so the client surface can distinguish this from session-cap (4429),
-      // unknown-session (4404), or grace-active (4503) cases.
+      // to one session id, so a frame addressed to a different session is
+      // either a defective client or a malicious attempt to probe the relay.
+      // Close 4400 with a discriminator reason so the client surface can
+      // distinguish this from session-cap (4429), unknown-session (4404), or
+      // grace-active (4503) cases.
       if (attachedSessionId !== undefined && sessionId !== attachedSessionId) {
         ws.close(4400, 'session-id-mismatch-post-attach');
         return;
@@ -414,8 +573,8 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       // preserved for host→member fan-out — the host already addresses
       // its outbound unicasts via envelope.target, no payload mutation
       // required).
-      if (attachedRole === 'member' && claims) {
-        const annotated = annotateMemberFrame(raw as Buffer, claims.sub);
+      if (attachedRole === 'member' && memberSubForAnnotation !== undefined) {
+        const annotated = annotateMemberFrame(raw as Buffer, memberSubForAnnotation);
         if (annotated === null) {
           ws.close(4400, 'malformed-or-spoofed-member-frame');
           return;
@@ -424,6 +583,54 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
         return;
       }
       route(registry, sessionId, ws, raw as Buffer);
+    };
+
+    ws.on('message', (raw) => {
+      if (!firstFrameHandled) {
+        firstFrameHandled = true;
+        // First-frame may be async (host bootstrap JWT verify). Queue any
+        // subsequent frames that arrive during the verify window and drain
+        // them after settle. The void-cast plus .finally suppresses the
+        // promise-misuse lint since handleFirstFrame is documented to never
+        // throw — defense-in-depth catch closes 4400 if it somehow does.
+        void handleFirstFrame(raw as Buffer | string)
+          .catch(() => {
+            ws.close(4400, 'malformed-first-frame');
+          })
+          .finally(() => {
+            firstFrameSettled = true;
+            // Drain in FIFO order — frames were captured during the async
+            // window. If the connection was closed during first-frame
+            // handling (auth failure etc.), the ws.send() inside route()
+            // becomes a no-op on the (now-closed) socket; defensive but
+            // harmless.
+            while (pendingFrames.length > 0) {
+              const queued = pendingFrames.shift();
+              if (queued !== undefined) {
+                try {
+                  handleSubsequentFrame(queued);
+                } catch {
+                  // Subsequent-frame handling failures don't kill the
+                  // session — just drop the offending frame.
+                }
+              }
+            }
+          });
+        return;
+      }
+      if (!firstFrameSettled) {
+        // First frame's async work hasn't resolved yet. Buffer this frame
+        // for in-order processing once first-frame settles. Bound the queue
+        // to prevent unbounded memory growth from a misbehaving client; the
+        // host bootstrap window is sub-100ms so a small cap suffices.
+        if (pendingFrames.length >= 64) {
+          ws.close(4400, 'too-many-frames-before-first-settles');
+          return;
+        }
+        pendingFrames.push(raw as Buffer | string);
+        return;
+      }
+      handleSubsequentFrame(raw as Buffer | string);
     });
 
     ws.on('close', (code, reason) => {

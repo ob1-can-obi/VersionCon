@@ -55,10 +55,14 @@ test('GET /unknown-route returns 404', async () => {
   }
 });
 
-test('verifyClient stub rejects WSS upgrade when requireAuth=true and auth.js missing (T-07-16)', async () => {
+test('verifyClient rejects WSS upgrade with 401 when requireAuth=true and no Authorization header', async () => {
+  // Phase 7 VERIFICATION BLOCKER 1 hotfix: verifyClient now wires verifyToken
+  // (07-09) statically and accepts host-bootstrap with pending claims. Without
+  // any Bearer header, the request is rejected with 401 'unauthorized'. (Was
+  // previously 503 'Relay auth pending (07-09)' under the 07-08 stub — that
+  // stub branch is gone now.)
   const server = await startServer({ port: 0, requireAuth: true });
   try {
-    // Issue a raw HTTP upgrade request and assert we get a 503 (auth not wired).
     const result = await new Promise((resolve, reject) => {
       const req = request({
         hostname: '127.0.0.1',
@@ -76,16 +80,14 @@ test('verifyClient stub rejects WSS upgrade when requireAuth=true and auth.js mi
         res.resume();
         resolve({ status: res.statusCode ?? 0, headers: res.headers });
       });
-      // ws sends 401/503 via the raw socket on the upgrade path — listen for `upgrade`
-      // would be the success branch; rejections come back as a regular HTTP response.
       req.on('upgrade', (res) => {
-        // Should not happen — auth stub must reject.
+        // Should not happen — verifyClient must reject without a Bearer token.
         resolve({ status: res.statusCode ?? 0, headers: res.headers });
       });
       req.on('error', reject);
       req.end();
     });
-    assert.equal(result.status, 503, 'verifyClient must reject with 503 when auth not wired');
+    assert.equal(result.status, 401, 'verifyClient must reject with 401 when no Bearer header');
   } finally {
     await server.close();
   }

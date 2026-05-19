@@ -232,6 +232,24 @@ export class SessionClient implements SessionEventEmitter {
           // If intentional, do not reconnect.
           if (this.intentionalClose) return;
 
+          // Review HI-03: skip SessionClient's reconnect ladder when the
+          // transport owns reconnect (CloudTransport in cloud mode). The
+          // pre-fix code had both SessionClient AND CloudTransport scheduling
+          // reconnects on the same close event — duplicate ladder doubled
+          // the relay connection rate (towards the 30/min/IP rate-limit).
+          // CloudTransport's close-code → state mapping already drives the
+          // transport-owned reconnect with correct terminal-vs-transient
+          // semantics (4404 / 4429 / 4503 / 4403 — see HI-04). The cloud
+          // transport's reconnect runs the WSS handshake but does NOT
+          // re-send auth-request — SessionClient's transport.onOpen handler
+          // is bound to the SAME instance, so the re-open fires the existing
+          // auth-request flow automatically (LanClientTransport rebinds
+          // handlers on every internal connect; CloudTransport's handlers
+          // are class-scoped and survive the reconnect cycle).
+          if (this.transport.isCloud?.()) {
+            return;
+          }
+
           // If we were connected, try to reconnect (D-11)
           if (this.connectionState.current === 'connected') {
             this.attemptReconnect();
@@ -621,6 +639,13 @@ export class SessionClient implements SessionEventEmitter {
     // Flip the sentinel BEFORE close to mirror the pre-refactor ordering
     // (`this.ws = null` BEFORE `ws.close()` at line 550-551 pre-refactor).
     this.intentionalClose = true;
+    // Review HI-03: signal intentional-close to a cloud-mode transport
+    // BEFORE calling close(). markIntentionalClose() sets
+    // `CloudTransport.intentionalClose = true` AND aborts any pending
+    // reconnect timer — so the transport's own close handler does NOT
+    // schedule a retry after the 1000-close we are about to send. LAN
+    // transports omit this method; the optional-chain skips the call.
+    this.transport.markIntentionalClose?.();
     this.transport.close(1000, 'Client disconnected');
 
     this.connectionState.transition('disconnected');

@@ -237,4 +237,23 @@ export interface ClientTransport {
    * intentional signal.
    */
   close(code?: number, reason?: string): void;
+
+  /**
+   * Review HI-03 — optional cloud-mode discriminator. When true, the transport
+   * owns its own reconnect lifecycle (CloudTransport drives reconnect via
+   * close-code state mapping) and SessionClient MUST NOT layer a duplicate
+   * reconnect ladder on top. LAN transports omit this method (or return
+   * false); the SessionClient close handler uses optional chaining
+   * (`this.transport.isCloud?.()`) so legacy LAN paths are unchanged.
+   */
+  isCloud?(): boolean;
+
+  /**
+   * Review HI-03 — optional explicit intentional-close signal. Cloud-mode
+   * transports (CloudTransport) provide this so SessionClient can prove
+   * the next close is caller-initiated BEFORE calling `close()`, defending
+   * against the race between a pending reconnect timer and the close
+   * handler. LAN transports omit this method.
+   */
+  markIntentionalClose?(): void;
 }

@@ -451,6 +451,17 @@ export class CloudTransport implements ClientTransport {
   }
 
   /**
+   * Review HI-03 — cloud-mode discriminator. Tells SessionClient that this
+   * transport owns its own reconnect lifecycle, so SessionClient's
+   * close-handler reconnect ladder should NOT also fire on the same close
+   * event (the pre-fix code had BOTH layers scheduling reconnects on the
+   * same close, doubling the relay connection rate).
+   */
+  isCloud(): boolean {
+    return true;
+  }
+
+  /**
    * Close the WSS connection. Defaults match LanClientTransport — code
    * defaults to 1000 (normal closure). Idempotent — closing an already-closed
    * socket is safe.

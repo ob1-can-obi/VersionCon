@@ -1,0 +1,25 @@
+{
+  "name": "versioncon-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "test": "tsc && node --test test/*.test.js"
+  },
+  "dependencies": {
+    "ws": "^8.20.1",
+    "jose": "^5.10.0",
+    "pino": "^9.6.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.5.10"
+  }
+}

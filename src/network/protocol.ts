@@ -42,7 +42,8 @@ export type MessageType =
   | 'review-vote'
   | 'review-resolved'
   | 'review-state-sync'
-  | 'presence-update';
+  | 'presence-update'
+  | 'session-register';
 
 // --- Base ---
 interface BaseMessage {
@@ -101,6 +102,19 @@ export interface AuthResponse extends BaseMessage {
     memberCount: number;
     hostDisplayName: string;
   };
+  /**
+   * Cloud-mode per-joiner JWT (07-05b). Set by SessionHost.handleAuthRequest
+   * AFTER successful invite-code validation in CLOUD mode — host issues a
+   * fresh JWT via TokenService with `{iss: hostMemberId, sub: newMemberId,
+   * aud: sessionId, role: 'member', jti}`. The joiner stores this token and
+   * reconnects to the relay carrying it as `Authorization: Bearer <token>`
+   * (07-06's responsibility).
+   *
+   * LAN-mode OMITS this field (byte-identical to today's wire). The optional
+   * `?` plus spread-on-defined construction in handleAuthRequest preserves
+   * the byte-shape for the LAN regression test.
+   */
+  token?: string;
 }
 
 export interface MemberJoined extends BaseMessage {
@@ -404,6 +418,36 @@ export interface ReviewStateSync extends BaseMessage {
   reviews: ReviewRequest[];
 }
 
+// --- Phase 7 Plan 07-05b — cloud bootstrap (host → relay only) ---
+
+/**
+ * Cloud-mode bootstrap frame. Emitted ONCE by `SessionHostFactory.createCloud()`
+ * on the host's CloudTransport AFTER WSS open and BEFORE any member joins.
+ *
+ * This is the ONE frame the relay reads payload fields from (named carve-out
+ * to T-07-02 — see relay/src/server.ts first-frame handler). The carve-out
+ * is restricted to:
+ *   (a) the FIRST frame of every WSS connection;
+ *   (b) host-role JWTs only (role from JWT claim, never connection order);
+ *   (c) ONLY the `sessionId` and `verifySecret` fields are read.
+ * Member-role sockets that emit this frame are forcibly closed with WSS
+ * code 4400 ('members-cannot-register-sessions').
+ *
+ * `verifySecret` is base64-encoded 32 raw bytes. The relay decodes via
+ * `Buffer.from(verifySecret, 'base64')` and passes the Uint8Array to
+ * `SessionRegistry.register(sessionId, ws, verifySecret)` (07-08 contract).
+ * The base64 wire encoding never appears in logs (07-11 redact covers
+ * `verifySecret` and `secret` keys).
+ *
+ * BaseMessage extends with a `timestamp` field for VALID_TYPES /
+ * parseMessage compatibility; the relay's first-frame handler ignores it.
+ */
+export interface SessionRegister extends BaseMessage {
+  type: 'session-register';
+  sessionId: string;
+  verifySecret: string;
+}
+
 // --- Discriminated union ---
 export type ProtocolMessage =
   | AuthRequest
@@ -437,7 +481,8 @@ export type ProtocolMessage =
   | ReviewVoteMessage
   | ReviewResolved
   | ReviewStateSync
-  | PresenceUpdate;
+  | PresenceUpdate
+  | SessionRegister;
 
 // --- Helpers ---
 const VALID_TYPES: ReadonlySet<string> = new Set<MessageType>([
@@ -452,6 +497,7 @@ const VALID_TYPES: ReadonlySet<string> = new Set<MessageType>([
   'chat-cleared', 'chat-truncated', 'chat-history',
   'review-opened', 'review-comment', 'review-vote', 'review-resolved', 'review-state-sync',
   'presence-update',
+  'session-register',
 ]);
 
 export function sendMessage(send: (data: string) => void, msg: ProtocolMessage): void {

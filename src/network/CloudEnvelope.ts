@@ -45,6 +45,26 @@ export interface CloudEnvelope {
   sessionId: string;
   encrypted: false;
   payload: ProtocolMessage;
+  /**
+   * OPTIONAL envelope-level routing metadata — 07-05b extension.
+   *
+   * - Present + string → relay routes to a SINGLE member socket whose
+   *   memberId matches (unicast). The relay reads this envelope-level field
+   *   directly; it never inspects payload.
+   * - Absent → relay applies default fan-out (host→all members, member→host).
+   *
+   * Byte-shape contract: `wrap()` only assigns this field when the caller
+   * passes a defined `target` argument. `JSON.stringify` walks own-enumerable
+   * keys, so an undefined target produces NO key in the output — the 07-02
+   * locked broadcast snapshot
+   * `'{"v":1,"sessionId":"vc-7f3a92","encrypted":false,"payload":{"type":"ping"}}'`
+   * remains byte-identical for broadcast frames.
+   *
+   * Threat model: this is a NAMED carve-out at the envelope level. The relay
+   * router may read this field. The payload remains opaque to the relay
+   * (T-07-02 invariant preserved — see relay/src/router.ts source-grep gate).
+   */
+  target?: string;
 }
 
 /**
@@ -85,14 +105,30 @@ export class EnvelopeEncryptedNotSupportedError extends EnvelopeShapeError {
  * Field-construction order is the byte-shape contract: JSON.stringify walks
  * keys in insertion order, so v, sessionId, encrypted, payload appear in this
  * exact sequence in the output. The byte-shape snapshot test pins this.
+ *
+ * Optional `target` argument (07-05b extension): when supplied and not
+ * undefined, the envelope gains a `target` field for unicast routing on the
+ * relay. When omitted/undefined, the key is NEVER assigned — JSON.stringify
+ * never emits it — preserving 07-02's locked broadcast byte-shape snapshot.
+ * The conditional-assignment pattern (NOT `target: target ?? undefined`) is
+ * deliberate: the latter would serialize as `"target":null` and break the
+ * byte-shape contract.
  */
-export function wrap(sessionId: string, payload: ProtocolMessage): CloudEnvelope {
-  return {
+export function wrap(
+  sessionId: string,
+  payload: ProtocolMessage,
+  target?: string,
+): CloudEnvelope {
+  const envelope: CloudEnvelope = {
     v: 1,
     sessionId,
     encrypted: false,
     payload,
   };
+  if (target !== undefined) {
+    envelope.target = target;
+  }
+  return envelope;
 }
 
 /**
@@ -138,6 +174,12 @@ export function unwrap(raw: unknown): CloudEnvelope {
     typeof r.payload !== 'object'
   ) {
     throw new EnvelopeShapeError('Envelope missing payload');
+  }
+
+  // Optional `target` field (07-05b extension): must be a string when present.
+  // Absence is the broadcast-fan-out signal; absence is fine.
+  if (r.target !== undefined && typeof r.target !== 'string') {
+    throw new EnvelopeShapeError('Envelope target must be a string when present');
   }
 
   // Shape validated above; payload's discriminator is protocol.ts's responsibility.

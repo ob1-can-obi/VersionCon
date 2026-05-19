@@ -203,8 +203,13 @@ export interface ClientTransport {
    * OPEN — mirrors the existing
    * `if (this.ws && this.ws.readyState === WebSocket.OPEN) sendMessage(...)`
    * pattern at SessionClient lines 271, 459, 531.
+   *
+   * Optional `target` argument (07-05b extension): cloud-mode transports
+   * (CloudTransport) write the value to `envelope.target` for unicast routing
+   * on the relay; LAN transports ignore it. The argument is optional so
+   * existing call-sites compile without change.
    */
-  send(msg: ProtocolMessage): boolean;
+  send(msg: ProtocolMessage, target?: string): boolean;
 
   /**
    * Send a heartbeat ping (mirrors `this.ws.ping()` at SessionClient

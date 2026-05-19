@@ -92,10 +92,12 @@ class FakeClientTransport implements ClientTransport {
     }
   }
 
-  // Helper: simulate inbound envelope of a given payload (with optional memberId).
-  _simulateEnvelope(sessionId: string, payload: object): void {
-    const envelope = { v: 1, sessionId, encrypted: false, payload };
-    this._simulateRaw(Buffer.from(JSON.stringify(envelope), 'utf-8'));
+  // Helper: simulate inbound payload bytes. Mirrors CloudTransport's
+  // onMessage contract (handlers receive env.payload re-serialized, NOT the
+  // full envelope) so CloudHostTransport.handleInbound sees the production
+  // shape.
+  _simulateEnvelope(_sessionId: string, payload: object): void {
+    this._simulateRaw(Buffer.from(JSON.stringify(payload), 'utf-8'));
   }
 
   _simulateClose(code: number, reason: Buffer): void {
@@ -389,7 +391,7 @@ suite('Phase 7 — host cloud wiring', () => {
   });
 
   test('source-grep: src/network/CloudHostTransport.ts contains zero inviteCode references', () => {
-    const filePath = path.resolve(__dirname, '../../network/CloudHostTransport.ts');
+    const filePath = path.resolve(process.cwd(), 'src/network/CloudHostTransport.ts');
     const src = fsSync.readFileSync(filePath, 'utf-8');
     assert.doesNotMatch(
       src,
@@ -399,7 +401,7 @@ suite('Phase 7 — host cloud wiring', () => {
   });
 
   test('source-grep: src/host/SessionHostFactory.ts contains zero inviteCode references', () => {
-    const filePath = path.resolve(__dirname, '../../host/SessionHostFactory.ts');
+    const filePath = path.resolve(process.cwd(), 'src/host/SessionHostFactory.ts');
     const src = fsSync.readFileSync(filePath, 'utf-8');
     assert.doesNotMatch(
       src,
@@ -409,7 +411,7 @@ suite('Phase 7 — host cloud wiring', () => {
   });
 
   test('source-grep: src/host/SessionHost.ts MUST NOT contain cloudMode/setCloudMode/handleCloudInboundFrame', () => {
-    const filePath = path.resolve(__dirname, '../../host/SessionHost.ts');
+    const filePath = path.resolve(process.cwd(), 'src/host/SessionHost.ts');
     const src = fsSync.readFileSync(filePath, 'utf-8');
     assert.doesNotMatch(
       src,

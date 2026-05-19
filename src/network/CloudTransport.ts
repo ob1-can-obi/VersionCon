@@ -358,10 +358,22 @@ export class CloudTransport implements ClientTransport {
     this.stateChangeHandlers.push(handler);
   }
 
-  send(msg: ProtocolMessage): boolean {
+  /**
+   * Send a ProtocolMessage wrapped in a CloudEnvelope.
+   *
+   * Optional `target` argument (07-05b extension): when supplied, the envelope
+   * gains a `target` field for unicast routing on the relay. When omitted, the
+   * envelope's broadcast byte-shape from 07-02 is preserved exactly
+   * (JSON.stringify omits undefined keys).
+   *
+   * Non-breaking: existing call-sites continue to call `send(msg)` and get
+   * broadcast semantics. CloudHostTransport (07-05b) calls `send(msg, target)`
+   * for per-member unicast routing.
+   */
+  send(msg: ProtocolMessage, target?: string): boolean {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
     try {
-      const envelope = wrap(this.sessionId, msg);
+      const envelope = wrap(this.sessionId, msg, target);
       this.ws.send(serialize(envelope));
       return true;
     } catch {

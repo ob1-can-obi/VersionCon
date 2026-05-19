@@ -17,7 +17,10 @@
 import * as assert from 'assert';
 import * as path from 'path';
 import * as fsSync from 'fs';
-import { CloudHostTransport } from '../../network/CloudHostTransport.js';
+import {
+  CloudHostTransport,
+  _setDemuxLoggerForTest,
+} from '../../network/CloudHostTransport.js';
 import { wrap, serialize } from '../../network/CloudEnvelope.js';
 import type { ClientTransport } from '../../network/Transport.js';
 import type { ProtocolMessage } from '../../network/protocol.js';
@@ -63,9 +66,15 @@ class FakeClientTransport implements ClientTransport {
       try { h(raw); } catch { /* ignore */ }
     }
   }
-  _simulateEnvelope(sessionId: string, payload: object): void {
-    const envelope = { v: 1, sessionId, encrypted: false, payload };
-    this._simulateRaw(Buffer.from(JSON.stringify(envelope), 'utf-8'));
+  /**
+   * Mirror CloudTransport's onMessage contract: handlers receive the PAYLOAD
+   * bytes (env.payload re-serialized), NOT the full envelope. CloudTransport
+   * does `Buffer.from(JSON.stringify(env.payload))` before fan-out. The fake
+   * does the same so CloudHostTransport.handleInbound sees the same shape it
+   * would see in production.
+   */
+  _simulateEnvelope(_sessionId: string, payload: object): void {
+    this._simulateRaw(Buffer.from(JSON.stringify(payload), 'utf-8'));
   }
   _simulateClose(code: number, reason: Buffer): void {
     this.opened = false;
@@ -295,11 +304,7 @@ suite('Phase 7 — cloud host demux', () => {
     t.onConnection(() => { connFireCount++; });
 
     const logs: string[] = [];
-    const origLog = console.log;
-    console.log = (msg?: unknown): void => {
-      if (typeof msg === 'string') logs.push(msg);
-      else if (msg !== undefined) logs.push(JSON.stringify(msg));
-    };
+    const restore = _setDemuxLoggerForTest((line) => { logs.push(line); });
     try {
       fake._simulateEnvelope('vc-x', {
         type: 'heartbeat-ping',
@@ -315,7 +320,7 @@ suite('Phase 7 — cloud host demux', () => {
       });
       await flushMicrotasks();
     } finally {
-      console.log = origLog;
+      restore();
     }
     assert.strictEqual(connFireCount, 1, 'second observation does NOT fire onConnection');
     const hasCollisionLog = logs.some(
@@ -340,7 +345,7 @@ suite('Phase 7 — cloud host demux', () => {
   });
 
   test('source-grep: SessionHost.ts MUST NOT reference VirtualConnection', () => {
-    const filePath = path.resolve(__dirname, '../../host/SessionHost.ts');
+    const filePath = path.resolve(process.cwd(), 'src/host/SessionHost.ts');
     const src = fsSync.readFileSync(filePath, 'utf-8');
     assert.doesNotMatch(
       src,
@@ -350,7 +355,7 @@ suite('Phase 7 — cloud host demux', () => {
   });
 
   test('source-grep: CloudHostTransport.ts reads payload.memberId for routing', () => {
-    const filePath = path.resolve(__dirname, '../../network/CloudHostTransport.ts');
+    const filePath = path.resolve(process.cwd(), 'src/network/CloudHostTransport.ts');
     const src = fsSync.readFileSync(filePath, 'utf-8');
     assert.match(
       src,

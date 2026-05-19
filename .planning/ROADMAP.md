@@ -20,7 +20,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 4.3 (INSERTED): Git-Style Commands + File Explorer Workflow + Cloud Bridge** - Hide `.versioncon/` from VS Code File Explorer; git-style command aliases; workspace-diff-driven push/pull (no drag required); status-bar "N local changes" indicator; one-way export to a real Git remote (host-only) so v2-of-project starts with `git pull` + fresh session (5/5 plans done; 14 commits 9e20df0..69ffeaf; 350 → 439 passing, +89 new tests)
 - [x] **Phase 5: Dependency-Aware Conflict Detection (AST)** - AST child process, per-language parsers, function-level conflict attribution, smart push summary (5/5 plans done; 25 code commits 754c0e8..7d4d75b; 439 → 684 passing, +245 new tests; SC-1 attribution + SC-2 sub-50ms broadcast + SC-3 fallback + SC-4 skipPolicy + SC-5 smart summary all verified)
 - [x] **Phase 6: Inline Code Review** - Diff + approve flow, line comments, mandatory review gate, review threads in chat (5/5 plans done; 824 → 867 passing in Wave 4; SC-1 vscode.diff + SC-2 panel composer/inline gutter + SC-3 requireReview merge gate at 3 entry points + SC-4 chat system events all satisfied end-to-end; UAT folds into a future /gsd-verify-work 6 pass)
-- [ ] **Phase 7: Cloud Mode + Relay Server** - Relay deployment, JWT auth, CloudTransport, same UX as LAN over internet
+- [ ] **Phase 7: Cloud Mode + Relay Server** - Relay deployment, JWT auth, CloudTransport, same UX as LAN over internet (Wave 1 in progress: 07-02 ✓, 07-01 ✓; 884 / 0 / 66 tests passing)
 - [ ] **Phase 8: AI Agent API (MCP Integration)** - Embedded MCP server, read-only tools for branch state, dependency graph, activity
 
 ## Phase Details
@@ -209,9 +209,9 @@ Plans:
 **Plans**: 13 plans across 4 waves (verified by plan-checker iteration 3)
 
 **Wave 1** *(parallel; foundation seam — no behavior change)*:
-- 07-01 Transport interface + LanTransport refactor (source-grep gate: `new WebSocket(` / `new WebSocketServer(` locality)
-- 07-02 CloudEnvelope type + wrap/unwrap (byte-shape snapshot pinned for future L3 forward-compat)
-- 07-03 TokenService — jose-backed JWT issuer/verifier (HS256-locked + algorithm-confusion + aud + exp tests)
+- [x] 07-01 Transport interface + LanTransport refactor (commits 800c233 RED + c0ba05f GREEN; 884 tests pass byte-identically)
+- [x] 07-02 CloudEnvelope type + wrap/unwrap (byte-shape snapshot pinned for future L3 forward-compat; commits 973d071 + 6f8ac80 + ebba324)
+- [ ] 07-03 TokenService — jose-backed JWT issuer/verifier (HS256-locked + algorithm-confusion + aud + exp tests)
 
 **Wave 2** *(blocked on Wave 1)*:
 - 07-04 CloudTransport (outbound WSS, Bearer header, envelope wrap, ReconnectManager reuse, close-code → state mapping)

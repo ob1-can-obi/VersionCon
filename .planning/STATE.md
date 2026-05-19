@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 5 (Dependency-Aware Conflict Detection / AST) shipped autonomously. 5 plans, 25 code commits (754c0e8..7d4d75b), +245 tests (439 → 684 passing). Vendored web-tree-sitter WASMs for JavaScript / TypeScript / TSX / Python. PythonAdapter + JavaScriptAdapter + TypeScriptAdapter (with TSX routing) extract function/class/variable/import/export/call symbols. FallbackAdapter + Java/C++ register-but-fallback stubs cover SC-3. AstWorker runs as forked child_process (SC-2 isolation guarantee, sub-50ms broadcast remains synchronous), with 3-strike crash-circuit + 5s per-file slowloris timeout + segment-aware path validation (T-05-01..05 mitigated). AstAnalyzer wired into SessionHost.broadcastPush; chat-message-amend wire type carries affectedSymbols + unsupportedLanguages payload; ChatPanel + ActivityLog upgrade their labels when payload present, fall back to file-count when absent. Phase 6 (Inline Code Review) is next.
-last_updated: "2026-05-18T00:00:00.000Z"
-last_activity: 2026-05-18 -- Phase 07 planning complete (13 plans, 4 waves); ready to execute
+stopped_at: Phase 7 Wave 1 in progress — 07-02 (CloudEnvelope) and 07-01 (Transport interface seam) shipped. 07-01 refactor of SessionHost + SessionClient is byte-identical (884 / 0 / 66 vs. pre-refactor 867+) and the source-grep gate in src/test/suite/transportSeam.test.ts (Tests A–F) is green. `new WebSocketServer(` and `new WebSocket(`ws://...`)` are now quarantined inside src/network/LanTransport.ts; HostTransport + ClientTransport interfaces exported from src/network/Transport.ts so 07-04 CloudTransport plugs in without touching the controllers. findFreePort migrated into LanHostTransport (wire-layer concern). 07-03 (TokenService — jose JWT) is next.
+last_updated: "2026-05-19T00:00:00.000Z"
+last_activity: 2026-05-19 -- Plan 07-01 complete; Transport seam landed (RED+GREEN commits 800c233, c0ba05f); Wave 1 ⅔ shipped (07-02 ebba324 + 07-01)
 progress:
   total_phases: 13
   completed_phases: 5
   total_plans: 59
-  completed_plans: 44
-  percent: 75
+  completed_plans: 46
+  percent: 78
 ---
 
 # Project State
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-05-04)
 
 ## Current Position
 
-Phase: 07 (cloud-mode-relay-server) — READY TO EXECUTE
-Plan: 0 of 13 (07-01..07-12 + 07-05b merged) — verified, plan-checker iteration 3 PASSED
-Status: 13 plans across 4 waves; all blockers resolved through revision loop (iter 1: blocker on missing host-side wiring, iter 2: blocker on Wave-numbering + dead-code state in SessionHost, iter 3: merged 07-05b+07-05c → final PASS)
-Next: /gsd-execute-phase 7 — execute Wave 1 (07-01, 07-02, 07-03) in parallel
-Last activity: 2026-05-18 -- /gsd-plan-phase 7 complete; 13 PLAN.md files + 07-PATTERNS.md + 07-PLAN-OUTLINE.md created
+Phase: 07 (cloud-mode-relay-server) — EXECUTING (Wave 1)
+Plan: 2 of 13 done (07-01 ✓, 07-02 ✓; 07-03 next)
+Status: Wave 1 ⅔ shipped — Transport seam (07-01) and CloudEnvelope (07-02) both byte-identical refactors. 07-03 (TokenService) blocks on this commit landing.
+Next: /gsd-execute-phase 7 — run 07-03 (jose-backed JWT TokenService + HS256 algorithm-confusion gate)
+Last activity: 2026-05-19 -- /gsd-execute-phase 7 plan 07-01 complete (Transport.ts + LanTransport.ts + surgical refactor of SessionHost/SessionClient; 884 tests passing); commits 800c233 + c0ba05f
 
 Progress: [██████████] 96%
 
@@ -50,8 +50,8 @@ Progress: [██████████] 96%
 
 **Recent Trend:**
 
-- Last 5 plans: 04-11 (5 min), 04-10 (12 min), 04-09 (7.2 min), 04-08 (3.3 min), 04-07 (4 min)
-- Trend: 04-11 closes Phase 4 at 5 min — back to the Phase 4 average after 04-10's 12-min ChatPanel outlier. Two deviations (Rule 2 chat-log wiring that prior plans deferred, Rule 1 break/return style fix). 22 new tests; 284 passing total. Phase 4 is feature-complete (11 of 11 plans done); awaiting verifier + multi-host UAT.
+- Last 5 plans: 07-01 (~30 min — surgical refactor of two ~2000-line controllers), 07-02 (CloudEnvelope), 06-05 (Wave 4 mandatory review gate), 06-04 (ReviewPanel UI), 06-03 (ReviewState client cache)
+- Trend: 07-01 is a pure refactor (zero behavior change) but touches ~14 wire I/O sites in SessionHost + ~6 in SessionClient + adds 2 new files (Transport.ts interface, LanTransport.ts impl) + 1 source-grep gate test. 884 tests pass twice consecutively (no flake). Two architectural deviations logged: (1) optional `transport?` constructor parameter instead of factory-file split, (2) `HostTransport.sendRaw` added to preserve BandwidthMonitor byte-accuracy.
 
 *Updated after each plan completion*
 
@@ -138,6 +138,11 @@ Recent decisions affecting current work:
 - [Plan 06-05]: Singleton-per-pushId vscode.CommentController lifecycle managed at module scope (activeReviewController + activeReviewThreadDisposables + activeReviewPushIdForController). Wired into ReviewPanel.addOwnedDisposable via a synthetic disposable that clears all 3 refs on dispose — singleton mirrors ReviewPanel.currentPanel pattern.
 - [Plan 06-05]: Full rebuild of inline CommentThreads on every review event (vs. diff-and-patch) — bounded by host's 500-cap. Diff-and-patch would need a per-comment-id → thread map kept in sync with ReviewState; not justified for v1.
 - [Plan 06-05]: v1 contract: NO bare-line gutter 'Add comment' affordance. commentingRangeProvider returns [] for all lines. Users compose new threads via the ReviewPanel webview's per-file-row composer. Gutter add-comment is a Phase 6.x deliverable.
+- [Plan 07-01]: Transport seam shipped via optional `transport?` constructor parameter (LAN default = `new LanHostTransport()` / `new LanClientTransport(ip, port)`) instead of a separate SessionHostFactory.ts file. The source-grep gate forbids `from 'ws'` and `new WebSocketServer(` LITERALS — importing LanHostTransport into SessionHost.ts matches neither pattern, so seam discipline holds. Net: 20+ existing call-sites (WizardPanel.ts:546, JoinPanel.ts:229, all eight host/client/review/ast test fixtures) compile unchanged, preserving the Plan's byte-identical-behavior invariant. Future cloud callers (07-05, 07-06) pass an explicit CloudHostTransport / CloudClientTransport.
+- [Plan 07-01]: Added `HostTransport.sendRaw(conn, data): number` on top of `HostTransport.send(conn, msg)` (Rule 2 — missing critical API). SessionHost.broadcast pre-serializes JSON ONCE and writes the same bytes to every member to feed BandwidthMonitor exact wire-byte counts (pre-refactor line 2011-2013). A naive transport.send(conn, msg) loop would re-stringify per member, breaking the byte-accuracy contract. Documented in JSDoc; only SessionHost.broadcast should call sendRaw.
+- [Plan 07-01]: SessionClient registers transport handlers ONCE per instance via `transportHandlersInstalled` flag. Pre-refactor, `new WebSocket(...)` was constructed inline per connect() call so handlers were naturally re-attached to the new socket. With Transport: LanClientTransport.connect() re-binds the underlying ws.on(...) calls to the SAME registered handler arrays on every reconnect — SessionClient's one-shot install pattern prevents handler array duplication across reconnects (caught during Task 2 — would have caused 2× / 3× / Nx message processing after N reconnects).
+- [Plan 07-01]: `intentionalClose: boolean` flag in SessionClient replaces the pre-refactor null-ws sentinel (`this.ws = null` BEFORE `ws.close()` at line 550-551). Flipped true inside `disconnectInternal()` before `transport.close()` so the onClose handler short-circuits and does NOT trigger attemptReconnect. Semantically identical, no `markIntentionalClose` method added to the ClientTransport interface (would have leaked controller state into the wire layer).
+- [Plan 07-01]: findFreePort migrated from SessionHost into LanHostTransport — wire-layer concern. SessionHost no longer imports from `net`.
 
 ### Roadmap Evolution
 
@@ -181,7 +186,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-11T10:31:00Z
-Stopped at: Phase 5 (Dependency-Aware Conflict Detection / AST) shipped autonomously. 5 plans, 25 code commits (754c0e8..7d4d75b), +245 tests (439 → 684 passing). Vendored web-tree-sitter WASMs for JavaScript / TypeScript / TSX / Python. PythonAdapter + JavaScriptAdapter + TypeScriptAdapter (with TSX routing) extract function/class/variable/import/export/call symbols. FallbackAdapter + Java/C++ register-but-fallback stubs cover SC-3. AstWorker runs as forked child_process (SC-2 isolation guarantee, sub-50ms broadcast remains synchronous), with 3-strike crash-circuit + 5s per-file slowloris timeout + segment-aware path validation (T-05-01..05 mitigated). AstAnalyzer wired into SessionHost.broadcastPush; chat-message-amend wire type carries affectedSymbols + unsupportedLanguages payload; ChatPanel + ActivityLog upgrade their labels when payload present, fall back to file-count when absent. Phase 6 (Inline Code Review) is next.
+Last session: 2026-05-19T05:00:00Z
+Stopped at: Plan 07-01 (Transport interface seam) complete. Refactor is byte-identical — 884 tests pass twice consecutively (vs. 867 pre-refactor + 6 new transport-seam assertions + 11 from 07-02 CloudEnvelope). SessionHost.ts + SessionClient.ts no longer import from `ws` and no longer construct WebSocketServer / WebSocket — the constructs are quarantined inside src/network/LanTransport.ts. HostTransport + ClientTransport interfaces exported from src/network/Transport.ts (opaque TransportConnection = unknown — T-07-RX mitigation). findFreePort migrated into LanHostTransport. Optional `transport?` constructor parameter with LAN default keeps all 20+ existing call-sites compiling unchanged. Two-commit RED/GREEN pair (800c233, c0ba05f). 07-03 (TokenService — jose JWT) is next.
 Resume file: None
-Last activity: 2026-05-11 - Phase 5 complete autonomously; ready for Phase 6 planning
+Last activity: 2026-05-19 -- Plan 07-01 complete; Wave 1 ⅔ shipped (07-02 ebba324 + 07-01 c0ba05f)

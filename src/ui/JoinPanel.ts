@@ -337,11 +337,21 @@ export class JoinPanel {
 
         if (connected) {
           const sessionName = client.getSessionInfo()?.name ?? 'Session';
+          // Review MD-09: tag cloud history entries with mode discriminator
+          // so the recents UI + quick-connect can branch correctly.
+          // hostIp/port stay as legacy-shaped placeholders so older readers
+          // (pre-MD-09) ignore the entry safely (a LAN quick-connect against
+          // wss-shaped hostIp+port=0 still produces an invalid connect attempt,
+          // but the new `mode === 'cloud'` discriminator lets new readers
+          // skip that path entirely).
           await this.sessionHistory.addEntry({
             hostIp: relayUrl,
             port: 0,
             sessionName,
             displayName,
+            mode: 'cloud',
+            relayUrl,
+            sessionId,
           });
           await this.secretStore.storeInviteCode(sessionName, inviteCode);
 
@@ -395,13 +405,17 @@ export class JoinPanel {
       const connected = await client.connect();
 
       if (connected) {
-        // Save to history for quick reconnect (NET-04, D-08)
+        // Save to history for quick reconnect (NET-04, D-08).
+        // Review MD-09: tag LAN entries with the `lan` mode discriminator
+        // so cloud-mode reader code can distinguish history entries
+        // explicitly. Older readers ignore unknown fields safely.
         const sessionName = client.getSessionInfo()?.name ?? 'Session';
         await this.sessionHistory.addEntry({
           hostIp,
           port,
           sessionName,
           displayName,
+          mode: 'lan',
         });
 
         // Store invite code securely for future quick-connect (T-01-11)

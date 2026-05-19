@@ -60,13 +60,29 @@ export interface Session {
   isActive: boolean;
 }
 
-// Saved session for history per D-08 (last 3-5 sessions)
+// Saved session for history per D-08 (last 3-5 sessions).
+//
+// Review MD-09: `mode` discriminator added so cloud-mode entries can be
+// distinguished from LAN entries at recents-render and quick-connect time.
+// Pre-fix, the cloud branch of JoinPanel.handleJoinConnect persisted
+// `relayUrl` into the `hostIp` field with `port: 0` — which made the
+// recents UI render `wss://relay.test:0` and quick-connect call
+// `SessionClient(relayUrl, 0, ...)` (LAN constructor) against a wss-shaped
+// host. With `mode`, the UI/quick-connect can branch correctly.
+//
+// Backwards-compat: existing entries on disk have no `mode` field. Code
+// that reads SessionHistory treats `mode === undefined` as the implicit
+// `'lan'` default — matches pre-MD-09 disk shape.
 export interface SavedSession {
   hostIp: string;
   port: number;
   sessionName: string;
   displayName: string;
   lastConnected: number;
+  // Review MD-09 — cloud sessions
+  mode?: 'lan' | 'cloud';
+  relayUrl?: string;
+  sessionId?: string;
 }
 
 // Transport abstraction (same protocol, different transport)

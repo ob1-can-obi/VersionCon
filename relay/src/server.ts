@@ -34,9 +34,18 @@ export interface StartServerOptions {
    * When true, verifyClient rejects connections unless a real ./auth.js module
    * resolves (T-07-16 — pre-07-09 fail-closed). When false, all upgrades
    * accepted — used by tests pre-07-09.
+   *
+   * Phase 7 Plan 07-05b — TEST-ONLY value `'test'`: verifyClient reads
+   * synthetic JWT claims from `x-test-role`, `x-test-aud`, `x-test-sub`
+   * request headers and stashes them on `info.req.claims`. This mode is
+   * used by `relay/test/hostRegister.test.js` to exercise the first-frame
+   * session-register carve-out without needing a real JWT signing path.
+   * Production callers MUST set `requireAuth: true` (or omit to use the
+   * default).
+   *
    * Defaults to true unless `RELAY_REQUIRE_AUTH === 'false'`.
    */
-  requireAuth?: boolean;
+  requireAuth?: boolean | 'test';
 }
 
 export interface RunningServer {
@@ -98,8 +107,31 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       //   - requireAuth === true + no auth.js:   reject with 503 (auth not configured).
       // The conservative "reject when requireAuth=true" stance pins T-07-16:
       // a deploy of this skeleton without 07-09 cannot accept connections.
-      if (!requireAuth) {
+      if (requireAuth === false) {
         cb(true);
+        return;
+      }
+      // Phase 7 Plan 07-05b — test-only seam. `requireAuth: 'test'` reads
+      // synthetic JWT claims from x-test-* headers and stashes them on
+      // info.req so the connection handler's first-frame carve-out can run
+      // without a real JWT verify path. Tests use this to exercise the
+      // session-register branches in isolation.
+      if (requireAuth === 'test') {
+        const headers = info.req.headers;
+        const role = headers['x-test-role'];
+        const aud = headers['x-test-aud'];
+        const sub = headers['x-test-sub'];
+        if (
+          (role === 'host' || role === 'member') &&
+          typeof aud === 'string' &&
+          typeof sub === 'string'
+        ) {
+          (info.req as unknown as { claims: { role: string; aud: string; sub: string } })
+            .claims = { role, aud, sub };
+          cb(true);
+          return;
+        }
+        cb(false, 401, 'missing-test-claims');
         return;
       }
       // Use a then/catch chain rather than an async verifyClient — older ws
@@ -128,16 +160,107 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
 
   wss.on('connection', (ws: WebSocket, req) => {
     const ip = req.socket.remoteAddress ?? 'unknown';
-    // Plan 07-11 vocabulary: connection-open carries {event, sessionId, role, ip}.
-    // Pre-07-09 wiring has no sessionId/role context here yet (those land on
-    // info.req after verifyToken stashes claims in 07-09's final hookup); for
-    // now we log the IP only. The structured shape is the contract.
+    const claims = (req as unknown as { claims?: { role: string; aud: string; sub: string } })
+      .claims;
     logger.info({ event: 'connection-open', ip });
 
+    // Phase 7 Plan 07-05b — first-frame carve-out. This is the ONE place in
+    // the relay's wire-handling code that reads `envelope.payload` fields
+    // (named exception to T-07-02 byte-pass-through). The carve-out is
+    // restricted to:
+    //   (a) the FIRST frame of every WSS connection;
+    //   (b) host-role JWTs only (role from claims, NEVER from connection
+    //       order — T-07-09);
+    //   (c) the `sessionId` and `verifySecret` fields ONLY.
+    // Member-role sockets attempting session-register are forcibly closed
+    // with WSS code 4400. The router.ts source-grep gate still passes
+    // (no `.payload` reads in router.ts).
+    let firstFrameHandled = false;
+    let attachedSessionId: string | undefined;
+
     ws.on('message', (raw) => {
-      // Extract sessionId from the envelope WITHOUT inspecting the envelope body.
-      // The relay parses the JSON just enough to learn sessionId; router.ts then
-      // forwards the ORIGINAL raw buffer verbatim (byte-pass-through invariant).
+      if (!firstFrameHandled) {
+        firstFrameHandled = true;
+        try {
+          const text =
+            typeof raw === 'string' ? raw : (raw as Buffer).toString('utf-8');
+          const env = JSON.parse(text) as {
+            sessionId?: unknown;
+            payload?: { type?: unknown; sessionId?: unknown; verifySecret?: unknown };
+          };
+
+          // No claims attached? verifyClient should have rejected, but defense
+          // in depth: close hard if we got this far without claims.
+          if (!claims) {
+            ws.close(4401, 'no-claims');
+            return;
+          }
+
+          if (claims.role === 'host') {
+            // T-07-02-exception: read envelope.payload.type / .sessionId / .verifySecret
+            // ONLY in this branch. Comment block per the plan's documented
+            // carve-out — the router.ts invariant is preserved.
+            if (env?.payload?.type !== 'session-register') {
+              ws.close(4400, 'host-first-frame-must-be-session-register');
+              return;
+            }
+            const payloadSid = env.payload.sessionId;
+            if (typeof payloadSid !== 'string' || payloadSid !== claims.aud) {
+              ws.close(4400, 'session-register-aud-mismatch');
+              return;
+            }
+            const verifySecretB64 = env.payload.verifySecret;
+            if (typeof verifySecretB64 !== 'string') {
+              ws.close(4400, 'session-register-missing-verify-secret');
+              return;
+            }
+            const verifySecret = Buffer.from(verifySecretB64, 'base64');
+            if (verifySecret.length !== 32) {
+              ws.close(4400, 'session-register-verify-secret-wrong-length');
+              return;
+            }
+            const registered = registry.register(
+              claims.aud,
+              ws,
+              new Uint8Array(verifySecret),
+            );
+            if (!registered) {
+              ws.close(4429, 'session-cap-reached');
+              return;
+            }
+            attachedSessionId = claims.aud;
+            // session-register frame is CONSUMED. Do NOT forward to router.
+            return;
+          }
+
+          // Member role — session-register is forbidden as a first frame.
+          if (env?.payload?.type === 'session-register') {
+            ws.close(4400, 'members-cannot-register-sessions');
+            return;
+          }
+
+          // Member role + non-register first frame — attach + route normally.
+          const sid = env?.sessionId;
+          if (typeof sid !== 'string' || sid !== claims.aud) {
+            ws.close(4400, 'session-id-aud-mismatch');
+            return;
+          }
+          const attached = registry.attachMember(sid, claims.sub, ws);
+          if (!attached) {
+            ws.close(4429, 'attach-rejected');
+            return;
+          }
+          attachedSessionId = sid;
+          route(registry, sid, ws, raw as Buffer);
+          return;
+        } catch {
+          ws.close(4400, 'malformed-first-frame');
+          return;
+        }
+      }
+
+      // Subsequent frames — DO NOT inspect payload, just learn sessionId from
+      // the envelope (existing 07-08 behavior). Then forward verbatim.
       let sessionId: string | undefined;
       try {
         const text = typeof raw === 'string' ? raw : (raw as Buffer).toString('utf-8');
@@ -146,31 +269,22 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
           sessionId = obj.sessionId;
         }
       } catch {
-        // Malformed JSON — silently drop (T-07-13). 07-10 may add per-IP abuse counters.
         return;
       }
       if (!sessionId) return;
-
-      // Forward the ORIGINAL raw buffer — never a re-serialized object.
       route(registry, sessionId, ws, raw as Buffer);
     });
 
     ws.on('close', (code, reason) => {
-      // Plan 07-11 vocabulary: connection-close carries {event, sessionId, code, reason}.
-      // sessionId is undefined until 07-09 final wiring stashes claims on req;
-      // reason is truncated to 64 chars to bound log-line size without leaking
-      // the full close-frame payload (defense against an attacker stuffing
-      // bytes into the close reason — RFC 6455 §5.5.1 allows up to 123 bytes).
       logger.info({
         event: 'connection-close',
         ip,
         code,
         reason: reason.toString().slice(0, 64),
       });
-      // TODO(07-09): once auth stashes sessionId onto req from verified claims,
-      // call `registry.detach(sessionId, ws)` here. Pre-07-09, server.ts has no
-      // sessionId context per-connection so detach is a no-op (the registry's
-      // detach() seam is exercised by Task 2 tests; wiring lands in 07-09).
+      if (attachedSessionId) {
+        registry.detach(attachedSessionId, ws);
+      }
     });
 
     ws.on('error', (err) => {

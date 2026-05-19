@@ -60,11 +60,31 @@ export class TokenService {
       .sign(this.secret);
   }
 
-  async verify(token: string, audience: string): Promise<JWTPayload> {
+  /**
+   * Verify a JWT against this service's secret. Returns the verified payload
+   * on success; throws on any failure (signature, alg, audience, expiry,
+   * missing role).
+   *
+   * Review MD-08 — optional `expectedIssuer` parameter: when supplied,
+   * the verified payload's `iss` claim MUST match. The host's TokenService
+   * always sets `iss` to the host's memberId on issue (see
+   * SessionHostFactory.createCloud → tokenService.issue with iss: hostMemberId).
+   * A future multi-host extension might revoke a co-host's tokens by
+   * rotating the verifySecret while keeping the same sessionId; the iss
+   * pin gives the verifier an early rejection signal in that case.
+   * Backwards-compat: existing call-sites omit the argument and get the
+   * pre-MD-08 lenient behavior.
+   */
+  async verify(
+    token: string,
+    audience: string,
+    expectedIssuer?: string,
+  ): Promise<JWTPayload> {
     const { payload } = await jwtVerify(token, this.secret, {
       algorithms: ['HS256'],
       audience,
       clockTolerance: '30s',
+      ...(expectedIssuer !== undefined ? { issuer: expectedIssuer } : {}),
     });
     if (payload.role !== 'host' && payload.role !== 'member') {
       throw new Error('Missing role claim');

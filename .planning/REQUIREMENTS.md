@@ -12,7 +12,7 @@
 - [ ] **NET-03**: New members can join a session by entering host address + credentials — no terminal commands
 - [ ] **NET-04**: One-click join experience — member is coding within seconds of connecting
 - [ ] **NET-05**: Connection status indicator always visible (LAN/cloud up, in sync, out of sync)
-- [ ] **NET-06**: Cloud mode works with the same UX as LAN (same protocol, different transport)
+- [x] **NET-06**: Cloud mode works with the same UX as LAN (same protocol, different transport) — Phase 7 Wave 4 (07-05b). SessionHostFactory.createCloud bootstraps a cloud SessionHost end-to-end via the same wizard; CloudHostTransport demultiplexer adapts the CloudTransport (07-04) to the HostTransport interface so SessionHost stays transport-agnostic; relay first-frame carve-out (07-05b server.ts) + envelope.target unicast routing close the relay-side flow. SC-1 + SC-2 paper-verifiable; live cloud UAT deferred to 07-12 + 07-13.
 - [ ] **NET-07**: LAN discovery via mDNS/Bonjour with manual IP entry as primary fallback
 - [ ] **NET-08**: Host can configure bandwidth limits for the session
 
@@ -133,7 +133,7 @@
 | NET-03 | Phase 1 | In Progress (01-02) |
 | NET-04 | Phase 1 | Pending |
 | NET-05 | Phase 1 | In Progress (01-02) |
-| NET-06 | Phase 7 | Pending |
+| NET-06 | Phase 7 | Complete (07-05b) |
 | NET-07 | Phase 1 | Pending |
 | NET-08 | Phase 1 | In Progress (01-02) |
 | UI-01 | Phase 2 | Pending |

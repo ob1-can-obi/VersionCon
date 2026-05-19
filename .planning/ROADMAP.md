@@ -206,7 +206,36 @@ Plans:
   1. A host can start a cloud session from the same setup wizard used for LAN — the UI shows "Cloud" mode and no extra steps are required compared to LAN
   2. A member on a different network can join a cloud session by entering the relay address and credentials — they are coding within the same time window as LAN mode
   3. The connection status indicator correctly reflects cloud relay connection health, including relay server unreachable as a distinct state from session-not-found
-**Plans**: TBD
+**Plans**: 13 plans across 4 waves (verified by plan-checker iteration 3)
+
+**Wave 1** *(parallel; foundation seam — no behavior change)*:
+- 07-01 Transport interface + LanTransport refactor (source-grep gate: `new WebSocket(` / `new WebSocketServer(` locality)
+- 07-02 CloudEnvelope type + wrap/unwrap (byte-shape snapshot pinned for future L3 forward-compat)
+- 07-03 TokenService — jose-backed JWT issuer/verifier (HS256-locked + algorithm-confusion + aud + exp tests)
+
+**Wave 2** *(blocked on Wave 1)*:
+- 07-04 CloudTransport (outbound WSS, Bearer header, envelope wrap, ReconnectManager reuse, close-code → state mapping)
+- 07-05 Wizard cloud step (LAN/Cloud radio + Relay URL field + Test-connection button + share-screen deep-link)
+- 07-06 Join panel cloud branch + UriHandler (`vscode://versioncon.versioncon/join?…` deep-link + confirmation prompt)
+- 07-07 StatusBarManager 3 cloud states (connected / relay-unreachable / session-not-found with precedence)
+
+**Wave 3** *(blocked on Wave 1; parallel with Wave 2 — relay package is independent)*:
+- 07-08 Relay skeleton (package.json, tsconfig, server.ts, SessionRegistry.ts, router.ts byte-pass-through)
+- 07-09 Relay auth.ts (jose JWT verify; algorithm-confusion + aud + exp; invite-code-locality source-grep)
+- 07-10 Relay limits.ts (30/min IP, 1000 sessions, 50 members/session, 1 MiB frame cap, 30-min reaper, 60s grace)
+- 07-11 Relay logger.ts (pino + redact config; snapshot test: Bearer / payload / invite-code never appear)
+
+**Wave 4** *(blocked on Wave 3)*:
+- 07-05b Host-side cloud wiring + CloudHostTransport demultiplexer (SessionHostFactory.createCloud, session-register frame, per-joiner JWT issuance, envelope.target unicast)
+- 07-12 Deployment + docs (relay/Dockerfile, relay/fly.toml, relay/README.md, top-level README cloud section)
+
+**Cross-cutting constraints** *(must_haves.truths shared across ≥2 plans)*:
+- Source-grep "router never reads `envelope.payload`" — enforced by 07-08, exception named in 07-05b (host first-frame session-register carve-out)
+- Source-grep "invite code never on the relay-side wire path" — enforced by 07-09 + 07-05b
+- jose `algorithms: ['HS256']` literal — enforced by 07-03 + 07-09 (defense-in-depth source-grep gates in BOTH files)
+- pino redact `remove: true` strips Bearer tokens / payload / invite-code from all relay logs — 07-11 snapshot test gates
+- T-04-01-01 server-trust pattern (host-override of memberId/timestamp) preserved unchanged across cloud transport — 07-01 + 07-05b
+- Deep-link scheme `vscode://versioncon.versioncon/join?relay=…&session=…&code=…` (UI-SPEC supersedes CONTEXT) — 07-05, 07-06, 07-12 all use the same scheme
 
 ### Phase 8: AI Agent API (MCP Integration)
 **Goal**: AI coding agents (Claude Code, Cursor, Codex) can query VersionCon's collaboration context so they can give advice that is aware of branch state, pending syncs, and dependency impacts
@@ -232,7 +261,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 4. Presence, Chat + File-Level Conflict Notifications | 11/11 | Feature complete (UAT pending) | - |
 | 5. Dependency-Aware Conflict Detection (AST) | 0/TBD | Not started | - |
 | 6. Inline Code Review | 0/TBD | Not started | - |
-| 7. Cloud Mode + Relay Server | 0/TBD | Not started | - |
+| 7. Cloud Mode + Relay Server | 0/13 | Planned, ready to execute | - |
 | 8. AI Agent API (MCP Integration) | 0/TBD | Not started | - |
 
 ## Backlog

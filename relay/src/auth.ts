@@ -46,7 +46,21 @@ export type TokenInfo = {
   role: 'host' | 'member';
 };
 
-type AuthFailReason = 'malformed' | 'expired' | 'wrong-alg' | 'unknown-session';
+type AuthFailReason =
+  | 'malformed'
+  | 'expired'
+  | 'wrong-alg'
+  | 'unknown-session'
+  | 'malformed-aud';
+
+// Review MD-02: shape gate on the unverified aud claim before it reaches a
+// log line. The aud is read via decodeJwt (no signature check), so an
+// unauthenticated attacker controls it. Without this gate they could inject
+// control characters or arbitrary bytes into the log stream, poison ops
+// search, or inflate log volume with sentinel session ids. Real session
+// ids match `vc-[a-z0-9-]{1,64}` (see WizardPanel — `vc-` prefix + random
+// hex/uuid). The regex is intentionally permissive within those bounds.
+const SESSION_ID_SHAPE = /^vc-[a-z0-9-]{1,64}$/;
 
 function logFail(sessionId: string | undefined, reason: AuthFailReason): void {
   // Logger discipline (CONTEXT D-11, T-07-03/04): only {event, sessionId, reason}.
@@ -88,6 +102,16 @@ export async function verifyToken(
     unverifiedAud = unverified.aud;
   } catch {
     logFail(undefined, 'malformed');
+    return null;
+  }
+
+  // Review MD-02: defense-in-depth shape gate. Reject + log WITHOUT echoing
+  // the attacker-controlled aud string when it does not match the canonical
+  // session-id shape. This prevents the attacker from steering arbitrary
+  // bytes (control characters, log-injection payloads, sentinel strings)
+  // into the relay's log stream via auth-fail emissions.
+  if (!SESSION_ID_SHAPE.test(unverifiedAud)) {
+    logFail(undefined, 'malformed-aud');
     return null;
   }
 

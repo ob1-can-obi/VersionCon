@@ -22,7 +22,15 @@ import type { HostIdentity, SessionConfig } from '../types/session.js';
  * The webview receives a full snapshot on mount and after every mutation.
  */
 interface WizardState {
-  step: 1 | 2 | 3 | 4; // 4 = "share with team" completion screen
+  // Plan 07-05 (Option A): step union widened to insert the LAN/Cloud
+  // mode-select step between former step 1 and former step 2. New mapping:
+  //   1 = sessionName + displayName        (unchanged from Phase 4.1)
+  //   2 = mode-select (LAN | Cloud)        NEW
+  //   3 = network config (branches on mode) — port/interface for LAN,
+  //       relay URL for Cloud
+  //   4 = invite-code reveal               (was step 3)
+  //   5 = share screen (LAN or Cloud)      (was step 4)
+  step: 1 | 2 | 3 | 4 | 5;
   sessionName: string;
   displayName: string; // Plan 04.1-03 (Defect A closure): host's display name
   port: number;
@@ -33,6 +41,12 @@ interface WizardState {
   hostIp: string;
   isSessionActive: boolean;
   error: string | null;
+  // Plan 07-05 (Wave 2 cloud-mode wizard surface):
+  mode: 'lan' | 'cloud'; // default 'lan' — back-compat for LAN flow
+  relayUrl: string; // Cloud branch only — host enters the wss:// relay URL
+  relayUrlReachable: boolean | null; // null = not tested; true = /healthz ok; false = failed
+  relayHealthSessionCount: number | null; // populated from /healthz on success
+  sessionId: string; // Cloud share-screen deep-link param; minimal v1: 'vc-' + inviteCode.toLowerCase()
 }
 
 /**
@@ -163,6 +177,13 @@ export class WizardPanel {
       hostIp: primaryIp,
       isSessionActive: false,
       error: null,
+      // Plan 07-05 defaults — LAN preserves existing flow byte-for-byte; cloud
+      // fields are dormant until the user picks 'cloud' on the mode-select step.
+      mode: 'lan',
+      relayUrl: '',
+      relayUrlReachable: null,
+      relayHealthSessionCount: null,
+      sessionId: '',
     };
 
     // Create webview panel
@@ -355,6 +376,21 @@ export class WizardPanel {
         );
         break;
 
+      // Plan 07-05 — cloud-mode wizard surface message types ------------------
+      case 'wizard-set-mode':
+        this.handleSetMode(message.payload as Record<string, unknown>);
+        break;
+
+      case 'wizard-set-relay-url':
+        this.handleSetRelayUrl(message.payload as Record<string, unknown>);
+        break;
+
+      case 'wizard-test-connection-result':
+        this.handleTestConnectionResult(
+          message.payload as Record<string, unknown>,
+        );
+        break;
+
       default:
         // T-01-14: unknown message types silently ignored
         break;
@@ -450,46 +486,106 @@ export class WizardPanel {
       }
 
       case 2: {
-        // Validate network config
-        const port =
-          typeof payload.port === 'number'
-            ? payload.port
-            : parseInt(String(payload.port), 10);
-        if (isNaN(port) || port < 1024 || port > 65535) {
-          this.state.error = 'Port must be between 1024 and 65535.';
+        // Plan 07-05 — mode-select step. Validate that payload.mode is one of
+        // the two known modes; the radio's change event already eagerly mirrors
+        // mode into state via 'wizard-set-mode', so payload.mode here is a
+        // defense-in-depth re-validation (the user could in principle click
+        // Next without ever triggering the change handler, e.g. via keyboard).
+        const mode = payload.mode;
+        if (mode !== 'lan' && mode !== 'cloud') {
+          this.state.error = 'Please choose a connection mode.';
           this.sendStateUpdate();
           return;
         }
-        this.state.port = port;
-
-        if (typeof payload.networkInterface === 'string') {
-          this.state.networkInterface = payload.networkInterface;
-          // Update hostIp to match selected interface
-          const matchingIface = this.state.availableInterfaces.find(
-            (i) => i.name === payload.networkInterface,
-          );
-          if (matchingIface) {
-            this.state.hostIp = matchingIface.address;
-          }
-        }
-
-        const maxPayloadMB =
-          typeof payload.maxPayloadMB === 'number'
-            ? payload.maxPayloadMB
-            : parseFloat(String(payload.maxPayloadMB));
-        if (isNaN(maxPayloadMB) || maxPayloadMB < 1) {
-          this.state.error = 'Bandwidth limit must be at least 1 MB.';
-          this.sendStateUpdate();
-          return;
-        }
-        this.state.maxPayloadMB = maxPayloadMB;
-
+        this.state.mode = mode;
         this.state.step = 3;
         break;
       }
 
-      case 3:
-        // Step 3 uses wizard-complete, not wizard-next
+      case 3: {
+        // Plan 07-05 — network configuration step, branches on mode.
+        if (this.state.mode === 'lan') {
+          // LAN branch: preserved verbatim from former case 2 (port + interface
+          // + maxPayloadMB).
+          const port =
+            typeof payload.port === 'number'
+              ? payload.port
+              : parseInt(String(payload.port), 10);
+          if (isNaN(port) || port < 1024 || port > 65535) {
+            this.state.error = 'Port must be between 1024 and 65535.';
+            this.sendStateUpdate();
+            return;
+          }
+          this.state.port = port;
+
+          if (typeof payload.networkInterface === 'string') {
+            this.state.networkInterface = payload.networkInterface;
+            // Update hostIp to match selected interface
+            const matchingIface = this.state.availableInterfaces.find(
+              (i) => i.name === payload.networkInterface,
+            );
+            if (matchingIface) {
+              this.state.hostIp = matchingIface.address;
+            }
+          }
+
+          const maxPayloadMB =
+            typeof payload.maxPayloadMB === 'number'
+              ? payload.maxPayloadMB
+              : parseFloat(String(payload.maxPayloadMB));
+          if (isNaN(maxPayloadMB) || maxPayloadMB < 1) {
+            this.state.error = 'Bandwidth limit must be at least 1 MB.';
+            this.sendStateUpdate();
+            return;
+          }
+          this.state.maxPayloadMB = maxPayloadMB;
+        } else {
+          // Cloud branch: relay URL + bandwidth, with wss:// validation and a
+          // gate on relayUrlReachable. T-07-01a mitigation (UX defense layer;
+          // the security boundary is JWT verification at the relay).
+          const relayUrl =
+            typeof payload.relayUrl === 'string' ? payload.relayUrl.trim() : '';
+          let parsed = false;
+          try {
+            new URL(relayUrl);
+            parsed = true;
+          } catch {
+            parsed = false;
+          }
+          if (!relayUrl.startsWith('wss://') || !parsed) {
+            this.state.error = 'Must be a wss:// URL';
+            this.sendStateUpdate();
+            return;
+          }
+          this.state.relayUrl = relayUrl;
+
+          const maxPayloadMB =
+            typeof payload.maxPayloadMB === 'number'
+              ? payload.maxPayloadMB
+              : parseFloat(String(payload.maxPayloadMB));
+          if (isNaN(maxPayloadMB) || maxPayloadMB < 1) {
+            this.state.error = 'Bandwidth limit must be at least 1 MB.';
+            this.sendStateUpdate();
+            return;
+          }
+          this.state.maxPayloadMB = maxPayloadMB;
+
+          // UI-SPEC §Wizard Step 2 — Continue is disabled until Test connection
+          // passes. The webview already disables the button until the result
+          // arrives, but defense-in-depth here catches a bypass.
+          if (this.state.relayUrlReachable !== true) {
+            this.state.error = 'Run Test connection before continuing.';
+            this.sendStateUpdate();
+            return;
+          }
+        }
+
+        this.state.step = 4;
+        break;
+      }
+
+      case 4:
+        // Former step 3 (invite-code reveal) — uses wizard-complete, not wizard-next.
         break;
 
       default:
@@ -501,10 +597,14 @@ export class WizardPanel {
 
   /**
    * Handle wizard back navigation.
+   *
+   * Plan 07-05: widened to allow back-nav from step 4 (invite-code reveal)
+   * back to step 3 (network config). Step 5 (share screen) intentionally
+   * has no back button — the session is live by then.
    */
   private handleWizardBack(): void {
-    if (this.state.step > 1 && this.state.step <= 3) {
-      this.state.step = (this.state.step - 1) as 1 | 2;
+    if (this.state.step > 1 && this.state.step <= 4) {
+      this.state.step = (this.state.step - 1) as 1 | 2 | 3 | 4;
       this.state.error = null;
       this.sendStateUpdate();
     }
@@ -546,9 +646,18 @@ export class WizardPanel {
       this.sessionHost = new SessionHost(config, hostIdentity);
       const actualPort = await this.sessionHost.start();
 
+      // Plan 07-05 — derive a sessionId for the cloud share-screen deep-link.
+      // Minimal v1 derivation: 'vc-' + inviteCode (lowercased). Invite codes
+      // are unique within a process, so the derived sessionId is collision-free
+      // for v1 without introducing a separate identifier. The deep-link
+      // contract (07-06 will parse this) only requires the field be a non-empty
+      // alphanumeric+dash string. LAN mode never reads sessionId (no deep-link
+      // surface) — populating it unconditionally keeps the state shape simple.
+      this.state.sessionId = 'vc-' + this.state.inviteCode.toLowerCase();
+
       // Update state to show share screen
       this.state.port = actualPort;
-      this.state.step = 4;
+      this.state.step = 5;
       this.state.isSessionActive = true;
       this.state.error = null;
 
@@ -635,6 +744,56 @@ export class WizardPanel {
     if (matchingIface) {
       this.state.hostIp = matchingIface.address;
     }
+    this.sendStateUpdate();
+  }
+
+  /**
+   * Plan 07-05 — mode-select radio change handler.
+   *
+   * The webview's radio `change` event eagerly mirrors the selection into
+   * extension-host state so the Continue button gating on the next step has
+   * the right value to read before the user clicks Next. Defense-in-depth:
+   * payload.mode is re-validated at the case-2 branch in handleWizardNext.
+   */
+  private handleSetMode(payload: Record<string, unknown> | undefined): void {
+    if (!payload) return;
+    const mode = payload.mode;
+    if (mode !== 'lan' && mode !== 'cloud') return;
+    this.state.mode = mode;
+    this.sendStateUpdate();
+  }
+
+  /**
+   * Plan 07-05 — relay URL `input` event mirror.
+   *
+   * Editing the URL field invalidates any prior test-connection result so
+   * Continue stays disabled until the user re-runs Test connection. The
+   * webview also gates the Continue button locally; this is defense-in-depth.
+   */
+  private handleSetRelayUrl(
+    payload: Record<string, unknown> | undefined,
+  ): void {
+    if (!payload || typeof payload.relayUrl !== 'string') return;
+    this.state.relayUrl = payload.relayUrl;
+    this.state.relayUrlReachable = null;
+    this.state.relayHealthSessionCount = null;
+    this.sendStateUpdate();
+  }
+
+  /**
+   * Plan 07-05 — store the outcome of a Test connection click.
+   *
+   * The webview performs the fetch (it has DOM access + native fetch); the
+   * extension host only stores the boolean + optional sessions count. The
+   * stored boolean gates the Continue button on the cloud branch of step 3.
+   */
+  private handleTestConnectionResult(
+    payload: Record<string, unknown> | undefined,
+  ): void {
+    if (!payload || typeof payload.ok !== 'boolean') return;
+    this.state.relayUrlReachable = payload.ok;
+    this.state.relayHealthSessionCount =
+      typeof payload.sessions === 'number' ? payload.sessions : null;
     this.sendStateUpdate();
   }
 

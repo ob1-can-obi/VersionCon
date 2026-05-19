@@ -23,6 +23,7 @@ import http from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { SessionRegistry } from './SessionRegistry.js';
 import { route } from './router.js';
+import * as limits from './limits.js';
 
 /**
  * Stubbed structured logger. TODO(07-11): replace with pino + redact config.
@@ -54,7 +55,9 @@ export interface RunningServer {
 }
 
 const startedAt = Date.now();
-const MAX_PAYLOAD = 1024 * 1024; // 1 MiB; 07-10 owns additional caps
+// 07-10: reaper runs every minute scanning for sessions whose lastActivity is older than
+// limits.getIdleReapInterval() (default 30 min).
+const REAPER_TICK_MS = 60_000;
 
 export async function startServer(opts: StartServerOptions = {}): Promise<RunningServer> {
   const requestedPort = opts.port ?? parseInt(process.env.PORT ?? '8080', 10);
@@ -78,9 +81,20 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
 
   const wss = new WebSocketServer({
     server: httpServer,
-    maxPayload: MAX_PAYLOAD,
+    maxPayload: limits.getMaxPayloadBytes(),
     perMessageDeflate: false,
     verifyClient: (info, cb) => {
+      // 07-10 cheaper-check-first invariant: rate limit (synchronous Map lookup)
+      // runs BEFORE the async auth path (jose.jwtVerify Promise). Reject events
+      // log via the inline `log()` shim so 07-11's find-and-replace pass can
+      // swap them to pino with a single grep. T-07-06 mitigation.
+      const ip = info.req.socket.remoteAddress ?? 'unknown';
+      if (!limits.checkConnection(ip)) {
+        // TODO(07-11): swap console.log (in log()) for pino — already structured.
+        log('rate-limit', { ip });
+        cb(false, 429, 'Too Many Requests');
+        return;
+      }
       // SEAM for 07-09: once auth.ts is present, this stub delegates to
       // authMod.verifyToken(info.req.headers['authorization']) and stashes
       // verified claims onto info.req for the 'connection' handler.
@@ -157,6 +171,22 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     });
   });
 
+  // 07-10 idle reaper — sweeps stale sessions every REAPER_TICK_MS. T-07-07
+  // (idle resource exhaustion) mitigation. .unref() so the timer never blocks
+  // graceful shutdown in tests or under SIGTERM (T-07-17).
+  const reaper = setInterval(() => {
+    const now = Date.now();
+    const cutoff = limits.getIdleReapInterval();
+    for (const session of registry.allSessions()) {
+      if (now - session.lastActivity > cutoff) {
+        // TODO(07-11): swap console.log (in log()) for pino.
+        log('idle-reap', { sessionId: session.sessionId });
+        registry.closeSession(session.sessionId, 'idle');
+      }
+    }
+  }, REAPER_TICK_MS);
+  reaper.unref();
+
   return new Promise<RunningServer>((resolve, reject) => {
     httpServer.once('error', reject);
     httpServer.listen(requestedPort, () => {
@@ -168,6 +198,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
         registry,
         close: () =>
           new Promise<void>((res) => {
+            clearInterval(reaper);
             registry.closeAll('shutdown');
             wss.close(() => {
               httpServer.close(() => res());

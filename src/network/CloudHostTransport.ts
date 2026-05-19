@@ -60,11 +60,14 @@ import type {
   TransportConnection,
 } from './Transport.js';
 import type { ProtocolMessage } from './protocol.js';
-import {
-  deserialize,
-  EnvelopeShapeError,
-  EnvelopeEncryptedNotSupportedError,
-} from './CloudEnvelope.js';
+// Review MD-01: dead-import cleanup. handleInbound treats the inbound stream
+// as already-unwrapped payload bytes (see comment at the call site), so it
+// calls plain JSON.parse and the EnvelopeShapeError / EnvelopeEncryptedNotSupportedError
+// classes are never thrown along this code path — the catch branches that
+// referenced them were unreachable. Removed the imports; the future L3
+// encrypted-skew detection seam is documented in the handleInbound comment
+// block below and will be restored if/when CloudHostTransport switches to
+// receiving wrapped envelopes directly.
 
 /**
  * Private opaque per-member handle returned to SessionHost via onConnection.
@@ -364,20 +367,15 @@ export class CloudHostTransport implements HostTransport {
         memberId?: string;
       };
       envelope = { payload: payloadCandidate };
-    } catch (err) {
-      if (err instanceof EnvelopeEncryptedNotSupportedError) {
-        for (const h of this.errorHandlers) {
-          try {
-            h(err);
-          } catch {
-            // ignore
-          }
-        }
-      } else if (err instanceof EnvelopeShapeError) {
-        // shape error — drop silently (defense-in-depth)
-      }
-      // Other JSON errors: drop. The underlying ClientTransport's onError
-      // path already surfaces unrecoverable shape failures.
+    } catch {
+      // Review MD-01: JSON.parse only throws SyntaxError on malformed input.
+      // The pre-fix code had instanceof branches for EnvelopeEncryptedNotSupportedError
+      // / EnvelopeShapeError, but those classes are thrown by `deserialize()` —
+      // which this method does NOT call. Drop the message silently; the
+      // underlying ClientTransport's onError path surfaces unrecoverable
+      // shape failures. If a future refactor restores `deserialize()` here
+      // to enable L3 encrypted-skew detection, re-introduce the typed
+      // branches at that time.
       return;
     }
 

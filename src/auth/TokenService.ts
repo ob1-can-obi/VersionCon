@@ -48,11 +48,27 @@ export class TokenService {
     this.ttl = process.env.VERSIONCON_TOKEN_TTL ?? '4h';
   }
 
-  async issue(_claims: TokenClaims): Promise<string> {
-    throw new Error('NOT IMPLEMENTED — Task 2');
+  async issue(claims: TokenClaims): Promise<string> {
+    return new SignJWT({ role: claims.role })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuer(claims.iss)
+      .setSubject(claims.sub)
+      .setAudience(claims.aud)
+      .setIssuedAt()
+      .setExpirationTime(this.ttl)
+      .setJti(crypto.randomUUID())
+      .sign(this.secret);
   }
 
-  async verify(_token: string, _audience: string): Promise<JWTPayload> {
-    throw new Error('NOT IMPLEMENTED — Task 2');
+  async verify(token: string, audience: string): Promise<JWTPayload> {
+    const { payload } = await jwtVerify(token, this.secret, {
+      algorithms: ['HS256'],
+      audience,
+      clockTolerance: '30s',
+    });
+    if (payload.role !== 'host' && payload.role !== 'member') {
+      throw new Error('Missing role claim');
+    }
+    return payload;
   }
 }

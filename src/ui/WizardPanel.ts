@@ -643,8 +643,6 @@ export class WizardPanel {
         displayName: this.state.displayName,
         hostAuthSecret: crypto.randomUUID(),
       };
-      this.sessionHost = new SessionHost(config, hostIdentity);
-      const actualPort = await this.sessionHost.start();
 
       // Plan 07-05 — derive a sessionId for the cloud share-screen deep-link.
       // Minimal v1 derivation: 'vc-' + inviteCode (lowercased). Invite codes
@@ -654,6 +652,28 @@ export class WizardPanel {
       // alphanumeric+dash string. LAN mode never reads sessionId (no deep-link
       // surface) — populating it unconditionally keeps the state shape simple.
       this.state.sessionId = 'vc-' + this.state.inviteCode.toLowerCase();
+
+      // Plan 07-05b — branch on wizard mode to wire a cloud SessionHost via
+      // SessionHostFactory.createCloud(). LAN mode falls through to the
+      // byte-identical `new SessionHost(config, hostIdentity)` path. The
+      // LAN branch MUST remain unchanged.
+      let actualPort: number;
+      if (this.state.mode === 'cloud') {
+        const { createCloud } = await import('../host/SessionHostFactory.js');
+        if (!this.state.relayUrl) {
+          throw new Error('Cloud mode requires a relayUrl');
+        }
+        this.sessionHost = await createCloud({
+          config,
+          hostIdentity,
+          relayUrl: this.state.relayUrl,
+          sessionId: this.state.sessionId,
+        });
+        actualPort = await this.sessionHost.start();
+      } else {
+        this.sessionHost = new SessionHost(config, hostIdentity);
+        actualPort = await this.sessionHost.start();
+      }
 
       // Update state to show share screen
       this.state.port = actualPort;

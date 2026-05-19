@@ -16,6 +16,7 @@ import type { HostTransport, TransportConnection } from '../network/Transport.js
 // `ws` library import and the WebSocketServer constructor call inside this
 // file; importing LanTransport.ts matches neither pattern.
 import { LanHostTransport } from '../network/LanTransport.js';
+import type { TokenService } from '../auth/TokenService.js';
 import type { HostIdentity, Member, SessionConfig } from '../types/session.js';
 import type {
   SessionEventEmitter,
@@ -105,6 +106,26 @@ export class SessionHost implements SessionEventEmitter {
    * for its joinedAt sort key.
    */
   private readonly hostJoinedAt: number = Date.now();
+
+  /**
+   * Phase 7 Plan 07-05b — cloud-mode JWT issuer.
+   *
+   * Populated EXCLUSIVELY via `attachCloudIssuer(tokenService, sessionId)`
+   * called by `SessionHostFactory.createCloud()` AFTER the host is constructed
+   * but BEFORE start(). When non-null:
+   *   - handleAuthRequest issues a per-joiner JWT via
+   *     `cloudTokenService.issue({iss: hostMemberId, sub: newMemberId,
+   *     aud: cloudSessionId, role: 'member'})`
+   *   - The JWT is placed in `auth-response.token` (omitted in LAN mode).
+   *
+   * NOT a flag, NOT a "mode" — it is an issuer service handle. The CRITICAL
+   * 07-05b merge invariant: SessionHost has no rejected boolean-flag /
+   * setter / inbound-frame-stub patterns. Cloud detection happens via the
+   * `transport.isCloud?.()` interface probe; the demultiplexer adapter does
+   * the heavy lifting; this field only carries the issuer.
+   */
+  private cloudTokenService: TokenService | null = null;
+  private cloudSessionId: string | null = null;
 
   /**
    * Map of memberId -> tracked file paths. Populated from tracked-paths-update
@@ -269,6 +290,29 @@ export class SessionHost implements SessionEventEmitter {
     this.transport = transport ?? new LanHostTransport();
   }
 
+  /**
+   * Phase 7 Plan 07-05b — attach a cloud-mode JWT issuer.
+   *
+   * Called by `SessionHostFactory.createCloud()` AFTER the SessionHost is
+   * constructed but BEFORE `start()`. Populates `cloudTokenService` +
+   * `cloudSessionId` so `handleAuthRequest` can issue per-joiner JWTs in
+   * cloud mode. LAN-mode hosts NEVER call this; they leave both fields null
+   * and produce byte-identical auth-responses (no `token` key).
+   *
+   * Idempotent guard: throws if a cloud issuer is already attached — protects
+   * against accidental double-call from the factory.
+   *
+   * Method name explicitly DIFFERENT from the rejected mode-setter pattern
+   * (per the 07-05b merge note). This is an ISSUER ATTACHMENT, not a flag.
+   */
+  attachCloudIssuer(tokenService: TokenService, sessionId: string): void {
+    if (this.cloudTokenService !== null) {
+      throw new Error('attachCloudIssuer: cloud issuer already attached');
+    }
+    this.cloudTokenService = tokenService;
+    this.cloudSessionId = sessionId;
+  }
+
   // ---------------------------------------------------------------------------
   // EventEmitter implementation
   // ---------------------------------------------------------------------------
@@ -420,7 +464,7 @@ export class SessionHost implements SessionEventEmitter {
         }
 
         if (msg.type === 'auth-request') {
-          this.handleAuthRequest(ws, msg, clientIp, authTimeout, (id) => {
+          await this.handleAuthRequest(ws, msg, clientIp, authTimeout, (id) => {
             memberId = id;
           });
         } else if (!memberId) {
@@ -653,13 +697,13 @@ export class SessionHost implements SessionEventEmitter {
   // Auth (T-01-03: constant-time compare + rate limiting)
   // ---------------------------------------------------------------------------
 
-  private handleAuthRequest(
+  private async handleAuthRequest(
     ws: TransportConnection,
     msg: ProtocolMessage & { type: 'auth-request' },
     clientIp: string,
     authTimeout: ReturnType<typeof setTimeout>,
     setMemberId: (id: string) => void,
-  ): void {
+  ): Promise<void> {
     // Check rate limit first
     const rateCheck = this.authHandler.checkRateLimit(clientIp);
     if (!rateCheck.allowed) {
@@ -730,7 +774,42 @@ export class SessionHost implements SessionEventEmitter {
 
     this.members.set(newMemberId, { ws, member, isAlive: true });
 
-    // Send auth-response to new member
+    // Phase 7 Plan 07-05b — cloud-mode addendum: issue per-joiner JWT.
+    //
+    // Detection: cloudTokenService is non-null IFF SessionHostFactory.createCloud
+    // attached an issuer (cloud mode). LAN mode leaves it null and skips this
+    // entire block; the auth-response below omits the `token` key (byte-identical
+    // to the pre-07-05b wire).
+    //
+    // The role gate (`role === 'member'`) is the T-07-09 anti-pattern defense:
+    // the relay's role comes from the JWT claim (07-09's verifyClient), NEVER
+    // from connection order. The host issues 'member' JWTs only — host-role JWTs
+    // are minted by SessionHostFactory.createCloud and NEVER by this path.
+    let joinerToken: string | undefined = undefined;
+    if (
+      this.cloudTokenService !== null &&
+      this.cloudSessionId !== null &&
+      role === 'member'
+    ) {
+      try {
+        joinerToken = await this.cloudTokenService.issue({
+          iss: this.hostMemberId ?? newMemberId,
+          sub: newMemberId,
+          aud: this.cloudSessionId,
+          role: 'member',
+        });
+      } catch {
+        // Token issuance failure is operationally rare (HMAC sign is in-memory).
+        // Degrade gracefully: skip token, joiner falls back to LAN-style flow
+        // and will fail to reach the relay. The auth-response itself still
+        // sends — the joiner sees `token: undefined` and can surface a
+        // connect-error via 07-06's status mapping.
+        joinerToken = undefined;
+      }
+    }
+
+    // Send auth-response to new member. Spread the optional `token` field
+    // ONLY when defined so LAN-mode JSON output is byte-identical to today.
     this.transport.send(ws, {
       type: 'auth-response',
       accepted: true,
@@ -740,6 +819,7 @@ export class SessionHost implements SessionEventEmitter {
         memberCount: this.members.size,
         hostDisplayName: this.hostDisplayName,
       },
+      ...(joinerToken !== undefined ? { token: joinerToken } : {}),
       timestamp: createTimestamp(),
     });
 
@@ -788,6 +868,28 @@ export class SessionHost implements SessionEventEmitter {
     );
 
     this.emit('member-joined', { member });
+  }
+
+  /**
+   * Test-only seam — invokes handleAuthRequest with a synthetic authTimeout
+   * and setMemberId callback so the LAN-mode regression test in
+   * hostCloudWiring.test.ts can verify the auth-response shape without
+   * driving a real WebSocket. Production code paths route through
+   * handleConnection's onMessage handler, which sets memberId via the
+   * captured closure. Not exported via .d.ts in production builds.
+   */
+  async handleAuthRequestForTest(
+    ws: TransportConnection,
+    msg: ProtocolMessage,
+    clientIp: string,
+  ): Promise<void> {
+    if (msg.type !== 'auth-request') return;
+    const noopTimeout = setTimeout(() => undefined, 60_000);
+    try {
+      await this.handleAuthRequest(ws, msg, clientIp, noopTimeout, () => undefined);
+    } finally {
+      clearTimeout(noopTimeout);
+    }
   }
 
   // ---------------------------------------------------------------------------

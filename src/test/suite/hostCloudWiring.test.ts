@@ -262,6 +262,11 @@ suite('Phase 7 — host cloud wiring', () => {
       _testClientTransport: fake,
     });
     try {
+      // start() wires SessionHost's onConnection handler into the
+      // CloudHostTransport — without this, inbound envelopes will not
+      // produce SessionHost.handleConnection calls.
+      await host.start();
+
       // Simulate an inbound auth-request envelope with payload.memberId so the
       // demultiplexer creates a virtual connection for it.
       fake._simulateEnvelope('vc-abc234', {
@@ -271,7 +276,10 @@ suite('Phase 7 — host cloud wiring', () => {
         timestamp: Date.now(),
         memberId: 'joiner-routing-key-1',
       });
-      // The demultiplexer queues the first dispatch in a microtask; wait one tick.
+      // The demultiplexer queues the first dispatch in a microtask; allow
+      // both the microtask AND the async handleAuthRequest (which awaits
+      // TokenService.issue) to complete before we read sent frames.
+      await new Promise((r) => setImmediate(r));
       await new Promise((r) => setImmediate(r));
 
       // Auth-response is emitted via cloudTransport.send (unicast w/ target).
@@ -366,6 +374,7 @@ suite('Phase 7 — host cloud wiring', () => {
       _testClientTransport: fake,
     });
     try {
+      await host.start();
       // Simulate joiner auth-request so handleAuthRequest runs end-to-end.
       fake._simulateEnvelope('vc-abc234', {
         type: 'auth-request',
@@ -374,6 +383,7 @@ suite('Phase 7 — host cloud wiring', () => {
         timestamp: Date.now(),
         memberId: 'joiner-routing-key-1',
       });
+      await new Promise((r) => setImmediate(r));
       await new Promise((r) => setImmediate(r));
 
       // Every outbound frame on CloudTransport must NOT contain inviteCode.

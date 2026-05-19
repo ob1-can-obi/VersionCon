@@ -82,6 +82,28 @@ The `cmd.*` aliases are thin pass-throughs to the canonical command ids — they
 - Conflicts are file-level (Phase 4) and will be function-level in Phase 5 (dependency-aware). There is no three-way merge to resolve manually in v1.
 - Cloud export is one-way per command — you can re-run **Export to Git Remote** any time, but each export is a fresh commit on top of the remote branch. No history reconciliation in v1.
 
+## VersionCon for Cloud Teams
+
+VersionCon's default LAN mode works great when your team is on the same network — fast, no extra hops, no servers to manage. For teams spread across networks (remote work, distributed contractors, multi-office setups), VersionCon ships a **Cloud mode** that connects host and members over the public internet via a relay server you self-host.
+
+The relay is a dumb byte-forwarder — it routes WebSocket frames between host and members by `sessionId` and never inspects message contents. You control the box, the logs, and the data retention. Nothing leaves your infrastructure. Sessions use TLS in transit (Let's Encrypt via the relay's HTTPS endpoint) and standard JWT auth between extension and relay.
+
+**Deploy a relay** in five minutes on Fly.io (recommended) — see [`relay/README.md`](relay/README.md) for the full walkthrough. Cost: roughly $2-5/month for a small team (Fly.io's free tier was discontinued for new accounts on 2024-10-07; existing accounts on legacy plans keep their old free allowance).
+
+Once your relay is running at `wss://your-app.fly.dev`, the VersionCon wizard's "Cloud" option uses it directly — same wizard, same invite codes, same UI as LAN mode. Members on different networks click the deep-link you share (Slack, email, anywhere), VS Code opens the join wizard with relay + session pre-filled, and they're coding alongside you within seconds.
+
+### Deploy elsewhere
+
+The relay is packaged as a standard Docker image. Beyond Fly.io, the same image runs on:
+
+- **AWS Fargate** — push to ECR, run via ECS task definition behind an HTTPS Application Load Balancer.
+- **Hetzner Cloud** — `docker run` on a CX11 instance (~€4.51/month) with Caddy or Traefik fronting for automatic Let's Encrypt TLS.
+- **DigitalOcean App Platform** — connect the repo, App Platform builds via the Dockerfile, managed TLS.
+
+See [`relay/README.md`](relay/README.md) for per-platform details.
+
+A managed relay service at `versioncon.dev` is on the roadmap for a future phase — no date set.
+
 ## Development
 
 - `npm run build` — esbuild bundle for the extension host

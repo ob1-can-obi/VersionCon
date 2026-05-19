@@ -102,20 +102,24 @@ test('startServer allows test-port (port:0) and returns assigned port', async ()
   }
 });
 
-test('server.ts every console.log call carries a TODO(07-11) marker (logger seam)', async () => {
-  // Pins the 07-11 find-and-replace seam — every stubbed log call must be discoverable
-  // by the 07-11 grep that swaps console.* for pino.
+test('server.ts logger migration complete — no console.* and logger imported (07-11)', async () => {
+  // Was: "every console.log carries a TODO(07-11) marker" (07-08 staging gate).
+  // Now: 07-11 has swapped console.* for structured pino calls. The assertion
+  // FLIPS — there must be ZERO console.* calls and the pino logger MUST be
+  // imported. Wider gate ("no console.* anywhere in relay/src/") lives in
+  // relay/test/logger.test.js to cover sibling files (auth.ts).
   const thisDir = path.dirname(fileURLToPath(import.meta.url));
   const serverSrcPath = path.join(thisDir, '..', 'src', 'server.ts');
   const src = await readFile(serverSrcPath, 'utf-8');
   const consoleCalls = src.match(/console\.(log|error|warn|info)\b/g) ?? [];
-  assert.ok(consoleCalls.length >= 2, 'expected >= 2 console.* calls (log + error fatal path)');
-  // Every console.* call must have a TODO(07-11) marker within the same file. The
-  // marker doesn't need to be on the same line — just present in the source so a
-  // future grep can find each.
-  const todoMarkers = src.match(/TODO\(07-11\)/g) ?? [];
-  assert.ok(
-    todoMarkers.length >= consoleCalls.length,
-    `expected >= ${consoleCalls.length} TODO(07-11) markers (one per console.* call), found ${todoMarkers.length}`
+  assert.equal(
+    consoleCalls.length,
+    0,
+    `07-11 migration incomplete — found ${consoleCalls.length} console.* call(s) in server.ts`,
+  );
+  assert.match(
+    src,
+    /from\s+['"]\.\/logger\.js['"]/,
+    "server.ts must import logger from './logger.js' post-07-11",
   );
 });

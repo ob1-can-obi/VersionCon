@@ -13,8 +13,9 @@
 //   - 07-10 (limits): maxPayload (1 MiB) wired here; grace timer + idle reaper
 //                     plug into SessionRegistry; per-IP rate limit lands in
 //                     verifyClient.
-//   - 07-11 (logger): every console.* call below carries a TODO(07-11) marker
-//                     so the 07-11 find-and-replace pass can swap them for pino.
+//   - 07-11 (logger): all console.* calls migrated to pino via ./logger.js;
+//                     redact config strips bearer/payload/code/secret keys at
+//                     the library boundary (T-07-03 + T-07-04 + T-07-05-aux).
 //
 // startServer() is exported so tests, integration suites, and downstream wiring
 // can spin the relay up + tear it down without process-level controls.
@@ -24,17 +25,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { SessionRegistry } from './SessionRegistry.js';
 import { route } from './router.js';
 import * as limits from './limits.js';
-
-/**
- * Stubbed structured logger. TODO(07-11): replace with pino + redact config.
- * Logs a JSON line per event; deliberately writes NO request bodies, NO auth
- * headers, NO session secrets (T-07-17 — pre-pino log hygiene maintained
- * structurally by omitting sensitive fields, not by sanitization).
- */
-function log(event: string, fields: Record<string, unknown> = {}): void {
-  // TODO(07-11): swap console.log for pino with redact config.
-  console.log(JSON.stringify({ event, ...fields, ts: Date.now() }));
-}
+import { logger } from './logger.js';
 
 export interface StartServerOptions {
   /** Bind port. `0` requests an ephemeral port (used by tests). Defaults to env PORT or 8080. */
@@ -90,8 +81,10 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       // swap them to pino with a single grep. T-07-06 mitigation.
       const ip = info.req.socket.remoteAddress ?? 'unknown';
       if (!limits.checkConnection(ip)) {
-        // TODO(07-11): swap console.log (in log()) for pino — already structured.
-        log('rate-limit', { ip });
+        // 07-10 emits {event:'rate-limit', ip} — preserved verbatim through the
+        // 07-11 logger swap. The redact config has no path matching `ip`, so
+        // the source IP remains visible (operational signal).
+        logger.warn({ event: 'rate-limit', ip });
         cb(false, 429, 'Too Many Requests');
         return;
       }
@@ -118,7 +111,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
         .then((authMod: unknown) => {
           const verifyTokenFn = (authMod as { verifyToken?: unknown } | null)?.verifyToken;
           if (typeof verifyTokenFn !== 'function') {
-            log('auth-not-wired', { remote: info.req.socket.remoteAddress ?? 'unknown' });
+            logger.error({ event: 'auth-not-wired', ip });
             cb(false, 503, 'Relay auth not configured');
             return;
           }
@@ -127,15 +120,19 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
           cb(false, 503, 'Relay auth pending (07-09)');
         })
         .catch(() => {
-          log('auth-not-wired', { remote: info.req.socket.remoteAddress ?? 'unknown' });
+          logger.error({ event: 'auth-not-wired', ip });
           cb(false, 503, 'Relay auth not configured');
         });
     },
   });
 
   wss.on('connection', (ws: WebSocket, req) => {
-    const remote = req.socket.remoteAddress ?? 'unknown';
-    log('ws-connected', { remote });
+    const ip = req.socket.remoteAddress ?? 'unknown';
+    // Plan 07-11 vocabulary: connection-open carries {event, sessionId, role, ip}.
+    // Pre-07-09 wiring has no sessionId/role context here yet (those land on
+    // info.req after verifyToken stashes claims in 07-09's final hookup); for
+    // now we log the IP only. The structured shape is the contract.
+    logger.info({ event: 'connection-open', ip });
 
     ws.on('message', (raw) => {
       // Extract sessionId from the envelope WITHOUT inspecting the envelope body.
@@ -159,7 +156,17 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     });
 
     ws.on('close', (code, reason) => {
-      log('ws-closed', { remote, code, reason: reason.toString().slice(0, 64) });
+      // Plan 07-11 vocabulary: connection-close carries {event, sessionId, code, reason}.
+      // sessionId is undefined until 07-09 final wiring stashes claims on req;
+      // reason is truncated to 64 chars to bound log-line size without leaking
+      // the full close-frame payload (defense against an attacker stuffing
+      // bytes into the close reason — RFC 6455 §5.5.1 allows up to 123 bytes).
+      logger.info({
+        event: 'connection-close',
+        ip,
+        code,
+        reason: reason.toString().slice(0, 64),
+      });
       // TODO(07-09): once auth stashes sessionId onto req from verified claims,
       // call `registry.detach(sessionId, ws)` here. Pre-07-09, server.ts has no
       // sessionId context per-connection so detach is a no-op (the registry's
@@ -167,7 +174,11 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     });
 
     ws.on('error', (err) => {
-      log('ws-error', { remote, err: err.message });
+      // T-07-04-aux: only emit error type, NEVER err.message or err.stack —
+      // some ws/jose error messages echo client-controlled data (e.g., the
+      // raw header bytes) which would leak into Fly.io's log stream. The
+      // error type (e.g., 'Error', 'RangeError') is enough operational signal.
+      logger.warn({ event: 'ws-error', ip, errType: err.name });
     });
   });
 
@@ -179,8 +190,10 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     const cutoff = limits.getIdleReapInterval();
     for (const session of registry.allSessions()) {
       if (now - session.lastActivity > cutoff) {
-        // TODO(07-11): swap console.log (in log()) for pino.
-        log('idle-reap', { sessionId: session.sessionId });
+        // 07-10 emits {event:'idle-reap', sessionId} — preserved verbatim
+        // through the 07-11 logger swap. sessionId is the routing key and is
+        // intentionally NOT in the redact set (operational signal).
+        logger.info({ event: 'idle-reap', sessionId: session.sessionId });
         registry.closeSession(session.sessionId, 'idle');
       }
     }
@@ -192,7 +205,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
     httpServer.listen(requestedPort, () => {
       const addr = httpServer.address();
       const actualPort = typeof addr === 'object' && addr ? addr.port : requestedPort;
-      log('listen', { port: actualPort });
+      logger.info({ event: 'listen', port: actualPort });
       resolve({
         port: actualPort,
         registry,
@@ -217,8 +230,12 @@ const isMainModule =
   import.meta.url === `file://${process.argv[1]}`;
 if (isMainModule) {
   startServer().catch((err) => {
-    // TODO(07-11): structured logger.
-    console.error(JSON.stringify({ event: 'fatal', err: (err as Error).message }));
+    // Fatal-startup path: bind failure, port conflict, etc. Log err.name (the
+    // error TYPE) only — NEVER err.message or err.stack (T-07-04-aux). The
+    // operator gets enough signal to debug from the error class without risk
+    // of leaking address/port details or client-controlled bytes from a stack
+    // frame. Use logger.fatal so the level shows pino's "fatal" label.
+    logger.fatal({ event: 'startup-error', errType: (err as Error).name });
     process.exit(1);
   });
 }

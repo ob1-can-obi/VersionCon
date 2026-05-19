@@ -38,6 +38,7 @@
 import type { IncomingMessage } from 'node:http';
 import { decodeJwt, jwtVerify } from 'jose';
 import type { SessionRegistry } from './SessionRegistry.js';
+import { logger } from './logger.js';
 
 export type TokenInfo = {
   sessionId: string;
@@ -50,8 +51,10 @@ type AuthFailReason = 'malformed' | 'expired' | 'wrong-alg' | 'unknown-session';
 function logFail(sessionId: string | undefined, reason: AuthFailReason): void {
   // Logger discipline (CONTEXT D-11, T-07-03/04): only {event, sessionId, reason}.
   // NEVER the bearer, NEVER the secret, NEVER the Authorization header value.
-  // 07-11 will swap console.error for pino; the field shape stays locked.
-  console.error(JSON.stringify({ event: 'auth-fail', sessionId, reason }));
+  // 07-11 swap: console.error → logger.warn — field shape unchanged. The redact
+  // config in logger.ts is a second line of defense; this function's contract
+  // is to never log the unsafe values in the first place.
+  logger.warn({ event: 'auth-fail', sessionId, reason });
 }
 
 export async function verifyToken(

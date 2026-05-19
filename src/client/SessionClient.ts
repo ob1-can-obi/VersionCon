@@ -1,12 +1,15 @@
-import { WebSocket } from 'ws';
 import { ConnectionStateMachine } from './ConnectionState.js';
 import { HeartbeatManager, ReconnectManager } from '../network/heartbeat.js';
 import {
   parseMessage,
-  sendMessage,
   createTimestamp,
 } from '../network/protocol.js';
 import type { ProtocolMessage } from '../network/protocol.js';
+import type { ClientTransport } from '../network/Transport.js';
+// Phase 7 D-05: LanClientTransport is the default impl when callers omit
+// the `transport` constructor argument. Same posture as SessionHost's
+// LanHostTransport import — safe vs. the transport-seam grep gate.
+import { LanClientTransport } from '../network/LanTransport.js';
 import type { Member, ConnectionStatus } from '../types/session.js';
 import type {
   SessionEventEmitter,
@@ -37,7 +40,32 @@ interface SessionInfo {
  * locally regardless of connection status.
  */
 export class SessionClient implements SessionEventEmitter {
-  private ws: WebSocket | null = null;
+  /**
+   * D-05 / Phase 7 transport seam. The client accepts a ClientTransport
+   * (LAN: LanClientTransport; future Cloud: CloudClientTransport) and
+   * routes every wire I/O call through it. SessionClient is
+   * transport-agnostic — it never imports from `ws` directly.
+   */
+  private readonly transport: ClientTransport;
+  /**
+   * Phase 7 D-05: replaces the pre-refactor `this.ws = null` sentinel used
+   * to distinguish intentional disconnect from a connection drop
+   * (SessionClient.ts:177 + 550-551 pre-refactor). Set true by
+   * `disconnectInternal()` BEFORE calling `transport.close()` so the
+   * onClose handler short-circuits and does NOT trigger reconnect.
+   */
+  private intentionalClose: boolean = false;
+  /**
+   * Phase 7 D-05: tracks whether `connect()` is currently inside an active
+   * open-wait. The pre-refactor close handler used `if (this.ws === null)
+   * return` to distinguish intentional close — after the refactor the
+   * intentionalClose flag covers that case, but we also need to guard
+   * against the close-handler firing AFTER `connect()` itself has already
+   * resolved (the pre-refactor code relied on `resolved = true` being a
+   * local closure flag). To preserve the semantics, each new connect()
+   * call resets transportHandlersInstalled so handlers are re-registered.
+   */
+  private transportHandlersInstalled: boolean = false;
   private readonly connectionState: ConnectionStateMachine;
   private readonly heartbeat: HeartbeatManager;
   private readonly reconnect: ReconnectManager;
@@ -56,11 +84,21 @@ export class SessionClient implements SessionEventEmitter {
     Set<(data: never) => void>
   > = new Map();
 
+  /**
+   * Construct a SessionClient.
+   *
+   * Phase 7 D-05: `transport` is optional and defaults to a new
+   * `LanClientTransport(hostIp, port)` so existing call-sites
+   * (JoinPanel.ts:229, reviewClientRouting.test.ts:27, client.test.ts:73)
+   * compile unchanged. Future cloud callers pass an explicit
+   * CloudClientTransport.
+   */
   constructor(
     hostIp: string,
     port: number,
     inviteCode: string,
     displayName: string,
+    transport?: ClientTransport,
   ) {
     this.hostIp = hostIp;
     this.port = port;
@@ -69,6 +107,7 @@ export class SessionClient implements SessionEventEmitter {
     this.connectionState = new ConnectionStateMachine();
     this.heartbeat = new HeartbeatManager();
     this.reconnect = new ReconnectManager();
+    this.transport = transport ?? new LanClientTransport(hostIp, port);
   }
 
   // ---------------------------------------------------------------------------
@@ -119,75 +158,103 @@ export class SessionClient implements SessionEventEmitter {
    *
    * Resolves true on successful authentication, false on rejection.
    * Rejects on transport-level errors during the initial connection.
+   *
+   * Phase 7 D-05: pre-refactor this method constructed `new WebSocket(...)`
+   * inline. After the refactor:
+   *  - transport.connect() opens the underlying socket (returns
+   *    Promise<true|false>)
+   *  - handlers (onOpen / onMessage / onClose / onError / onPong) are
+   *    installed ONCE per SessionClient instance via installTransportHandlers
+   *    — LanClientTransport.connect() re-binds them to each new internal
+   *    socket so reconnect works without re-registering. The Transport
+   *    interface itself is contract-compatible with this pattern (handlers
+   *    fan out to ALL registered callbacks; idempotent across reconnects).
+   *  - The outer Promise resolves on auth-response success/failure (NOT on
+   *    socket open) — preserving the pre-refactor behavior where
+   *    `SessionClient.connect()` resolves with the auth verdict, not the
+   *    wire-level open.
    */
   async connect(): Promise<boolean> {
-    return new Promise<boolean>((resolve, reject) => {
+    this.intentionalClose = false;
+    return new Promise<boolean>((resolve) => {
       let resolved = false;
+      const resolveOnce = (success: boolean): void => {
+        if (!resolved) {
+          resolved = true;
+          resolve(success);
+        }
+      };
 
-      try {
-        this.ws = new WebSocket(`ws://${this.hostIp}:${this.port}`);
-      } catch (err) {
-        reject(err);
-        return;
-      }
+      // Install transport-level handlers exactly once per SessionClient
+      // instance. LanClientTransport.connect() re-binds the underlying
+      // ws's events to the same registered handlers each reconnect, so we
+      // do NOT need to re-register on every call.
+      if (!this.transportHandlersInstalled) {
+        this.transportHandlersInstalled = true;
 
-      this.ws.on('open', () => {
-        // Send auth-request as the first message
-        if (this.ws) {
-          sendMessage((d) => this.ws!.send(d), {
+        this.transport.onOpen(() => {
+          // Send auth-request as the first message
+          this.transport.send({
             type: 'auth-request',
             inviteCode: this.inviteCode,
             displayName: this.displayName,
             timestamp: createTimestamp(),
           });
-        }
-      });
+        });
 
-      this.ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
-        try {
-          const data = raw.toString();
-          const msg = parseMessage(data);
-          if (!msg) {
-            return; // Malformed message -- drop silently
+        this.transport.onMessage((raw: Buffer | ArrayBuffer | Buffer[]) => {
+          try {
+            const data = raw.toString();
+            const msg = parseMessage(data);
+            if (!msg) {
+              return; // Malformed message -- drop silently
+            }
+
+            this.handleMessage(msg, (success) => {
+              resolveOnce(success);
+            });
+          } catch {
+            // Message handling errors should not crash the client
+          }
+        });
+
+        this.transport.onClose((_code: number, _reason: Buffer) => {
+          this.heartbeat.stop();
+
+          if (!resolved) {
+            // Connection closed before auth completed
+            resolveOnce(false);
+            return;
           }
 
-          this.handleMessage(msg, (success) => {
-            if (!resolved) {
-              resolved = true;
-              resolve(success);
-            }
-          });
-        } catch {
-          // Message handling errors should not crash the client
-        }
-      });
+          // Intentional disconnect flips the flag BEFORE calling
+          // transport.close() — replaces the pre-refactor null-ws sentinel.
+          // If intentional, do not reconnect.
+          if (this.intentionalClose) return;
 
-      this.ws.on('close', (_code: number, _reason: Buffer) => {
-        this.heartbeat.stop();
+          // If we were connected, try to reconnect (D-11)
+          if (this.connectionState.current === 'connected') {
+            this.attemptReconnect();
+          }
+        });
 
-        if (!resolved) {
-          // Connection closed before auth completed
-          resolved = true;
-          resolve(false);
-          return;
-        }
+        this.transport.onError(() => {
+          // Error will be followed by close -- handle reconnect there
+          resolveOnce(false);
+        });
 
-        // Intentional disconnect sets this.ws = null before calling ws.close().
-        // If ws is null here, the close was intentional — do not reconnect.
-        if (this.ws === null) return;
+        this.transport.onPong(() => {
+          this.heartbeat.receivedPong();
+        });
+      }
 
-        // If we were connected, try to reconnect (D-11)
-        if (this.connectionState.current === 'connected') {
-          this.attemptReconnect();
-        }
-      });
-
-      this.ws.on('error', () => {
-        // Error will be followed by close -- handle reconnect there
-        if (!resolved) {
-          resolved = true;
-          resolve(false);
-        }
+      // Fire the transport open. Resolution semantics:
+      //  - transport.connect() resolving false → socket failed to open,
+      //    resolve outer false (no auth-response is ever coming).
+      //  - transport.connect() resolving true → wait for auth-response via
+      //    the onMessage handler installed above.
+      this.transport.connect().then((opened) => {
+        if (!opened) resolveOnce(false);
       });
     });
   }
@@ -268,8 +335,8 @@ export class SessionClient implements SessionEventEmitter {
 
       case 'heartbeat-ping':
         // Respond with heartbeat-pong
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          sendMessage((d) => this.ws!.send(d), {
+        if (this.transport.isOpen()) {
+          this.transport.send({
             type: 'heartbeat-pong',
             timestamp: createTimestamp(),
           });
@@ -446,25 +513,21 @@ export class SessionClient implements SessionEventEmitter {
   // ---------------------------------------------------------------------------
 
   private startClientHeartbeat(): void {
-    // Listen for native WebSocket pong frames from the server
-    if (this.ws) {
-      this.ws.on('pong', () => {
-        this.heartbeat.receivedPong();
-      });
-    }
-
+    // The 'pong' handler is wired ONCE in connect() (via
+    // transport.onPong → heartbeat.receivedPong) so reconnects don't
+    // accumulate listeners. Here we only start the send-ping interval.
     this.heartbeat.start(
       () => {
-        // Send a native WebSocket ping to match server's pong handler
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          this.ws.ping();
-        }
+        // Send a native ping; transport routes through ws.ping() internally
+        // when open (no-op otherwise).
+        this.transport.ping();
       },
       () => {
-        // Dead connection detected -- trigger reconnect
-        if (this.ws) {
-          this.ws.close();
-        }
+        // Dead connection detected -- trigger reconnect by closing the
+        // underlying socket. The transport's onClose handler will fire,
+        // and (since intentionalClose stays false) attemptReconnect() will
+        // run.
+        this.transport.close();
       },
     );
   }
@@ -528,9 +591,10 @@ export class SessionClient implements SessionEventEmitter {
    * relying on delivery.
    */
   sendMessage(msg: ProtocolMessage): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      sendMessage((d) => this.ws!.send(d), msg);
-    }
+    // Transport.send is internally null-safe / OPEN-guarded — no-op when
+    // the underlying socket is not OPEN (mirrors the pre-refactor
+    // `if (this.ws && this.ws.readyState === WebSocket.OPEN)` posture).
+    this.transport.send(msg);
   }
 
   /** Clean up all resources. */
@@ -543,20 +607,21 @@ export class SessionClient implements SessionEventEmitter {
   // Internal helpers
   // ---------------------------------------------------------------------------
 
-  /** Close the WebSocket and transition to disconnected without triggering reconnect. */
+  /**
+   * Close the transport and transition to disconnected without triggering
+   * reconnect. Phase 7 D-05: pre-refactor used `this.ws = null` as the
+   * "intentional close" sentinel; after the refactor the
+   * `intentionalClose` flag plays the same role — set true BEFORE
+   * `transport.close()` so the close-handler short-circuits and does NOT
+   * dispatch attemptReconnect().
+   */
   private disconnectInternal(): void {
     this.heartbeat.stop();
 
-    const ws = this.ws;
-    this.ws = null; // Prevent close handler from triggering reconnect
-
-    if (ws) {
-      try {
-        ws.close(1000, 'Client disconnected');
-      } catch {
-        // Already closed
-      }
-    }
+    // Flip the sentinel BEFORE close to mirror the pre-refactor ordering
+    // (`this.ws = null` BEFORE `ws.close()` at line 550-551 pre-refactor).
+    this.intentionalClose = true;
+    this.transport.close(1000, 'Client disconnected');
 
     this.connectionState.transition('disconnected');
     this.emit('connection-changed', { status: 'disconnected' });

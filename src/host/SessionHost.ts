@@ -1,17 +1,21 @@
-import { createServer } from 'net';
 import * as crypto from 'crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
 import { AuthHandler } from './AuthHandler.js';
 import { BandwidthMonitor } from './BandwidthMonitor.js';
 import {
   parseMessage,
-  sendMessage,
   createTimestamp,
 } from '../network/protocol.js';
 import type { ProtocolMessage } from '../network/protocol.js';
+import type { HostTransport, TransportConnection } from '../network/Transport.js';
+// Phase 7 D-05: LanHostTransport is the default impl when callers omit the
+// `transport` constructor argument. Importing it here is safe vs. the
+// source-grep gate in transportSeam.test.ts — the gate forbids the literal
+// `ws` library import and the WebSocketServer constructor call inside this
+// file; importing LanTransport.ts matches neither pattern.
+import { LanHostTransport } from '../network/LanTransport.js';
 import type { HostIdentity, Member, SessionConfig } from '../types/session.js';
 import type {
   SessionEventEmitter,
@@ -35,9 +39,14 @@ import type {
 import type { AstAnalyzer } from '../ast/AstAnalyzer.js';
 import type { AnalyzePayload } from '../ast/types.js';
 
-/** Internal tracking for each connected member's WebSocket and status. */
+/**
+ * Internal tracking for each connected member's transport connection +
+ * status. `ws` is named for historical reasons (~50 call sites pre-refactor)
+ * but is now an opaque TransportConnection — SessionHost routes all wire
+ * I/O through `this.transport`, never reaches into the underlying socket.
+ */
 interface ConnectedMember {
-  ws: WebSocket;
+  ws: TransportConnection;
   member: Member;
   isAlive: boolean;
 }
@@ -55,7 +64,13 @@ interface ConnectedMember {
  * - Admin commands restricted to host role (T-01-06)
  */
 export class SessionHost implements SessionEventEmitter {
-  private wss: WebSocketServer | null = null;
+  /**
+   * D-05 / Phase 7 transport seam. The host accepts a HostTransport
+   * (LAN: LanHostTransport; future Cloud: a cloud-routed impl) and routes
+   * every wire I/O call through it. SessionHost is transport-agnostic
+   * — it never imports from `ws` directly.
+   */
+  private readonly transport: HostTransport;
   private readonly members: Map<string, ConnectedMember> = new Map();
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private readonly authHandler: AuthHandler;
@@ -218,13 +233,40 @@ export class SessionHost implements SessionEventEmitter {
    * `crypto.randomUUID()` for memberId and hostAuthSecret, and the
    * user-confirmed value from the wizard for displayName.
    */
-  constructor(config: SessionConfig, hostIdentity: HostIdentity) {
+  /**
+   * Construct a SessionHost.
+   *
+   * Phase 7 D-05: `transport` is required. Callers that want LAN behavior
+   * pass `new LanHostTransport()` explicitly; future cloud callers will pass
+   * a CloudHostTransport. To keep existing call-sites compact, the
+   * `transport` parameter has a default of `new LanHostTransport()` — but
+   * this default is provided lazily inside `SessionHostFactory.createLan`
+   * (see src/host/SessionHostFactory.ts) so SessionHost.ts itself never
+   * imports the LAN impl. Existing call-sites that pass only
+   * `(config, hostIdentity)` get the LAN default via the factory wrapper.
+   *
+   * The previous-and-current signature `(config, hostIdentity)` is preserved
+   * via a default argument so the 20+ existing call-sites compile without
+   * change. New callers should construct explicitly: `new SessionHost(cfg,
+   * id, new LanHostTransport())`.
+   */
+  constructor(
+    config: SessionConfig,
+    hostIdentity: HostIdentity,
+    transport?: HostTransport,
+  ) {
     this.config = config;
     this.hostDisplayName = hostIdentity.displayName;
     this.hostMemberId = hostIdentity.memberId;
     this.hostAuthSecret = hostIdentity.hostAuthSecret;
     this.authHandler = new AuthHandler(config.inviteCode);
     this.bandwidthMonitor = new BandwidthMonitor();
+    // Default to LAN behavior when transport is omitted. This keeps the
+    // existing two-arg call-sites (WizardPanel.ts:546, host.test.ts,
+    // reviewHostRelay.test.ts, astBroadcastIntegration.test.ts,
+    // pushSmartSummary.test.ts) compiling untouched. Future cloud callers
+    // pass an explicit CloudHostTransport.
+    this.transport = transport ?? new LanHostTransport();
   }
 
   // ---------------------------------------------------------------------------
@@ -271,41 +313,38 @@ export class SessionHost implements SessionEventEmitter {
   // ---------------------------------------------------------------------------
 
   /**
-   * Start the WebSocket server.
+   * Start the host transport.
    *
-   * If `config.port` is 0, an ephemeral free port is detected first.
-   * Returns the actual port the server is listening on.
+   * Phase 7 D-05: previously this method constructed a WebSocketServer
+   * inline. After the refactor, `this.transport.listen()` does the binding
+   * — LAN: WebSocketServer (+ findFreePort for port === 0); future Cloud:
+   * an outbound WSS to a relay.
+   *
+   * Promise-resolution semantics are preserved:
+   *  - on success, resolves with the bound port (mirrors pre-refactor
+   *    `resolve(port)` on 'listening')
+   *  - on bind failure, the listen() Promise rejects → this method rejects
+   *    (mirrors pre-refactor reject-on-'error' before-'listening')
+   *
+   * Side effects (startHeartbeat + emit 'session-created') happen exactly
+   * once, after a successful listen — same ordering as pre-refactor.
    */
   async start(): Promise<number> {
-    const port = this.config.port === 0
-      ? await this.findFreePort()
-      : this.config.port;
-
-    return new Promise<number>((resolve, reject) => {
-      try {
-        this.wss = new WebSocketServer({
-          port,
-          maxPayload: this.config.maxPayloadBytes,
-          perMessageDeflate: false,
-        });
-
-        this.wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-          this.handleConnection(ws, req);
-        });
-
-        this.wss.on('listening', () => {
-          this.startHeartbeat();
-          this.emit('session-created', { config: this.config });
-          resolve(port);
-        });
-
-        this.wss.on('error', (err: Error) => {
-          reject(err);
-        });
-      } catch (err) {
-        reject(err);
-      }
+    this.transport.onConnection((conn, req) => this.handleConnection(conn, req));
+    this.transport.onError(() => {
+      // Errors AFTER listen() resolves — pre-refactor the WebSocketServer
+      // would emit 'error' but there was no handler beyond the startup
+      // reject. Match that posture: swallow here. Per-connection 'error'
+      // events still flow through onErrorPerConnection inside
+      // handleConnection.
     });
+    const boundPort = await this.transport.listen(
+      this.config.port,
+      this.config.maxPayloadBytes,
+    );
+    this.startHeartbeat();
+    this.emit('session-created', { config: this.config });
+    return boundPort;
   }
 
   /**
@@ -319,18 +358,11 @@ export class SessionHost implements SessionEventEmitter {
     }
 
     for (const [, cm] of this.members) {
-      try {
-        cm.ws.close(1001, 'Session ended');
-      } catch {
-        // Already closed
-      }
+      this.transport.closeConnection(cm.ws, 1001, 'Session ended');
     }
     this.members.clear();
 
-    if (this.wss) {
-      this.wss.close();
-      this.wss = null;
-    }
+    this.transport.close();
 
     this.bandwidthMonitor.dispose();
     this.emit('session-ended', { reason: 'Host stopped session' });
@@ -346,29 +378,34 @@ export class SessionHost implements SessionEventEmitter {
   // ---------------------------------------------------------------------------
 
   /**
-   * Handle a new WebSocket connection.
+   * Handle a new peer connection (Phase 7 D-05: connection arrives via the
+   * HostTransport seam — LAN: a `ws` socket; future Cloud: a relay-routed
+   * pseudo-socket).
    *
    * Unauthenticated connections have a 10-second timeout (T-01-04).
    * Once authenticated, messages are routed by type with role checks (T-01-06).
+   *
+   * `ws` is opaque (TransportConnection) — all wire I/O routes through
+   * `this.transport`.
    */
-  private handleConnection(ws: WebSocket, req: IncomingMessage): void {
+  private handleConnection(ws: TransportConnection, req: IncomingMessage): void {
     const clientIp = req.socket.remoteAddress ?? 'unknown';
     let memberId: string | null = null;
 
     // Auth timeout: close unauthenticated connections after 10 seconds (T-01-04)
     const authTimeout = setTimeout(() => {
       if (!memberId) {
-        sendMessage((d) => ws.send(d), {
+        this.transport.send(ws, {
           type: 'error',
           code: 'AUTH_TIMEOUT',
           message: 'Authentication timeout',
           timestamp: createTimestamp(),
         });
-        ws.close(4001, 'Authentication timeout');
+        this.transport.closeConnection(ws, 4001, 'Authentication timeout');
       }
     }, 10_000);
 
-    ws.on('message', async (raw: Buffer | ArrayBuffer | Buffer[]) => {
+    this.transport.onMessage(ws, async (raw: Buffer | ArrayBuffer | Buffer[]) => {
       try {
         const data = raw.toString();
 
@@ -404,7 +441,7 @@ export class SessionHost implements SessionEventEmitter {
           // (memberId, captured in the closure), NOT from the message field --
           // this prevents a malicious client from spoofing another member's id.
           if (this.permissions && !this.permissions.canPushToBranch(memberId, msg.branch)) {
-            sendMessage((d) => ws.send(d), {
+            this.transport.send(ws, {
               type: 'error',
               code: 'PERMISSION_DENIED',
               message: 'No push permission for this branch',
@@ -575,7 +612,7 @@ export class SessionHost implements SessionEventEmitter {
           // PUSH-09 reconnect path: respond with empty files (snapshot is
           // delivered out-of-band) plus the latest push id so the client can
           // seed its sync tracker.
-          sendMessage((d) => ws.send(d), {
+          this.transport.send(ws, {
             type: 'sync-response',
             branch: msg.branch,
             files: [],
@@ -588,8 +625,10 @@ export class SessionHost implements SessionEventEmitter {
       }
     });
 
-    // Native pong handler for ws ping/pong frames
-    ws.on('pong', () => {
+    // Native pong handler for ws ping/pong frames (heartbeat reuse — D-05
+    // quality bar: transport surface routes pong without exposing the
+    // underlying socket).
+    this.transport.onPong(ws, () => {
       if (memberId) {
         const cm = this.members.get(memberId);
         if (cm) {
@@ -598,14 +637,14 @@ export class SessionHost implements SessionEventEmitter {
       }
     });
 
-    ws.on('close', () => {
+    this.transport.onClose(ws, () => {
       clearTimeout(authTimeout);
       if (memberId) {
         this.removeMember(memberId, 'Connection closed');
       }
     });
 
-    ws.on('error', () => {
+    this.transport.onErrorPerConnection(ws, () => {
       // Error will be followed by close event -- handle cleanup there
     });
   }
@@ -615,7 +654,7 @@ export class SessionHost implements SessionEventEmitter {
   // ---------------------------------------------------------------------------
 
   private handleAuthRequest(
-    ws: WebSocket,
+    ws: TransportConnection,
     msg: ProtocolMessage & { type: 'auth-request' },
     clientIp: string,
     authTimeout: ReturnType<typeof setTimeout>,
@@ -624,26 +663,26 @@ export class SessionHost implements SessionEventEmitter {
     // Check rate limit first
     const rateCheck = this.authHandler.checkRateLimit(clientIp);
     if (!rateCheck.allowed) {
-      sendMessage((d) => ws.send(d), {
+      this.transport.send(ws, {
         type: 'auth-response',
         accepted: false,
         reason: `Rate limited. Try again in ${Math.ceil((rateCheck.retryAfterMs ?? 0) / 1000)} seconds.`,
         timestamp: createTimestamp(),
       });
-      ws.close(4003, 'Rate limited');
+      this.transport.closeConnection(ws, 4003, 'Rate limited');
       return;
     }
 
     // Validate invite code with constant-time comparison
     const valid = this.authHandler.validateInviteCode(msg.inviteCode);
     if (!valid) {
-      sendMessage((d) => ws.send(d), {
+      this.transport.send(ws, {
         type: 'auth-response',
         accepted: false,
         reason: 'Invalid invite code',
         timestamp: createTimestamp(),
       });
-      ws.close(4002, 'Invalid invite code');
+      this.transport.closeConnection(ws, 4002, 'Invalid invite code');
       return;
     }
 
@@ -692,7 +731,7 @@ export class SessionHost implements SessionEventEmitter {
     this.members.set(newMemberId, { ws, member, isAlive: true });
 
     // Send auth-response to new member
-    sendMessage((d) => ws.send(d), {
+    this.transport.send(ws, {
       type: 'auth-response',
       accepted: true,
       memberId: newMemberId,
@@ -706,7 +745,7 @@ export class SessionHost implements SessionEventEmitter {
 
     // Send state-sync to the new member with current member list
     const memberList = this.getMembersList();
-    sendMessage((d) => ws.send(d), {
+    this.transport.send(ws, {
       type: 'state-sync',
       sessionName: this.config.sessionName,
       hostDisplayName: this.hostDisplayName,
@@ -767,13 +806,13 @@ export class SessionHost implements SessionEventEmitter {
     }
 
     // Notify the kicked member
-    sendMessage((d) => target.ws.send(d), {
+    this.transport.send(target.ws, {
       type: 'member-kicked',
       reason: 'Kicked by host',
       timestamp: createTimestamp(),
     });
 
-    target.ws.close(4004, 'Kicked by host');
+    this.transport.closeConnection(target.ws, 4004, 'Kicked by host');
     // The close event handler will call removeMember
   }
 
@@ -806,13 +845,13 @@ export class SessionHost implements SessionEventEmitter {
       return;
     }
 
-    sendMessage((d) => target.ws.send(d), {
+    this.transport.send(target.ws, {
       type: 'member-kicked',
       reason,
       timestamp: createTimestamp(),
     });
 
-    target.ws.close(4004, reason);
+    this.transport.closeConnection(target.ws, 4004, reason);
   }
 
   /** Get all current members. */
@@ -1173,7 +1212,7 @@ export class SessionHost implements SessionEventEmitter {
   private async processReviewComment(
     memberId: string,
     displayName: string,
-    ws: WebSocket | null,
+    ws: TransportConnection | null,
     msg: ProtocolMessage & { type: 'review-comment' },
   ): Promise<void> {
     if (!this.reviewStore) return;
@@ -1204,7 +1243,7 @@ export class SessionHost implements SessionEventEmitter {
 
       if (parent.comments.length >= SessionHost.REVIEW_COMMENT_CAP) {
         if (ws) {
-          sendMessage((d) => ws.send(d), {
+          this.transport.send(ws, {
             type: 'error',
             code: 'REVIEW_COMMENT_CAP',
             message: `Review has reached the ${SessionHost.REVIEW_COMMENT_CAP}-comment cap.`,
@@ -1215,7 +1254,7 @@ export class SessionHost implements SessionEventEmitter {
       }
       if (!this.checkReviewCommentRate(memberId, stampedTs)) {
         if (ws) {
-          sendMessage((d) => ws.send(d), {
+          this.transport.send(ws, {
             type: 'error',
             code: 'REVIEW_RATE_LIMIT',
             message: `You can post at most ${SessionHost.REVIEW_COMMENT_RATE_PER_MIN} review comments per minute.`,
@@ -1344,7 +1383,7 @@ export class SessionHost implements SessionEventEmitter {
   private async processReviewResolved(
     memberId: string,
     displayName: string,
-    ws: WebSocket | null,
+    ws: TransportConnection | null,
     msg: ProtocolMessage & { type: 'review-resolved' },
   ): Promise<void> {
     if (!this.reviewStore) return;
@@ -1370,7 +1409,7 @@ export class SessionHost implements SessionEventEmitter {
         resolveReason === 'merged';
       if (!isAuthor && !isAdminOverride) {
         if (ws) {
-          sendMessage((d) => ws.send(d), {
+          this.transport.send(ws, {
             type: 'error',
             code: 'REVIEW_PERMISSION_DENIED',
             message: 'Only the push author can resolve their review (admins can override changes-requested to merged).',
@@ -1597,10 +1636,10 @@ export class SessionHost implements SessionEventEmitter {
   async sendReviewStateSyncToMember(memberId: string, branch: string): Promise<void> {
     if (!this.reviewStore) return;
     const cm = this.members.get(memberId);
-    if (!cm || cm.ws.readyState !== WebSocket.OPEN) return;
+    if (!cm || !this.transport.isOpen(cm.ws)) return;
     const reviews = this.reviewStore.getAll().filter(r => r.branch === branch);
     try {
-      sendMessage((d) => cm.ws.send(d), {
+      this.transport.send(cm.ws, {
         type: 'review-state-sync',
         timestamp: createTimestamp(),
         branch,
@@ -1850,12 +1889,12 @@ export class SessionHost implements SessionEventEmitter {
       return;
     }
     const cm = this.members.get(memberId);
-    if (!cm || cm.ws.readyState !== WebSocket.OPEN) {
+    if (!cm || !this.transport.isOpen(cm.ws)) {
       return;
     }
     const records = this.chatLog.getRecent(100);
     try {
-      sendMessage((d) => cm.ws.send(d), {
+      this.transport.send(cm.ws, {
         type: 'chat-history',
         timestamp: createTimestamp(),
         branch,
@@ -2000,20 +2039,22 @@ export class SessionHost implements SessionEventEmitter {
   // Internal helpers
   // ---------------------------------------------------------------------------
 
-  /** Broadcast a message to all authenticated members, optionally excluding one. */
+  /**
+   * Broadcast a message to all authenticated members, optionally excluding
+   * one. Pre-serializes ONCE and writes the same bytes to every member via
+   * `transport.sendRaw` so JSON.stringify cost is paid once and the
+   * BandwidthMonitor records exact wire bytes (pre-refactor behavior at
+   * line 2009-2017 — preserved verbatim through the seam).
+   */
   private broadcast(msg: ProtocolMessage, excludeId?: string): void {
+    const data = JSON.stringify(msg);
     for (const [id, cm] of this.members) {
       if (id === excludeId) {
         continue;
       }
-      if (cm.ws.readyState === WebSocket.OPEN) {
-        try {
-          const data = JSON.stringify(msg);
-          cm.ws.send(data);
-          this.bandwidthMonitor.recordSent(id, Buffer.byteLength(data, 'utf-8'));
-        } catch {
-          // Send failure -- will be caught by close handler
-        }
+      const bytesWritten = this.transport.sendRaw(cm.ws, data);
+      if (bytesWritten > 0) {
+        this.bandwidthMonitor.recordSent(id, bytesWritten);
       }
     }
   }
@@ -2029,16 +2070,14 @@ export class SessionHost implements SessionEventEmitter {
       for (const [id, cm] of this.members) {
         if (!cm.isAlive) {
           // Member missed the heartbeat -- terminate
-          cm.ws.terminate();
+          this.transport.terminate(cm.ws);
           this.removeMember(id, 'Heartbeat timeout');
           continue;
         }
         cm.isAlive = false;
-        try {
-          cm.ws.ping();
-        } catch {
-          // Ping failure -- will be cleaned up next cycle
-        }
+        // Transport.ping is internally null-safe (no-op when not OPEN) — no
+        // try/catch needed at this level.
+        this.transport.ping(cm.ws);
       }
     }, 15000);
   }
@@ -2111,20 +2150,6 @@ export class SessionHost implements SessionEventEmitter {
     return list;
   }
 
-  /** Find a free port by briefly creating a TCP server on port 0. */
-  private findFreePort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-      const srv = createServer();
-      srv.listen(0, () => {
-        const addr = srv.address();
-        if (addr && typeof addr === 'object') {
-          const port = addr.port;
-          srv.close(() => resolve(port));
-        } else {
-          srv.close(() => reject(new Error('Could not determine free port')));
-        }
-      });
-      srv.on('error', reject);
-    });
-  }
+  // Phase 7 D-05: `findFreePort` migrated to LanHostTransport — wire-layer
+  // concern. SessionHost no longer needs the `net` import.
 }

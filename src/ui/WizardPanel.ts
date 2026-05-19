@@ -46,7 +46,10 @@ interface WizardState {
   relayUrl: string; // Cloud branch only — host enters the wss:// relay URL
   relayUrlReachable: boolean | null; // null = not tested; true = /healthz ok; false = failed
   relayHealthSessionCount: number | null; // populated from /healthz on success
-  sessionId: string; // Cloud share-screen deep-link param; minimal v1: 'vc-' + inviteCode.toLowerCase()
+  sessionId: string; // Cloud share-screen deep-link param. Random 6-byte hex
+                     // (review HI-02 — formerly derived from inviteCode, which
+                     // let observers recover the invite code from any sessionId
+                     // logged by the relay).
 }
 
 /**
@@ -644,14 +647,17 @@ export class WizardPanel {
         hostAuthSecret: crypto.randomUUID(),
       };
 
-      // Plan 07-05 — derive a sessionId for the cloud share-screen deep-link.
-      // Minimal v1 derivation: 'vc-' + inviteCode (lowercased). Invite codes
-      // are unique within a process, so the derived sessionId is collision-free
-      // for v1 without introducing a separate identifier. The deep-link
-      // contract (07-06 will parse this) only requires the field be a non-empty
-      // alphanumeric+dash string. LAN mode never reads sessionId (no deep-link
-      // surface) — populating it unconditionally keeps the state shape simple.
-      this.state.sessionId = 'vc-' + this.state.inviteCode.toLowerCase();
+      // Review HI-02 — derive sessionId from random bytes, NOT from inviteCode.
+      // The pre-fix derivation `'vc-' + inviteCode.toLowerCase()` made the
+      // invite code trivially recoverable from any sessionId observation
+      // (slice(3).toUpperCase() reverses it). Since the relay logs sessionId
+      // by design (it is the routing key, intentionally NOT in the redact
+      // set), every log line containing sessionId leaked the invite code.
+      // The fix: generate 6 random bytes (48 bits of entropy, well above
+      // any per-relay-process collision risk) and prefix with 'vc-'. The
+      // sessionId remains shaped like the SESSION_ID_SHAPE regex in
+      // relay/src/auth.ts so existing auth tests pass.
+      this.state.sessionId = 'vc-' + crypto.randomBytes(6).toString('hex');
 
       // Plan 07-05b — branch on wizard mode to wire a cloud SessionHost via
       // SessionHostFactory.createCloud(). LAN mode falls through to the

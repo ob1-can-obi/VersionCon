@@ -190,3 +190,42 @@ body {
   border-radius: 4px;
   border: 1px solid var(--vscode-widget-border);
 }
+
+/* Phase 7 (Plan 07-06): Connection-method radio group for LAN/Cloud toggle. */
+.radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.radio-option {
+  display: flex;
+  align-items: flex-start;
+  padding: 8px 12px;
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 2px;
+  background: var(--vscode-input-background);
+  cursor: pointer;
+}
+
+.radio-option input[type="radio"] {
+  margin-right: 8px;
+  margin-top: 2px;
+}
+
+.radio-option-label {
+  font-weight: 500;
+}
+
+.radio-option .description {
+  display: block;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  margin-top: 4px;
+}
+
+.fieldset-legend {
+  font-weight: 600;
+  margin-bottom: 8px;
+}

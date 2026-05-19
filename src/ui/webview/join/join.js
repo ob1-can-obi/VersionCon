@@ -73,17 +73,56 @@
     // Manual Join section
     html += '<div class="section">';
     html += '<div class="section-header">Join Manually</div>';
+
+    // Phase 7 (Plan 07-06): Connection method radio group — LAN vs Cloud.
+    // Mode controls whether Host IP+Port or Relay URL+Session ID are rendered.
+    // Both branches share the Invite Code and Display Name fields.
+    const mode = state.mode === 'cloud' ? 'cloud' : 'lan';
+    html += '<fieldset class="radio-group" style="border:none;padding:0;">';
+    html += '<legend class="fieldset-legend">Connection method</legend>';
     html += `
-      <div class="form-row">
+      <label class="radio-option">
+        <input type="radio" name="connection-mode" value="lan" ${mode === 'lan' ? 'checked' : ''} data-mode="lan">
+        <div>
+          <span class="radio-option-label">LAN (host on same network)</span>
+          <span class="description">Use this if your teammates are on the same Wi-Fi or office network.</span>
+        </div>
+      </label>
+      <label class="radio-option">
+        <input type="radio" name="connection-mode" value="cloud" ${mode === 'cloud' ? 'checked' : ''} data-mode="cloud">
+        <div>
+          <span class="radio-option-label">Cloud (via relay)</span>
+          <span class="description">Use this if your team is on different networks. You'll need a relay URL.</span>
+        </div>
+      </label>
+    `;
+    html += '</fieldset>';
+
+    if (mode === 'lan') {
+      html += `
+        <div class="form-row">
+          <div class="form-group">
+            <label for="host-ip">Host IP</label>
+            <input type="text" id="host-ip" placeholder="192.168.1.100" value="${escapeHtml(state.hostIp)}">
+          </div>
+          <div class="form-group" style="max-width: 100px;">
+            <label for="port">Port</label>
+            <input type="number" id="port" placeholder="3000" value="${escapeHtml(state.port)}">
+          </div>
+        </div>`;
+    } else {
+      html += `
         <div class="form-group">
-          <label for="host-ip">Host IP</label>
-          <input type="text" id="host-ip" placeholder="192.168.1.100" value="${escapeHtml(state.hostIp)}">
+          <label for="relay-url">Relay URL</label>
+          <input type="url" id="relay-url" inputmode="url" autocomplete="off" placeholder="wss://your-relay.fly.dev" value="${escapeHtml(state.relayUrl)}">
         </div>
-        <div class="form-group" style="max-width: 100px;">
-          <label for="port">Port</label>
-          <input type="number" id="port" placeholder="3000" value="${escapeHtml(state.port)}">
-        </div>
-      </div>
+        <div class="form-group">
+          <label for="session-id">Session ID</label>
+          <input type="text" id="session-id" placeholder="vc-7f3a92" value="${escapeHtml(state.sessionId)}">
+        </div>`;
+    }
+
+    html += `
       <div class="form-group">
         <label for="invite-code">Invite Code</label>
         <input type="text" id="invite-code" placeholder="ABC123" value="${escapeHtml(state.inviteCode)}">
@@ -92,7 +131,7 @@
         <label for="display-name">Display Name</label>
         <input type="text" id="display-name" placeholder="Your Name" value="${escapeHtml(state.displayName)}">
       </div>
-      <button class="btn btn-primary" id="btn-join" ${state.isConnecting ? 'disabled' : ''}>Join Session</button>
+      <button class="btn btn-primary" id="btn-join" ${state.isConnecting ? 'disabled' : ''}>${mode === 'cloud' ? 'Join Cloud Session' : 'Join Session'}</button>
     `;
     html += '</div>';
     html += '</div>';
@@ -107,15 +146,33 @@
   }
 
   function attachListeners(state) {
+    const mode = state.mode === 'cloud' ? 'cloud' : 'lan';
+
+    // Phase 7 (Plan 07-06): connection-method radio change → notify extension.
+    document.querySelectorAll('input[name="connection-mode"]').forEach((radio) => {
+      radio.addEventListener('change', (ev) => {
+        const target = ev.target;
+        const selectedMode = target?.getAttribute('data-mode') || '';
+        if (selectedMode === 'lan' || selectedMode === 'cloud') {
+          vscode.postMessage({ type: 'join-mode-change', payload: { mode: selectedMode } });
+        }
+      });
+    });
+
     // Join button
     const btnJoin = document.getElementById('btn-join');
     if (btnJoin) {
       btnJoin.addEventListener('click', () => {
         const hostIp = document.getElementById('host-ip')?.value || '';
         const port = document.getElementById('port')?.value || '';
+        const relayUrl = document.getElementById('relay-url')?.value || '';
+        const sessionId = document.getElementById('session-id')?.value || '';
         const inviteCode = document.getElementById('invite-code')?.value || '';
         const displayName = document.getElementById('display-name')?.value || '';
-        vscode.postMessage({ type: 'join-connect', payload: { hostIp, port, inviteCode, displayName } });
+        vscode.postMessage({
+          type: 'join-connect',
+          payload: { mode, hostIp, port, relayUrl, sessionId, inviteCode, displayName },
+        });
       });
     }
 

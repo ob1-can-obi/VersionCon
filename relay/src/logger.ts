@@ -21,8 +21,16 @@
 //     `*.authorization`, `token`, `*.token`.
 //   - T-07-04 Information Disclosure (payload leak) — paths covering
 //     `envelope.payload`, `*.payload`, `*.message`, `*.body`.
-//   - T-07-05-aux Information Disclosure (invite-code leak, defense-in-depth) —
-//     paths covering `inviteCode`, `*.inviteCode`, `code`, `*.code`.
+//   - T-07-05-aux Information Disclosure (host-side-secret leak,
+//     defense-in-depth) — paths covering `code` and `*.code`. These cover the
+//     deep-link URL parameter shape (which IS how the join-secret travels from
+//     the OS to VS Code on the host side). The HOST-side field name itself is
+//     deliberately NOT mentioned here because 07-09's source-locality gate
+//     (relay/test/router.test.js) enforces that relay/src/ files NEVER contain
+//     that literal. Even mentioning the field name in a comment leaks intent
+//     about the future L3 key-derivation seam. Production code cannot receive
+//     that field name from the relay's traffic shape anyway (07-09 source-grep);
+//     the `code`/`*.code` paths are the security-meaningful defense.
 //   - T-07-04-aux Information Disclosure via err.stack/err.message — handled at
 //     CALL SITE discipline in server.ts/auth.ts (this file cannot redact a
 //     string that's been pre-formatted into the message); enforced by a
@@ -55,13 +63,15 @@ export const logger = pino({
       '*.payload',
       '*.message',
       '*.body',
-      // Invite-code defense (T-07-05-aux belt-and-suspenders — invite codes
-      // never reach the relay per the source-grep gate in 07-09, but redact
-      // anyway in case a future maintainer logs a join-attempt object).
-      // Top-level + wildcard variants — pino wildcards only match nested paths,
-      // so explicit top-level entries are required.
-      'inviteCode',
-      '*.inviteCode',
+      // Host-side-secret defense (T-07-05-aux) — `code` covers the deep-link
+      // URL parameter shape the OS uses to carry the join-secret into VS Code
+      // on the host side. Pino wildcards only match NESTED paths, so the
+      // top-level `code` path is required in addition to `*.code`. The
+      // host-side field name itself is intentionally NOT listed here — the
+      // 07-09 source-locality gate (relay/test/router.test.js) enforces that
+      // relay/src/ files never contain that literal at all, and the traffic
+      // shape into the relay never carries it (the host substitutes the
+      // verifySecret-derived path before it ever hits this process).
       'code',
       '*.code',
       // Ambient secret hygiene

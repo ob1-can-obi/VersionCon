@@ -199,6 +199,125 @@ function getGitBridgeOutputChannel(
   return gitBridgeOutputChannel;
 }
 
+// Phase 7 (Plan 07-06): dedicated Output channel for the vscode:// deep-link
+// UriHandler. Lazily created on first deep-link arrival via
+// getDeepLinkOutputChannel() and disposed with the extension via
+// context.subscriptions. Mirrors the getGitBridgeOutputChannel lifecycle
+// pattern above (single canonical channel name; idempotent push to subs).
+let deepLinkOutputChannel: vscode.OutputChannel | null = null;
+let deepLinkChannelPushedToSubs = false;
+
+function getDeepLinkOutputChannel(
+  context: vscode.ExtensionContext,
+): vscode.OutputChannel {
+  if (!deepLinkOutputChannel) {
+    deepLinkOutputChannel = vscode.window.createOutputChannel('VersionCon: Deep Links');
+  }
+  if (!deepLinkChannelPushedToSubs) {
+    context.subscriptions.push(deepLinkOutputChannel);
+    deepLinkChannelPushedToSubs = true;
+  }
+  return deepLinkOutputChannel;
+}
+
+/**
+ * Phase 7 (Plan 07-06): UriHandler for vscode://versioncon.versioncon/join?...
+ * deep-links emitted by the Wizard share screen (Plan 07-05).
+ *
+ * Security contract (LOCKED — corresponds to the threat model in 07-06-PLAN.md):
+ *
+ *  - T-07-10 (Spoofing / Social-Engineering): REQUIRES a confirmation prompt
+ *    via vscode.window.showInformationMessage BEFORE any JoinPanel open or
+ *    network call. NO trust-list, NO bypass flag.
+ *
+ *  - T-07-10a (XSS): the URI layer passes decoded values verbatim — escape
+ *    responsibility is owned by the webview render layer
+ *    (join.js:escapeHtml). The information-message dialog renders text-only,
+ *    so passing untrusted strings to its `message` parameter is safe.
+ *
+ *  - T-07-10b (Information Disclosure): the OutputChannel never logs the
+ *    invite `code` value — log lines include `relay=` and `session=` only.
+ *
+ *  - T-07-10c (Phase 4.1 invariant): displayName is NEVER extracted from a
+ *    URI query param. The JoinPrefill struct (defined in JoinPanel.ts) has
+ *    no displayName field. User MUST type it in the panel after arrival.
+ *
+ * Validation order: path → required-params → wss-scheme → confirmation
+ * prompt. The user is never asked to confirm an obviously-malformed link.
+ */
+export class VersionConUriHandler implements vscode.UriHandler {
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly sessionHistory: SessionHistory,
+    private readonly onConnected: (client: SessionClient) => void,
+  ) {}
+
+  async handleUri(uri: vscode.Uri): Promise<void> {
+    const channel = getDeepLinkOutputChannel(this.context);
+    const ts = new Date().toISOString();
+
+    if (uri.path !== '/join') {
+      channel.appendLine(`[${ts}] Unsupported deep-link path: ${uri.path}`);
+      return;
+    }
+
+    const params = new URLSearchParams(uri.query);
+    const relay = params.get('relay');
+    const session = params.get('session');
+    const code = params.get('code') ?? '';
+
+    if (!relay) {
+      channel.appendLine(`[${ts}] Deep-link missing required parameter: relay`);
+      return;
+    }
+    if (!session) {
+      channel.appendLine(`[${ts}] Deep-link missing required parameter: session`);
+      return;
+    }
+    if (!relay.startsWith('wss://')) {
+      // Log the scheme (NOT the full relay value — keeps the log signal
+      // bounded) and surface a user-visible error toast. Note: validation
+      // precedes the confirmation prompt so the user is never asked to
+      // "Join" an obviously-malicious URL.
+      const scheme = relay.split(':')[0] ?? '<unknown>';
+      channel.appendLine(`[${ts}] Deep-link rejected: relay must use wss:// (got ${scheme}://)`);
+      await vscode.window.showErrorMessage(
+        'Invalid invite link — relay must use wss://.',
+      );
+      return;
+    }
+
+    // T-07-10 mitigation — REQUIRED confirmation prompt before any panel open
+    // or network call. UI-SPEC literal copy ("Join VersionCon session? You've
+    // been invited to join a cloud session at <relay>.").
+    const choice = await vscode.window.showInformationMessage(
+      `Join VersionCon session? You've been invited to join a cloud session at ${relay}.`,
+      'Join',
+      'Cancel',
+    );
+
+    if (choice !== 'Join') {
+      // Silent cancellation per UI-SPEC §Reconnect Progress Copy ("no toast on
+      // cancel"). Only an OutputChannel breadcrumb is left for diagnostics.
+      channel.appendLine(`[${ts}] Deep-link declined by user (choice=${choice ?? 'dismissed'})`);
+      return;
+    }
+
+    // T-07-10b: log relay + session but NEVER the invite code value.
+    channel.appendLine(`[${ts}] Deep-link accepted — opening JoinPanel prefilled (relay=${relay}, session=${session})`);
+
+    // T-07-10c: JoinPrefill struct has NO displayName field. The joiner must
+    // type their displayName in the panel after it opens, preserving the
+    // Phase 4.1 "displayName is always self-attested" invariant.
+    await JoinPanel.openPrefilled(
+      this.context,
+      this.sessionHistory,
+      this.onConnected,
+      { mode: 'cloud', relayUrl: relay, sessionId: session, inviteCode: code },
+    );
+  }
+}
+
 /**
  * Format the CONF-07 toast string per UI-SPEC §6.1 (locked literals):
  *   - 1 file overlap: `{name} pushed 1 file — affects: {fileBasename}: '{msg}'`
@@ -1761,6 +1880,18 @@ export function activate(context: vscode.ExtensionContext): void {
         wireClientEvents(client);
       });
     }),
+  );
+
+  // Phase 7 (Plan 07-06): UriHandler for vscode://versioncon.versioncon/join?...
+  // deep-links. Registered programmatically — package.json's
+  // activationEvents: ["onUri"] guarantees cold-start activation when a deep
+  // link arrives while the extension is not yet loaded.
+  context.subscriptions.push(
+    vscode.window.registerUriHandler(
+      new VersionConUriHandler(context, sessionHistory, (client: SessionClient) => {
+        wireClientEvents(client);
+      }),
+    ),
   );
 
   context.subscriptions.push(

@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 7 Wave 1 in progress — 07-02 (CloudEnvelope) and 07-01 (Transport interface seam) shipped. 07-01 refactor of SessionHost + SessionClient is byte-identical (884 / 0 / 66 vs. pre-refactor 867+) and the source-grep gate in src/test/suite/transportSeam.test.ts (Tests A–F) is green. `new WebSocketServer(` and `new WebSocket(`ws://...`)` are now quarantined inside src/network/LanTransport.ts; HostTransport + ClientTransport interfaces exported from src/network/Transport.ts so 07-04 CloudTransport plugs in without touching the controllers. findFreePort migrated into LanHostTransport (wire-layer concern). 07-03 (TokenService — jose JWT) is next.
-last_updated: "2026-05-19T00:00:00.000Z"
-last_activity: 2026-05-19 -- Plan 07-01 complete; Transport seam landed (RED+GREEN commits 800c233, c0ba05f); Wave 1 ⅔ shipped (07-02 ebba324 + 07-01)
+stopped_at: Phase 7 Wave 1 COMPLETE — 07-01 (Transport seam), 07-02 (CloudEnvelope), 07-03 (TokenService — jose-backed HS256 JWT) all shipped. 892 / 0 / 66 tests passing (+8 from 07-03's 'Phase 7 — token service' suite). src/auth/TokenService.ts exports TokenService (newSecret/issue/verify) + TokenClaims; algorithm-confusion defense enforced via `algorithms: ['HS256']` literal + source-grep gate; relay-portable (zero VS Code imports). NOTE: jose pinned at ^5.10.0 instead of planned ^6.2.3 because jose@6 is ESM-only and the extension compiles to CJS — API surface identical (Rule 3 deviation, see 07-03-SUMMARY.md). Wave 2 unblocked.
+last_updated: "2026-05-19T05:15:00.000Z"
+last_activity: 2026-05-19 -- Plan 07-03 complete; TokenService + 8-case suite shipped (commits 25ff180 + 9935789 RED + c3c2bf8 GREEN); Wave 1 done (3/3 plans)
 progress:
   total_phases: 13
   completed_phases: 5
   total_plans: 59
-  completed_plans: 46
-  percent: 78
+  completed_plans: 47
+  percent: 80
 ---
 
 # Project State
@@ -25,21 +25,21 @@ See: .planning/PROJECT.md (updated 2026-05-04)
 
 ## Current Position
 
-Phase: 07 (cloud-mode-relay-server) — EXECUTING (Wave 1)
-Plan: 2 of 13 done (07-01 ✓, 07-02 ✓; 07-03 next)
-Status: Wave 1 ⅔ shipped — Transport seam (07-01) and CloudEnvelope (07-02) both byte-identical refactors. 07-03 (TokenService) blocks on this commit landing.
-Next: /gsd-execute-phase 7 — run 07-03 (jose-backed JWT TokenService + HS256 algorithm-confusion gate)
-Last activity: 2026-05-19 -- /gsd-execute-phase 7 plan 07-01 complete (Transport.ts + LanTransport.ts + surgical refactor of SessionHost/SessionClient; 884 tests passing); commits 800c233 + c0ba05f
+Phase: 07 (cloud-mode-relay-server) — EXECUTING (Wave 1 COMPLETE)
+Plan: 3 of 13 done (07-01 ✓, 07-02 ✓, 07-03 ✓; Wave 2 next)
+Status: Wave 1 fully shipped. TokenService is the L1 security foundation — host issuer + (future relay) verifier share one module. 892 tests pass cleanly. Wave 2 plans (07-04 CloudTransport, 07-05 wizard cloud step, 07-06 join + UriHandler, 07-07 status bar) can begin.
+Next: /gsd-execute-phase 7 — run 07-04 (CloudTransport outbound WSS + envelope wrap + ReconnectManager reuse)
+Last activity: 2026-05-19 -- /gsd-execute-phase 7 plan 07-03 complete (TokenService + 8-case suite; jose@^5.10.0 due to ESM/CJS); commits 25ff180 + 9935789 + c3c2bf8
 
-Progress: [██████████] 96%
+Progress: [██████████] 97%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 17
+- Total plans completed: 18
 - Average duration: 4.7 min
-- Total execution time: 1.34 hours
+- Total execution time: 1.44 hours
 
 **By Phase:**
 
@@ -50,8 +50,8 @@ Progress: [██████████] 96%
 
 **Recent Trend:**
 
-- Last 5 plans: 07-01 (~30 min — surgical refactor of two ~2000-line controllers), 07-02 (CloudEnvelope), 06-05 (Wave 4 mandatory review gate), 06-04 (ReviewPanel UI), 06-03 (ReviewState client cache)
-- Trend: 07-01 is a pure refactor (zero behavior change) but touches ~14 wire I/O sites in SessionHost + ~6 in SessionClient + adds 2 new files (Transport.ts interface, LanTransport.ts impl) + 1 source-grep gate test. 884 tests pass twice consecutively (no flake). Two architectural deviations logged: (1) optional `transport?` constructor parameter instead of factory-file split, (2) `HostTransport.sendRaw` added to preserve BandwidthMonitor byte-accuracy.
+- Last 5 plans: 07-03 (~6 min — TokenService + 8-case JWT test suite), 07-01 (~30 min — surgical refactor of two ~2000-line controllers), 07-02 (CloudEnvelope), 06-05 (Wave 4 mandatory review gate), 06-04 (ReviewPanel UI)
+- Trend: 07-03 is the smallest Phase-7 plan (~145-line test + 76-line module + dep bump). One Rule 3 deviation (jose ESM/CJS — version bump-down 6.x → 5.x with identical API) and one Rule 2 (role post-check). Asymmetric RED is by design — rejection-only tests use no error matcher so the suite survives jose minor-version upgrades. 892 tests pass (884 + 8 new).
 
 *Updated after each plan completion*
 
@@ -143,6 +143,10 @@ Recent decisions affecting current work:
 - [Plan 07-01]: SessionClient registers transport handlers ONCE per instance via `transportHandlersInstalled` flag. Pre-refactor, `new WebSocket(...)` was constructed inline per connect() call so handlers were naturally re-attached to the new socket. With Transport: LanClientTransport.connect() re-binds the underlying ws.on(...) calls to the SAME registered handler arrays on every reconnect — SessionClient's one-shot install pattern prevents handler array duplication across reconnects (caught during Task 2 — would have caused 2× / 3× / Nx message processing after N reconnects).
 - [Plan 07-01]: `intentionalClose: boolean` flag in SessionClient replaces the pre-refactor null-ws sentinel (`this.ws = null` BEFORE `ws.close()` at line 550-551). Flipped true inside `disconnectInternal()` before `transport.close()` so the onClose handler short-circuits and does NOT trigger attemptReconnect. Semantically identical, no `markIntentionalClose` method added to the ClientTransport interface (would have leaked controller state into the wire layer).
 - [Plan 07-01]: findFreePort migrated from SessionHost into LanHostTransport — wire-layer concern. SessionHost no longer imports from `net`.
+- [Plan 07-03]: jose downgraded from planned ^6.2.3 → ^5.10.0. jose@6.x is ESM-only (`"type": "module"`); the extension compiles to CommonJS, so `tsc` errors with TS1479. jose@5.10.0 ships a CJS entry (`./dist/node/cjs/index.js`) and has the IDENTICAL `SignJWT` / `jwtVerify` / `algorithms` / `audience` / `clockTolerance` API used by the plan. Same outcome for plan 07-09 (relay) — it will also pin jose@^5 unless that package opts into ESM. Rule 3 deviation (blocking issue: locked version doesn't compile), NOT Rule 4 (architectural pivot) — library/algorithm/claim-schema all preserved verbatim.
+- [Plan 07-03]: verify() post-checks `payload.role ∈ {'host','member'}` and throws `'Missing role claim'` otherwise. jose's `jwtVerify` only checks signature + standard claims (iss/aud/exp) — custom claims like `role` aren't validated. Without this post-check a buggy or compromised issuer could mint tokens with `role: 'admin'` and they'd pass jose verification. Rule 2 defense-in-depth.
+- [Plan 07-03]: RS256 test feeds Node's KeyObject directly into `SignJWT.sign(privateKey)` — no `importPKCS8` round-trip needed. Confirmed jose 5.10.0 accepts `KeyObject` arguments for asymmetric signing keys. Plan 07-09 (relay verifier integration tests) can use the same shortcut to construct adversarial RS256 tokens for its own algorithm-confusion gate.
+- [Plan 07-03]: Rejection-test assertions use bare `assert.rejects(() => svc.verify(...))` with NO error matcher — survives jose minor-version upgrades that rename error classes (e.g. `JWTClaimValidationFailed`). Tradeoff: asymmetric RED phase (4 of 8 tests passed via stub-throw rejection in RED commit 9935789). Documented as design choice, not TDD violation.
 
 ### Roadmap Evolution
 
@@ -186,7 +190,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-19T05:00:00Z
-Stopped at: Plan 07-01 (Transport interface seam) complete. Refactor is byte-identical — 884 tests pass twice consecutively (vs. 867 pre-refactor + 6 new transport-seam assertions + 11 from 07-02 CloudEnvelope). SessionHost.ts + SessionClient.ts no longer import from `ws` and no longer construct WebSocketServer / WebSocket — the constructs are quarantined inside src/network/LanTransport.ts. HostTransport + ClientTransport interfaces exported from src/network/Transport.ts (opaque TransportConnection = unknown — T-07-RX mitigation). findFreePort migrated into LanHostTransport. Optional `transport?` constructor parameter with LAN default keeps all 20+ existing call-sites compiling unchanged. Two-commit RED/GREEN pair (800c233, c0ba05f). 07-03 (TokenService — jose JWT) is next.
+Last session: 2026-05-19T05:15:00Z
+Stopped at: Plan 07-03 (TokenService — jose-backed HS256 JWT) complete. Wave 1 done (3/3 plans: 07-01 Transport seam, 07-02 CloudEnvelope, 07-03 TokenService). 892 tests passing (884 + 8 new in 'Phase 7 — token service' suite); 0 failing; 66 pending. Three-commit chain: 25ff180 (skeleton + jose dep) + 9935789 (RED — 8-case suite) + c3c2bf8 (GREEN — issue+verify implemented). src/auth/TokenService.ts exports TokenService (newSecret/issue/verify) + TokenClaims; algorithm-confusion defense enforced via `algorithms: ['HS256']` literal + grep gate; no VS Code imports (relay-portable for plan 07-09). NOTE: jose pinned at ^5.10.0 (CJS-compatible) instead of planned ^6.2.3 (ESM-only) — API surface identical. Wave 2 (07-04 CloudTransport, 07-05 wizard cloud step, 07-06 join + UriHandler, 07-07 status bar) unblocked.
 Resume file: None
-Last activity: 2026-05-19 -- Plan 07-01 complete; Wave 1 ⅔ shipped (07-02 ebba324 + 07-01 c0ba05f)
+Last activity: 2026-05-19 -- Plan 07-03 complete; Wave 1 fully shipped

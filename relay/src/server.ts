@@ -62,6 +62,16 @@ const REAPER_TICK_MS = 60_000;
 export async function startServer(opts: StartServerOptions = {}): Promise<RunningServer> {
   const requestedPort = opts.port ?? parseInt(process.env.PORT ?? '8080', 10);
   const requireAuth = opts.requireAuth ?? (process.env.RELAY_REQUIRE_AUTH !== 'false');
+  // Review HI-06: eager production guard for the `requireAuth: 'test'` seam.
+  // The branch reads synthetic JWT claims from request headers and bypasses
+  // the verifyToken path entirely — it must NEVER be reachable in production.
+  // Throwing here (before bind) fails the deploy loudly rather than silently
+  // accepting test-mode in a prod container.
+  if (requireAuth === 'test' && process.env.NODE_ENV === 'production') {
+    throw new Error(
+      "startServer: requireAuth='test' is forbidden when NODE_ENV='production'",
+    );
+  }
   const registry = new SessionRegistry();
 
   const httpServer = http.createServer((req, res) => {
@@ -116,7 +126,18 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
       // info.req so the connection handler's first-frame carve-out can run
       // without a real JWT verify path. Tests use this to exercise the
       // session-register branches in isolation.
+      //
+      // Review HI-06 hardening: test-mode is fenced behind NODE_ENV !== 'production'.
+      // At process load time we asserted that `requireAuth: 'test'` is not
+      // reachable when NODE_ENV === 'production' (see assertion above
+      // `wss = new WebSocketServer`). If somehow this branch is reached in
+      // production despite that gate, we close fail-safe (401) and log.
       if (requireAuth === 'test') {
+        if (process.env.NODE_ENV === 'production') {
+          logger.error({ event: 'test-mode-blocked-in-production', ip });
+          cb(false, 401, 'test-mode-blocked-in-production');
+          return;
+        }
         const headers = info.req.headers;
         const role = headers['x-test-role'];
         const aud = headers['x-test-aud'];

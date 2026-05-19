@@ -293,6 +293,17 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
         return;
       }
       if (!sessionId) return;
+      // Review MD-06: enforce envelope.sessionId === attachedSessionId on every
+      // post-attach frame. The attach-time aud check already pins the socket
+      // to one session id (line 244 + line 222 above), so a frame addressed
+      // to a different session is either a defective client or a malicious
+      // attempt to probe the relay. Close 4400 with a discriminator reason
+      // so the client surface can distinguish this from session-cap (4429),
+      // unknown-session (4404), or grace-active (4503) cases.
+      if (attachedSessionId !== undefined && sessionId !== attachedSessionId) {
+        ws.close(4400, 'session-id-mismatch-post-attach');
+        return;
+      }
       route(registry, sessionId, ws, raw as Buffer);
     });
 

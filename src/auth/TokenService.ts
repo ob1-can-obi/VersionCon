@@ -61,6 +61,47 @@ export class TokenService {
   }
 
   /**
+   * Mint a short-lived BOOTSTRAP JWT for the cloud-mode joiner-side
+   * chicken-and-egg deadlock (Phase 7 MD-03 — gap closure plan 07-13).
+   *
+   * The bootstrap JWT is embedded in the share-screen deep-link's `bt`
+   * query parameter. The joiner uses it ONLY to open the WSS to the
+   * relay; the host then issues a real per-joiner JWT in `auth-response`
+   * (07-05b path) and the joiner reconnects with that token.
+   *
+   * Scope discipline:
+   *   - role is HARD-CODED to 'member' (never the elevated host role —
+   *     defense against T-07-15 elevation-of-privilege). The source-grep
+   *     gate counting SignJWT-call-site role:host literals stays at 0
+   *     in this file at CI time.
+   *   - exp is HARD-CODED to '15m' (NOT the env-driven this.ttl). A
+   *     leaked deep-link's bootstrap JWT becomes useless after 15 min;
+   *     regular member JWTs minted by handleAuthRequest carry the full
+   *     4h exp via the unchanged `issue()` method.
+   *   - sub is HARD-CODED to 'bootstrap-' + sessionId (multi-joiner
+   *     collision OK — bootstrap JWT only authorizes WSS open; per-
+   *     joiner identity is re-anchored when the host issues a real JWT
+   *     in auth-response).
+   *
+   * The relay needs ZERO changes — the bootstrap JWT validates against
+   * the per-session verifySecret via the existing `verifyToken` path
+   * (relay/src/auth.ts:74-164). serverAuthIntegration.test.js test 3
+   * already exercises this exact shape with a member-JWT signed against
+   * a pre-registered session's secret.
+   */
+  async issueBootstrap(sessionId: string, hostMemberId: string): Promise<string> {
+    return new SignJWT({ role: 'member' })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuer(hostMemberId)
+      .setSubject('bootstrap-' + sessionId)
+      .setAudience(sessionId)
+      .setIssuedAt()
+      .setExpirationTime('15m')
+      .setJti(crypto.randomUUID())
+      .sign(this.secret);
+  }
+
+  /**
    * Verify a JWT against this service's secret. Returns the verified payload
    * on success; throws on any failure (signature, alg, audience, expiry,
    * missing role).

@@ -18,11 +18,21 @@
     try { new URL(url); return true; } catch { return false; }
   }
 
-  function buildDeepLink(relayUrl, sessionId, inviteCode) {
-    return 'vscode://versioncon.versioncon/join?relay=' +
+  function buildDeepLink(relayUrl, sessionId, inviteCode, bootstrapToken) {
+    const base = 'vscode://versioncon.versioncon/join?relay=' +
       encodeURIComponent(relayUrl) +
       '&session=' + sessionId +
       '&code=' + inviteCode;
+    // Phase 7 gap-closure plan 07-13 (MD-03 Option A): append the bootstrap
+    // JWT as &bt= when non-empty. When omitted or empty (LAN mode + legacy
+    // 3-arg callers), the deep-link is byte-identical to today's output
+    // (LAN regression contract — pinned by wizardDeepLinkBootstrap.test.ts
+    // test 4). encodeURIComponent escapes the +, /, = chars that base64url
+    // JWTs may carry so the joiner-side parser (07-14) reads bt= correctly.
+    if (bootstrapToken && bootstrapToken.length > 0) {
+      return base + '&bt=' + encodeURIComponent(bootstrapToken);
+    }
+    return base;
   }
 
   async function runTestConnection(relayUrl, fetchImpl) {
@@ -294,7 +304,11 @@
   // plus three separate copy-buttoned rows. Deep-link scheme prefix is
   // package.json's `{publisher}.{name}` = `versioncon.versioncon`.
   function renderShareScreenCloud(state) {
-    const deepLink = buildDeepLink(state.relayUrl, state.sessionId || '', state.inviteCode);
+    // Phase 7 plan 07-13 (MD-03 Option A): pass state.bootstrapToken so the
+    // rendered deep-link carries &bt=<URLencoded jwt>. Falls back to '' if
+    // the state-update predates the bootstrapToken field (legacy webview);
+    // buildDeepLink omits &bt= when the 4th arg is empty (LAN regression).
+    const deepLink = buildDeepLink(state.relayUrl, state.sessionId || '', state.inviteCode, state.bootstrapToken || '');
     return `
       <div class="wizard-header"><h1>Cloud session active</h1></div>
       <div class="session-active">Cloud session live</div>
@@ -528,7 +542,10 @@
     const copyDeepLink = document.getElementById('copy-deep-link');
     if (copyDeepLink) {
       copyDeepLink.addEventListener('click', () => {
-        const deepLink = buildDeepLink(state.relayUrl, state.sessionId || '', state.inviteCode);
+        // Phase 7 plan 07-13 (MD-03 Option A): same 4-arg buildDeepLink call as
+        // the share-screen render — keep both call sites in lockstep so the
+        // copied string matches the rendered string byte-for-byte.
+        const deepLink = buildDeepLink(state.relayUrl, state.sessionId || '', state.inviteCode, state.bootstrapToken || '');
         vscode.postMessage({ type: 'copy-to-clipboard', payload: { text: deepLink } });
         copyDeepLink.textContent = 'Copied!';
         setTimeout(() => { copyDeepLink.textContent = 'Copy link'; }, 2000);

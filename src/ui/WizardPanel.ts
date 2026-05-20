@@ -50,6 +50,14 @@ interface WizardState {
                      // (review HI-02 — formerly derived from inviteCode, which
                      // let observers recover the invite code from any sessionId
                      // logged by the relay).
+  /**
+   * Phase 7 gap-closure plan 07-13 (MD-03 Option A). Populated AFTER
+   * SessionHostFactory.createCloud resolves; empty string in LAN mode
+   * and during the wizard's pre-creation steps. Picked up by wizard.js
+   * buildDeepLink (4-arg variant) to append &bt=<URLencoded> to the
+   * share-screen deep-link.
+   */
+  bootstrapToken: string;
 }
 
 /**
@@ -187,6 +195,9 @@ export class WizardPanel {
       relayUrlReachable: null,
       relayHealthSessionCount: null,
       sessionId: '',
+      // Plan 07-13 (MD-03 Option A) default — empty until createCloud
+      // resolves and the host's getBootstrapToken() pickup fires below.
+      bootstrapToken: '',
     };
 
     // Create webview panel
@@ -675,6 +686,14 @@ export class WizardPanel {
           relayUrl: this.state.relayUrl,
           sessionId: this.state.sessionId,
         });
+        // Phase 7 gap-closure plan 07-13 (MD-03 Option A): pickup bootstrap JWT
+        // from the freshly-created cloud SessionHost. WizardState carries it to
+        // the share-screen webview via sendStateUpdate below, which appends it
+        // as &bt= to the deep-link. The `?? ''` coalesce defends against the
+        // LAN-mode case (getBootstrapToken returns null) — defense-in-depth even
+        // though the LAN path doesn't reach this branch.
+        const bootstrap = this.sessionHost.getBootstrapToken();
+        this.state.bootstrapToken = bootstrap ?? '';
         actualPort = await this.sessionHost.start();
       } else {
         this.sessionHost = new SessionHost(config, hostIdentity);

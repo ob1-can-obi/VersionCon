@@ -72,6 +72,19 @@ export class SessionClient implements SessionEventEmitter {
   private memberId: string | null = null;
   private sessionInfo: SessionInfo | null = null;
   private members: Member[] = [];
+  /**
+   * Phase 7 plan 07-14 (MD-03 Option A closure): tracks whether the
+   * bootstrap→real-JWT swap has fired. The FIRST auth-response (over
+   * bootstrap socket) carries `token` field and triggers the swap; this
+   * flag is set true at that point. The SECOND auth-response (over the
+   * real-JWT socket) ALSO carries a `token` field (the host always
+   * includes one in cloud-mode auth-response), but cloudSwapCompleted=true
+   * tells SessionClient to bypass the swap branch and run the legacy
+   * completion — emitting connection-changed:connected and storing the
+   * canonical memberId. Reset to false in disconnectInternal() so
+   * subsequent reconnects start clean.
+   */
+  private cloudSwapCompleted: boolean = false;
 
   private readonly hostIp: string;
   private readonly port: number;
@@ -176,6 +189,11 @@ export class SessionClient implements SessionEventEmitter {
    */
   async connect(): Promise<boolean> {
     this.intentionalClose = false;
+    // Phase 7 plan 07-14: a fresh connect() always starts with the swap
+    // guard cleared. The bootstrap→real-JWT swap is a per-session cycle;
+    // a new connect (e.g. after a previous disconnect) must allow the
+    // swap to fire again on its first auth-response.
+    this.cloudSwapCompleted = false;
     return new Promise<boolean>((resolve) => {
       let resolved = false;
       const resolveOnce = (success: boolean): void => {
@@ -288,6 +306,50 @@ export class SessionClient implements SessionEventEmitter {
     switch (msg.type) {
       case 'auth-response':
         if (msg.accepted) {
+          // Phase 7 plan 07-14 (MD-03 Option A closure): if the
+          // auth-response carries a `token` field AND this is the
+          // BOOTSTRAP socket (we have not yet swapped — cloudSwapCompleted
+          // is false) AND the transport is cloud, defer the
+          // connection-changed emit until AFTER swapToken resolves. The
+          // SECOND auth-response (over the real-JWT socket) arrives WITHOUT
+          // re-triggering the swap because cloudSwapCompleted=true between
+          // the swap call and the second auth-request resend.
+          const hasToken = typeof msg.token === 'string' && msg.token.length > 0;
+          const isCloud = this.transport.isCloud?.() === true;
+          if (hasToken && isCloud && !this.cloudSwapCompleted) {
+            // Mark the swap as in-flight BEFORE invoking swapToken so any
+            // re-entrant auth-response handling during the swap cannot
+            // re-trigger this branch.
+            this.cloudSwapCompleted = true;
+            // Trigger the swap. CloudTransport.swapToken closes the
+            // bootstrap socket (intentional, code 1000) and reopens with
+            // the new JWT. On the new socket's open, transport.onOpen
+            // fires the auth-request resend — which returns a SECOND
+            // auth-response that re-enters this switch with
+            // cloudSwapCompleted=true so the swap branch is bypassed and
+            // the legacy completion runs.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const cloud = this.transport as unknown as { swapToken?: (t: string) => Promise<boolean> };
+            if (typeof cloud.swapToken === 'function') {
+              const tokenToSwap: string = msg.token as string;
+              void cloud.swapToken(tokenToSwap).then((ok) => {
+                if (!ok) {
+                  // Swap failed — surface as auth-failed so the joiner
+                  // sees a meaningful error rather than a silent hang.
+                  this.emit('auth-failed', { reason: 'Token swap failed' });
+                  onAuth(false);
+                }
+                // On swap success, the transport.onOpen handler (already
+                // bound in connect()) will fire and resend auth-request.
+                // The SECOND auth-response will arrive here with
+                // cloudSwapCompleted=true and run the legacy completion
+                // below.
+              });
+            }
+            break;  // do NOT fall through to legacy completion yet
+          }
+
+          // Legacy completion (LAN, OR cloud post-swap second auth-response).
           this.memberId = msg.memberId ?? null;
           this.sessionInfo = msg.sessionInfo ?? null;
           this.connectionState.transition('connected');
@@ -639,6 +701,10 @@ export class SessionClient implements SessionEventEmitter {
     // Flip the sentinel BEFORE close to mirror the pre-refactor ordering
     // (`this.ws = null` BEFORE `ws.close()` at line 550-551 pre-refactor).
     this.intentionalClose = true;
+    // Phase 7 plan 07-14: reset the swap-completed guard so a subsequent
+    // connect() against a fresh transport starts the bootstrap→real-JWT
+    // swap flow cleanly.
+    this.cloudSwapCompleted = false;
     // Review HI-03: signal intentional-close to a cloud-mode transport
     // BEFORE calling close(). markIntentionalClose() sets
     // `CloudTransport.intentionalClose = true` AND aborts any pending

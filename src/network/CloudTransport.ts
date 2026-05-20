@@ -158,6 +158,15 @@ export class CloudTransport implements ClientTransport {
   private ws: WebSocket | null = null;
   private intentionalClose = false;
   private hadOpened = false;
+  /**
+   * Phase 7 plan 07-14 (MD-03 Option A closure): set true during the
+   * bootstrap→real-JWT swap (between `markIntentionalClose() + close(1000)`
+   * and the new socket's `open` event). While true, the close-handler's
+   * state-change emission AND ReconnectManager scheduling are BOTH
+   * suppressed so the joiner's status bar does NOT flicker through
+   * `relay-unreachable` during the swap.
+   */
+  private swapInProgress = false;
   private readonly reconnect: ReconnectManagerLike;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly WebSocketCtor: any;
@@ -193,7 +202,12 @@ export class CloudTransport implements ClientTransport {
   constructor(
     private readonly relayUrl: string,
     private readonly sessionId: string,
-    private readonly token: string,
+    // Phase 7 plan 07-14: token field is mutable so swapToken() can
+    // atomically replace it during the bootstrap→real-JWT reconnect.
+    // The readonly modifier was removed here (pre-07-14 carried it) so
+    // swapToken() can re-assign this.token before re-invoking connect().
+    // No other call site mutates this.token.
+    private token: string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     WebSocketCtor: any = WebSocket,
     reconnectManager?: ReconnectManagerLike,
@@ -294,7 +308,18 @@ export class CloudTransport implements ClientTransport {
 
       ws.on('close', (code: number, reason: Buffer) => {
         const state = mapCloseCodeToState(code, this.hadOpened);
-        this.emitStateChange(state);
+
+        // Phase 7 plan 07-14 (MD-03 closure): during a token swap, the
+        // bootstrap socket's close MUST NOT cause a state-change emission
+        // (would flicker the status bar through `disconnected` /
+        // `relay-unreachable` between the bootstrap-socket close and the
+        // new-socket open). swapToken() resets swapInProgress to false
+        // ONCE the new socket's `open` event fires — at which point a
+        // clean `connected` is emitted via the normal on-open path.
+        if (!this.swapInProgress) {
+          this.emitStateChange(state);
+        }
+
         for (const h of this.closeHandlers) {
           try {
             h(code, reason);
@@ -307,6 +332,12 @@ export class CloudTransport implements ClientTransport {
           resolve(false);
         }
         if (this.intentionalClose) return;
+
+        // Phase 7 plan 07-14: swap-induced closes are ALSO not eligible
+        // for reconnect-ladder scheduling — the swap orchestrates its own
+        // reopen via this.connect() at the call-site of swapToken().
+        if (this.swapInProgress) return;
+
         // Review HI-04: schedule reconnect ONLY for transient-state closes.
         //   - 'session-not-found' (4404)       — terminal (session gone)
         //   - 'member-cap-reached' (4429)      — semi-terminal (members must leave)
@@ -448,6 +479,63 @@ export class CloudTransport implements ClientTransport {
   markIntentionalClose(): void {
     this.intentionalClose = true;
     this.reconnect.abort();
+  }
+
+  /**
+   * Phase 7 plan 07-14 (MD-03 Option A closure): atomically swap the
+   * bearer JWT and reconnect.
+   *
+   * Sequence:
+   *   1. If swapInProgress already true → return false (overlap guard).
+   *   2. If intentionalClose already true → return false (caller has
+   *      shut down the transport; further reconnect is forbidden).
+   *   3. If ws is null (connect() was never called) → return false.
+   *   4. Set swapInProgress = true so the close handler suppresses its
+   *      state-change emission AND its reconnect-ladder branch.
+   *   5. Close the existing ws with code 1000 + reason 'bootstrap-swap'.
+   *   6. Reset this.hadOpened = false and replace this.token = newToken.
+   *   7. await this.connect() — the new socket carries the new JWT in
+   *      its Authorization header.
+   *   8. Return the boolean result of connect().
+   *   9. Finally: swapInProgress = false (in a try/finally so a thrown
+   *      connect() still resets the flag).
+   *
+   * Threat-model anchors:
+   *  - T-07-21 (race): the brief window where BOTH sockets are open is
+   *    bounded by TCP FIN/ACK (<100ms). Both sockets are independently
+   *    authenticated to the relay; there is no cross-socket state to
+   *    corrupt. Accepted.
+   *  - T-07-23 (status-bar leak): swapInProgress gates the close-handler
+   *    state-emit; the joiner's status bar transitions exactly once
+   *    (`connecting` → `connected`) across the entire swap.
+   *
+   * Idempotency: a second swapToken call while the first is in flight
+   * returns false (no overlap). This is the swapInProgress overlap guard.
+   *
+   * @param newToken - The real per-joiner JWT issued by the host in
+   *                   auth-response.token.
+   * @returns Promise<boolean> — true if the new socket opened successfully,
+   *                             false if any pre-condition failed OR the
+   *                             new socket's connect() resolved false.
+   */
+  async swapToken(newToken: string): Promise<boolean> {
+    if (this.swapInProgress) return false;
+    if (this.intentionalClose) return false;
+    if (this.ws === null) return false;
+    this.swapInProgress = true;
+    try {
+      try {
+        this.ws.close(1000, 'bootstrap-swap');
+      } catch {
+        // already closed — proceed to reconnect with new token
+      }
+      this.hadOpened = false;
+      this.token = newToken;
+      const opened = await this.connect();
+      return opened;
+    } finally {
+      this.swapInProgress = false;
+    }
   }
 
   /**

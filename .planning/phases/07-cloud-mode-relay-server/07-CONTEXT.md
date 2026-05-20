@@ -317,6 +317,39 @@ Per user direction 2026-05-17, all of these are explicitly out-of-scope for Phas
 
 </deferred>
 
+## Gap Closure Decision (MD-03) — LOCKED 2026-05-19
+
+**Decision: Option A — Deep-link bootstrap JWT (host-minted, 15m exp, role:'member').**
+
+Selected after evaluating Options A/B/C in 07-13's design_decision block (deep-link JWT vs relay /bootstrap HTTP endpoint vs anonymous WSS carve-out). Decisive factors:
+
+1. **Option A is the ONLY option requiring ZERO relay-side code changes** — preserving T-07-02 (router byte-pass-through), T-07-09 (role from JWT only), T-07-11 (HS256 pin) by construction.
+2. **Option C disqualified** by its T-07-02 risk: routing an auth-request frame from an anonymous member socket to the host would require the relay's router to read `envelope.payload.type` — violating the byte-pass-through invariant 07-08 was built to protect.
+3. **Option B (relay /bootstrap HTTP)** introduces an asymmetric-trust boundary (relay autonomously mints credentials) — a deliberate v1 non-goal. Every other token in the Phase 7 system is host-minted; deferring this design shift to a dedicated security phase preserves the single-issuer invariant.
+
+**Locked contract:**
+
+| Field | Value |
+|---|---|
+| Deep-link query-param key | literal `bt` (short for bootstrap-token) — URL-encoded JWT value |
+| Bootstrap JWT claims | `{iss: hostMemberId, sub: 'bootstrap-' + sessionId, aud: sessionId, role: 'member', exp: 15m}` |
+| Signing key | per-session `verifySecret` (same HMAC secret as regular member JWTs — relay accepts via existing verifyToken path) |
+| Relay-side changes | ZERO — bootstrap JWT inherits acceptance from serverAuthIntegration.test.js test 3 |
+| UriHandler OutputChannel log redaction | literal `bt=<redacted>` — never log the JWT value (T-07-20) |
+| Joiner reconnect | mandatory — bootstrap socket closes with code 1000 after auth-response; new socket reconnects with the per-joiner real JWT issued by the host in auth-response.token (the relay rewrites `payload.memberId = claims.sub` per-frame, so staying on the bootstrap socket would collide all joiners onto the shared `bootstrap-<sessionId>` sub) |
+| LAN-mode deep-link | byte-identical to pre-07-13 (no `bt` param) — UriHandler parser handles BOTH presence AND absence |
+
+**Implementation split:**
+
+- **07-13** (host-side mint + share-screen plumbing): TokenService.issueBootstrap, SessionHostFactory.createCloud mints + attaches, WizardPanel state pickup, wizard.js buildDeepLink 4-arg variant appending `&bt=`.
+- **07-14** (joiner-side consume + swap + E2E test): UriHandler bt parsing + redaction, JoinPanel state + handleJoinConnect cloud branch using bootstrapToken, CloudTransport.swapToken (close-then-reopen with new token, suppressing state-change emissions during swap), SessionClient orchestration (defer connection-changed:connected until after the swap settles), E2E integration test in relay/test/bootstrapJoinerE2E.test.js.
+
+**Deferred / accepted trade-offs (documented for the future security phase):**
+
+- Bootstrap JWT visible in URL = clipboard + browser history. Mitigated by 15m hard exp + role:'member' scope + invite-code-still-required composition. Not eliminated.
+- The swap reconnect causes other members briefly to see "Bob joined → Bob left → Bob joined" within ~50–200ms. Accepted; could be cleaned up later with a `rejoin` protocol message type. SessionClient suppresses its OWN connection-changed emit until after the swap settles, so the joiner's own status bar transitions exactly once.
+- The per-joiner real JWT carries the full 4h exp (per existing TokenService.issue). The joiner could in principle stash and replay it within 4h, but the same is already true of every regular member JWT — no new attack surface.
+
 ---
 
 *Phase: 07-cloud-mode-relay-server*

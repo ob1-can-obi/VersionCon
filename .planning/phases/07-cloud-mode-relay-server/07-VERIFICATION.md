@@ -1,115 +1,63 @@
 ---
 phase: 07-cloud-mode-relay-server
-verified: 2026-05-19T13:30:00Z
-status: gaps_found
-score: 2/3 success criteria verified
+verified: 2026-05-20T22:30:00Z
+status: human_needed
+score: 3/3 success criteria verified
 overrides_applied: 0
 re_verification:
   previous_status: gaps_found
-  previous_score: 1/3 success criteria verified
-  previous_verified: 2026-05-19T09:30:00Z
-  hotfix_commit: 4413071
+  previous_score: 2/3 success criteria verified
+  previous_verified: 2026-05-19T13:30:00Z
   gaps_closed:
-    - "SC-1 — Host can start a cloud session from the same wizard used for LAN (was: partial — blocked by relay/src/server.ts:173 503 stub; now: VERIFIED — verifyClient invokes verifyToken / accepts host-bootstrap pending claims and re-verifies at first-frame against session-register verifySecret)"
-  gaps_remaining:
-    - "SC-2 — Member on a different network can join a cloud session (still: FAILED — BLOCKER 2 MD-03 unfixed; JoinPanel.ts:331 still passes empty bearer; relay's new verifyClient at server.ts:206-210 now correctly rejects empty bearers with 401 'empty-bearer', which is the right behavior — the missing piece is the joiner-side JWT bootstrap design)"
+    - "SC-2 — Member on a different network can join a cloud session (BLOCKER 2 / MD-03 chicken-and-egg deadlock fully resolved via plans 07-13 + 07-14: TokenService.issueBootstrap mints 15m role:member JWT → WizardPanel threads it into share-screen deep-link &bt= param → UriHandler parses &bt= (T-07-20 HIGH-redacted) → JoinPanel passes bootstrapToken into CloudTransport constructor (empty-bearer literal gone per N-07-14-C) → CloudTransport.swapToken atomically closes bootstrap socket and reconnects with host-issued real per-joiner JWT → SessionClient defers connection-changed:connected until post-swap second auth-response → relay registry shows real per-joiner sub NOT bootstrap sub; proven end-to-end by relay/test/bootstrapJoinerE2E.test.js Test 1 against requireAuth:true)"
+  gaps_remaining: []
   regressions: []
   test_deltas:
-    relay: "71 → 77 (+6) — serverAuthIntegration.test.js"
-    extension: "996 → 996 (no change — extension code not touched by hotfix)"
+    relay: "77 → 79 (+2) — bootstrapJoinerE2E.test.js"
+    extension: "996 → 1061 (+65) — 07-13: +33 (bootstrapTokenIssue + hostBootstrapTokenWiring + wizardDeepLinkBootstrap); 07-14: +32 (uriHandlerBootstrapToken + joinPanelBootstrapToken + cloudTransportSwapToken + sessionClientCloudReconnect)"
 requirement_traceability:
   - id: NET-06
     description: "Cloud mode works with the same UX as LAN (same protocol, different transport)"
-    status: PARTIALLY_BLOCKED
-    evidence: "Host-side cloud path now works end-to-end against a production-mode relay (requireAuth=true). serverAuthIntegration.test.js test 1 'host bootstrap happy path' asserts: real-signed HS256 host JWT + matching verifySecret → WSS upgrade accepted, session-register processed, registry.register commits with hostMemberId binding. SC-1 VERIFIED. Joiner-side cloud path still cannot complete because JoinPanel.ts:331 passes an empty bearer token; the BLOCKER 1 hotfix correctly rejects this at 401, but no design has been chosen for how the joiner obtains a JWT before the WSS handshake (MD-03 deferred per 07-REVIEW-FIX.md). SC-2 still FAILED. SC-3 was VERIFIED in the initial verification — unchanged."
-gaps:
-  - truth: "SC-2 — A member on a different network can join a cloud session by entering the relay address and credentials"
-    status: failed
-    reason: "BLOCKER 2 (MD-03 chicken-and-egg deadlock) was explicitly DEFERRED in this hotfix round per the user's instruction. src/ui/JoinPanel.ts:331 still instantiates `new CloudTransport(relayUrl, sessionId, '')` with an EMPTY bearer token. With BLOCKER 1 now fixed, the relay's verifyClient at relay/src/server.ts:199-210 correctly detects the empty bearer and rejects with 401 'empty-bearer' (event=auth-fail, reason=empty-bearer). The rejection itself is now CORRECT behavior — the relay is doing exactly what it should — but the joiner has no design path to obtain a valid JWT before the WSS handshake. The host-side flow (which mints per-joiner JWTs in `SessionHost.handleAuthRequest`) runs only AFTER the joiner is already connected, which can never happen. Resolution requires a plan-level redesign: either (a) a relay `/bootstrap` unauthenticated route that forwards `auth-request` to the host and returns the issued JWT to the joiner, (b) an out-of-band JWT issued by the host encoded in the deep-link with role:'pending' and short exp, or (c) a verifyClient carve-out that accepts unauthenticated member sockets and immediately forwards their first frame to the host-side auth-request flow. All three options change the Phase 7 cloud join contract end-to-end and need plan revision before code lands."
-    artifacts:
-      - path: "src/ui/JoinPanel.ts"
-        issue: "Line 331: `new CloudTransport(relayUrl, sessionId, '')` — empty bearer token. Comment at 324-330 explicitly acknowledges the gap ('Token is empty for now ... that wiring lands in a later host-side plan. We currently pass '' and let the relay (when it exists) bounce the connection'). With BLOCKER 1 fixed, the relay now does bounce the connection — exactly as the comment predicted — and there is still no plan-level design to issue the joiner a JWT before the WSS handshake."
-      - path: "relay/src/server.ts"
-        issue: "Line 206-210: empty-bearer rejection is now ACTIVE and correct (was previously masked by the 503 stub). The relay's behavior is right; the gap is on the joiner side, not the relay."
-    missing:
-      - "Plan-level decision on MD-03 bootstrap design: choose between (a) relay /bootstrap route + host forwarding, (b) deep-link-encoded short-lived pending JWT, or (c) verifyClient carve-out for member-bootstrap sockets."
-      - "Once the design is chosen, implement the joiner-side JWT acquisition flow in JoinPanel.ts (replacing the empty-string token at line 331) AND the corresponding relay-side handler."
-      - "Add an integration test that opens two CloudTransports (host + member) against a relay started with `requireAuth: true` and asserts a full auth-request → auth-response → state-sync flow completes — the same shape as relay/test/serverAuthIntegration.test.js test 3 ('member auth happy path') but starting from a joiner WITHOUT a pre-issued member JWT."
-
-deferred:
-  - truth: "Live cloud-mode session between two physical machines on different networks (host on machine A deploys relay, member on machine B clicks deep-link, both push/pull/chat)"
-    addressed_in: "Phase 7 closeout — MANUAL UAT-3 (07-12-SUMMARY.md:156)"
-    evidence: "07-12-SUMMARY explicitly defers this to the verifier as MANUAL UAT-3 because it requires deploying a real Fly.io machine and two physical clients on different networks. This is the canonical live test of SC-1 + SC-2 + SC-3 together. Status update: with BLOCKER 1 fixed, the HOST side of UAT-3 should now succeed end-to-end (the host's WSS upgrade + session-register + registry commit are all exercised by serverAuthIntegration.test.js test 1 with real HS256 JWTs). The MEMBER side of UAT-3 is still expected to fail at the WSS handshake because of MD-03."
-
+    status: SATISFIED
+    evidence: "All three SCs verified: SC-1 (host cloud session via wizard — VERIFIED pass 2); SC-2 (joiner bootstrap JWT flow — VERIFIED this pass, proven by bootstrapJoinerE2E.test.js Test 1 against requireAuth:true, extension 1061/79 relay pass); SC-3 (status bar cloud states — VERIFIED pass 1, unchanged). Test total: 1140 passing, 0 failing."
+gaps: []
 human_verification:
   - test: "MANUAL UAT-1 — Docker build smoke test"
     expected: "`cd relay && docker build -t versioncon-relay-test .` exits 0 in <60s; image runs `node dist/server.js` as USER node on port 8080; `curl http://localhost:8080/healthz` returns `{ok:true,sessions:0,uptime_s:N}`."
-    why_human: "Requires a running Docker daemon. The executor in 07-12 noted Docker.app was offline locally and deferred to the verifier per plan instruction. Cannot be performed inside a non-Docker environment; paper-verification of the Dockerfile passed line-by-line per 07-12-SUMMARY. Unchanged from initial verification."
+    why_human: "Requires a running Docker daemon. The executor in 07-12 noted Docker.app was offline locally and deferred to the verifier per plan instruction. Cannot be performed inside a non-Docker environment."
 
   - test: "MANUAL UAT-2 — End-to-end Fly.io deploy quickstart"
-    expected: "An unfamiliar developer follows relay/README.md from a clean checkout and has a `wss://*.fly.dev` endpoint with `{ok:true,sessions:0}` from `/healthz` in ≤5 minutes (CONTEXT D-03 phase-gate test). If longer than 5 minutes, that is a doc-clarity defect."
-    why_human: "Requires a Fly.io account, flyctl install, real cloud deploy, and stopwatch. Cannot be done programmatically. STATUS UPDATE: with BLOCKER 1 fixed, the deployed relay will now ACCEPT WSS connections from a real host (the host's HS256 JWT signed against a freshly-generated per-session secret will be re-verified at first-frame against the session-register payload's verifySecret). The relay is no longer 'deploy succeeds but rejects everything' — it is 'deploy succeeds, host can connect, joiner still cannot'."
-
-  - test: "MANUAL UAT-3a — Host-side single-machine cloud session (SC-1 alone)"
-    expected: "Host (Alice, machine A) opens wizard → picks Cloud → enters wss://*.fly.dev relay URL → Test Connection succeeds → creates session → status bar shows `$(cloud) VersionCon — connected`. Stop here — do not attempt the joiner side."
-    why_human: "Requires a deployed Fly.io relay + a VS Code instance + visual status-bar confirmation. NEW IN THIS RE-VERIFICATION: this is the live counterpart to serverAuthIntegration.test.js test 1; it exercises the BLOCKER 1 hotfix in a real deploy. Previously this would have failed with 503 at the WSS upgrade. After the hotfix, this is EXPECTED TO PASS."
+    expected: "An unfamiliar developer follows relay/README.md from a clean checkout and has a `wss://*.fly.dev` endpoint with `{ok:true,sessions:0}` from `/healthz` in 5 minutes (CONTEXT D-03 phase-gate test)."
+    why_human: "Requires a Fly.io account, flyctl install, real cloud deploy, and stopwatch. Cannot be done programmatically."
 
   - test: "MANUAL UAT-3b — Two-machine live cloud session (SC-1 + SC-2 + SC-3 combined)"
-    expected: "Host (Alice, machine A) opens wizard → picks Cloud → enters wss://*.fly.dev relay URL → Test Connection succeeds → creates session → shares deep-link. Member (Bob, machine B, different network) clicks deep-link → confirmation prompt → JoinPanel opens prefilled → Bob enters displayName + invite code → connects. Both users see each other in presence; chat works; push/pull works; status bar shows `$(cloud) VersionCon — connected` on both."
-    why_human: "Requires two physical machines on different networks, a deployed relay, and visual confirmation of presence/chat/push behavior in the UI. Cannot be done programmatically. STATUS: This test is EXPECTED TO FAIL on the joiner side due to BLOCKER 2 (MD-03). The host side (UAT-3a) should now succeed; Bob's WSS upgrade will be rejected at relay/src/server.ts:206-210 with 401 'empty-bearer' because JoinPanel.ts:331 still passes an empty string for the bearer token. Bob's CloudTransport will surface this as `relay-unreachable` per the CloudTransport.mapCloseCodeToState fallback (any non-mapped close → relay-unreachable)."
-
-  - test: "SC-3 live verification — three distinct cloud connection states surface in status bar with correct precedence"
-    expected: "While the host is connected, status bar shows `$(cloud) VersionCon — connected`. Stop the relay (`fly machine stop`) — status bar transitions to `$(warning) VersionCon — relay unreachable` with tooltip showing reconnect attempt. End the session on the host while a member is connected — member's status bar transitions to `$(error) VersionCon — session not found`."
-    why_human: "Visual status bar transitions can only be confirmed by a human watching VS Code. Programmatic verification of StatusBarManager + CloudTransport.mapCloseCodeToState is complete (statusBarCloudStates.test.ts + cloudTransport.test.ts) — paper-verifiable, but the live VS Code render path needs human eyes. STATUS UPDATE: with BLOCKER 1 fixed, the host CAN now reach the `connected` state — the first state of the three is reachable. The `relay-unreachable` state is also reachable (stop the relay → 1006 close). The `session-not-found` state requires a joiner reaching the relay first, which is still blocked by BLOCKER 2 — so this third state remains only paper-verifiable until MD-03 is resolved."
+    expected: "Host (Alice, machine A) runs wizard → Cloud mode → relay URL → Test Connection passes → creates session → share-screen deep-link contains &bt=eyJ... JWT. Member (Bob, machine B, different network) clicks deep-link → JoinPanel opens prefilled → Bob enters displayName → connects. Status bar on both shows `$(cloud) VersionCon — connected` with NO flicker through relay-unreachable during the bootstrap-swap window. Presence panel shows both Alice and Bob with real identities (no bootstrap-<sessionId> artifact). Chat, push, pull all function. OutputChannel on Bob's machine shows `bt=<redacted>` NOT the JWT plaintext (T-07-20). Relay logs show REAL_JOINER_ID sub, not bootstrap sub. SC-3 sub-test: stopping relay surfaces relay-unreachable; restarting reconnects; host ending session surfaces session-not-found."
+    why_human: "Requires two physical machines on different networks, a deployed Fly.io relay, and human confirmation of visual status-bar transitions, presence, chat, and log content. Cannot be done programmatically. This is the final live verification of SC-2; all code-level evidence (E2E integration test) confirms the path is wired, but the live test exercises the real deploy, real OS deep-link registration, and real network routing."
 ---
 
-# Phase 7: Cloud Mode + Relay Server — Re-Verification Report (BLOCKER 1 Hotfix)
+# Phase 7: Cloud Mode + Relay Server — Re-Verification Report (Pass 3 — SC-2 Closure)
 
 **Phase Goal:** Teams who are not on the same local network can use VersionCon over the internet with the exact same UI and workflow as LAN mode.
 
-**Verified:** 2026-05-19T13:30:00Z
-**Status:** gaps_found
-**Re-verification:** Yes — after BLOCKER 1 hotfix (commit `4413071`)
-**Score change:** 1/3 → 2/3 success criteria verified (SC-1 promoted from partial to VERIFIED; SC-2 still FAILED; SC-3 still VERIFIED)
+**Verified:** 2026-05-20T22:30:00Z
+**Status:** human_needed (all code-level checks PASS; Manual UAT-3b is the final live gate)
+**Re-verification:** Yes — Pass 3, after BLOCKER 2 (MD-03) closure via plans 07-13 + 07-14
+**Score change:** 2/3 → **3/3** success criteria verified (SC-2 promoted from failed to VERIFIED; SC-1 + SC-3 unchanged from pass 2)
 
 ## Executive Summary
 
-This is a re-verification of Phase 7 after the BLOCKER 1 hotfix (commit `4413071` — "fix(07-VERIFICATION): BLOCKER 1 — wire verifyToken into verifyClient with host bootstrap defer") was applied to address the first of two blockers identified in the initial 07-VERIFICATION.md (timestamp 2026-05-19T09:30:00Z).
+Pass 3 is the first time all three Phase 7 Success Criteria are code-level verified. BLOCKER 2 (MD-03 joiner-JWT chicken-and-egg deadlock) is fully closed by plans 07-13 (host-side bootstrap JWT mint + deep-link &bt= plumbing) and 07-14 (joiner-side bt consume + CloudTransport.swapToken + SessionClient orchestration + E2E test). Zero relay production code was modified; the relay's existing verifyToken path accepts the bootstrap JWT shape verbatim (proven by both the pre-existing serverAuthIntegration.test.js test 3 and the new bootstrapJoinerE2E.test.js test 1 which runs against `requireAuth: true`).
 
-**What changed:**
+**What changed since pass 2 (commits 5c1439b through 66b8915):**
 
-1. **`relay/src/server.ts` verifyClient is now WIRED.** The previous 503 stub at line 173 has been replaced by a full production auth gate (server.ts:192-286). `verifyToken` is statically imported from `./auth.js`; `decodeJwt` and `jwtVerify` are statically imported from `jose`. The verifyClient flow now:
-   - Performs unverified `decodeJwt` to extract `role` + `aud` + `sub`
-   - Shape-checks all three fields (SESSION_ID_SHAPE on aud, host|member on role)
-   - For host-role on a NEW session (registry.getSession returns null), accepts the connection with PENDING claims and defers JWT signature verification to first-frame time — re-verifies the JWT against the verifySecret extracted from the session-register payload BEFORE `registry.register` is called
-   - For member-role OR host re-register (session already exists), runs full async `verifyToken` and stashes verified claims on `info.req.claims`
-2. **Async first-frame handler.** server.ts:397-541 is now async (`handleFirstFrame`) because host bootstrap may need to `await jwtVerify` against the session-register verifySecret. Frames received during the verify window are queued in `pendingFrames` (capped at 64) and drained FIFO after settle (server.ts:588-634).
-3. **6 new integration tests** in `relay/test/serverAuthIntegration.test.js` exercise the new path with REAL HS256-signed JWTs (not the `requireAuth: 'test'` carve-out):
-   - Test 1: Host bootstrap happy path — real JWT + matching verifySecret → registry commits
-   - Test 2: Host bootstrap signature mismatch — forged verifySecret → 4401 'host-bootstrap-signature-fail'; registry empty
-   - Test 3: Member auth happy path — pre-registered session + real member JWT signed with same secret → upgrade accepted
-   - Tests 4-6: Missing/malformed/bad-role rejections → 401
-4. **Test counts:**
-   - Relay: **71 → 77** passing (+6 new integration tests)
-   - Extension: **996 → 996** passing (no change — extension code not touched by hotfix)
+Nine commits in two plan waves:
 
-**What did NOT change (per user's explicit instruction):**
+- 07-13 (5c1439b, 4e93e46, d3b176e + eae3246 docs): TokenService.issueBootstrap 15m hard-capped role:member JWT; SessionHost.attachBootstrapToken/getBootstrapToken; SessionHostFactory.createCloud mints and attaches; WizardPanel.bootstrapToken state field + cloud-branch pickup; wizard.js 4-arg buildDeepLink with &bt= suffix. 33 new extension tests; relay unchanged at 77.
+- 07-14 (4d882ca, 933255d, b48d49d, 38ee1f5 + 66b8915 docs): CONTEXT.md MD-03 lock; UriHandler bt parse + T-07-20 HIGH redaction; JoinPanel JoinPrefill/JoinState bootstrapToken field + applyPrefill + legacy-deep-link guard + empty-bearer literal removal; CloudTransport.swapToken + swapInProgress flag; SessionClient cloudSwapCompleted orchestration; relay/test/bootstrapJoinerE2E.test.js E2E test. 32 new extension tests + 2 relay tests.
 
-- **BLOCKER 2 (MD-03 chicken-and-egg)** remains DEFERRED. `src/ui/JoinPanel.ts:331` still passes an empty bearer token to `new CloudTransport(relayUrl, sessionId, '')`. The relay's new verifyClient at server.ts:199-210 correctly detects and rejects empty bearers with 401, which is the right defensive behavior — but the joiner has no way to obtain a JWT before the WSS handshake, so cloud join from JoinPanel still cannot complete end-to-end.
-
-**Net effect on Success Criteria:**
-
-| SC | Previous | Current | Reason |
-|---|---|---|---|
-| SC-1 | partial | **VERIFIED** | Host bootstrap end-to-end now works with real HS256 JWT against `requireAuth: true`. Confirmed by serverAuthIntegration.test.js test 1 (registry.activeSessionCount() === 1 after valid bootstrap; session.hostMemberId bound to JWT.sub). |
-| SC-2 | failed | failed | BLOCKER 2 unchanged. Joiner-side empty-bearer rejection is now correctly enforced but blocks completion; MD-03 design decision still pending. |
-| SC-3 | verified | verified | No change. StatusBarManager.setCloudStatus + CloudTransport.mapCloseCodeToState still surface 3 distinct states. Live observation of all three states is now PARTIALLY unblocked — `connected` and `relay-unreachable` are reachable end-to-end; `session-not-found` still requires a joiner reaching the relay (gated by SC-2). |
-
-The hotfix is a **clean, well-fenced fix** that:
-- Preserves the T-07-09 invariant (role determined by JWT, NEVER by connection order)
-- Preserves the T-07-02 router byte-pass-through invariant (the new code paths live in server.ts, not router.ts)
-- Preserves the T-07-11 HS256 algorithm pin (jwtVerify call at server.ts:458-462 explicitly passes `algorithms: ['HS256']`)
-- Adds a NEW threat-model boundary: host bootstrap JWT is signature-verified BEFORE registry.register, closing the "forged JWT registers a session with attacker-controlled verifySecret" attack vector (serverAuthIntegration.test.js test 2 asserts this)
+**Test counts (verified firsthand by running both suites):**
+- Extension: **1061 passing, 66 pending, 0 failing** (target: ≥1061 per 07-14 SUMMARY)
+- Relay: **79 passing, 0 failing** (target: ≥79 per 07-14 SUMMARY)
 
 ## Goal Achievement
 
@@ -117,109 +65,159 @@ The hotfix is a **clean, well-fenced fix** that:
 
 | # | Truth | Status | Evidence |
 |---|---|---|---|
-| 1 | **SC-1**: Host can start a cloud session from the same wizard used for LAN — UI shows "Cloud" mode and no extra steps required vs LAN | **VERIFIED** (was: partial) | UI: VERIFIED unchanged (wizard.js renders Cloud radio, relay-URL step, share-screen Cloud variant; WizardPanel.ts:381-823 handles cloud-set-mode / wizard-set-relay-url / wizard-test-relay-connection messages; wizardCloudStep.test.ts 27 tests pass). Wiring: VERIFIED unchanged (WizardPanel.handleWizardComplete:667-678 dispatches to SessionHostFactory.createCloud at SessionHostFactory.ts:61-129). **End-to-end: NOW VERIFIED** — relay/src/server.ts:192-286 verifyClient now decodes the host JWT, accepts host bootstrap with pending claims (server.ts:251-262 when registry.getSession returns null AND role==='host'), and first-frame at server.ts:455-471 re-verifies the JWT signature against the session-register verifySecret with `algorithms:['HS256']` BEFORE registry.register. Integration-tested with REAL HS256 JWTs in relay/test/serverAuthIntegration.test.js test 1: `assert.equal(server.registry.activeSessionCount(), 1, 'session must be registered after valid bootstrap')` + `assert.equal(session.hostMemberId, HOST_MEMBER_ID, 'hostMemberId must be bound from JWT.sub')` both pass. |
-| 2 | **SC-2**: Member on a different network can join a cloud session by entering relay address + credentials — coding within same time window as LAN mode | failed (unchanged) | BLOCKER 2 (MD-03) still unfixed per user's explicit instruction. src/ui/JoinPanel.ts:331 still passes empty bearer token. The relay's new verifyClient at relay/src/server.ts:199-210 now correctly enforces empty-bearer rejection (`if (rawJwt.length === 0) cb(false, 401, 'unauthorized')`) — which is the right behavior, but blocks completion. There is still no design path for the joiner to obtain a JWT BEFORE the WSS handshake. 07-REVIEW-FIX.md MD-03 row still reads "**Until resolved, cloud-mode join from JoinPanel cannot complete end-to-end**" — deferred to a fresh planning task. |
-| 3 | **SC-3**: Connection status indicator correctly reflects cloud relay connection health, including relay server unreachable as a distinct state from session-not-found | verified (unchanged) | StatusBarManager.setCloudStatus surfaces 3 distinct states (`connected` / `relay-unreachable` / `session-not-found`) with byte-identical UI-SPEC strings (StatusBarManager.ts:280-339; 18 tests in statusBarCloudStates.test.ts). CloudTransport.mapCloseCodeToState (CloudTransport.ts:128-146) maps WSS codes correctly: 4404 → session-not-found, 1000 → disconnected, 4403 → host-identity-mismatch, 4429 → member-cap-reached, 4503 → grace-period-active, all others → relay-unreachable. Precedence rules implemented. Live verification of all 3 states is now PARTIALLY reachable: `connected` + `relay-unreachable` are now end-to-end testable via host-only deploy (UAT-3a); `session-not-found` still requires a joiner reaching the relay (gated by SC-2). |
+| 1 | **SC-1**: Host can start a cloud session from the same wizard used for LAN — UI shows "Cloud" mode and no extra steps required vs LAN | **VERIFIED** (pass 2; unchanged) | Wizard.js Cloud radio + relay-URL step + 4-arg buildDeepLink with &bt=; WizardPanel.handleWizardComplete cloud branch dispatches to SessionHostFactory.createCloud; SessionHostFactory mints + attaches bootstrapToken; host-side E2E proven by serverAuthIntegration.test.js test 1. |
+| 2 | **SC-2**: Member on a different network can join a cloud session by entering relay address + credentials — connection lifecycle identical to LAN mode | **VERIFIED** (was: failed passes 1+2) | relay/test/bootstrapJoinerE2E.test.js Test 1 "E2E: bootstrap JWT → auth-response → real-JWT reconnect; registry shows real per-joiner sub, NOT bootstrap sub" passes in 274ms against `requireAuth: true`. Extension wiring confirmed: UriHandler bt parse (extension.ts:278), JoinPanel threads bootstrapToken into CloudTransport (JoinPanel.ts:372), CloudTransport.swapToken atomically closes bootstrap socket and reconnects (CloudTransport.ts:521), SessionClient cloudSwapCompleted defers connection-changed until post-swap second auth-response (SessionClient.ts:319-352). Zero empty-bearer literals remain in JoinPanel.ts (grep gate N-07-14-C: 0 hits). |
+| 3 | **SC-3**: Connection status indicator correctly reflects cloud relay connection health — connecting / connected / relay-unreachable / session-not-found / reconnecting are distinct and accurate | **VERIFIED** (pass 1; unchanged) | StatusBarManager.setCloudStatus + CloudTransport.mapCloseCodeToState: 3 distinct states (connected / relay-unreachable / session-not-found) surfaced. swapInProgress flag additionally suppresses state-change emit during the bootstrap-swap window (cloudTransportSwapToken.test.ts test 2 pins no-flicker). T-07-23 pinned: state-change handler receives only string enum value, NEVER the JWT. |
 
-**Score:** **2/3** truths verified, 1 failed. (Previous: 1/3 verified, 1 partial, 1 failed.)
+**Score: 3/3** truths verified.
 
-### BLOCKER 1 Hotfix Verification
+### SC-2 Closure Chain — End-to-End Wiring Trace
 
-| Check | Method | Result |
-|---|---|---|
-| `verifyToken` is statically imported (not 503 stub) | `grep -n "import.*verifyToken" relay/src/server.ts` | Line 30: `import { verifyToken } from './auth.js';` — VERIFIED |
-| `decodeJwt` + `jwtVerify` are statically imported | `grep -n "from 'jose'" relay/src/server.ts` | Line 25: `import { decodeJwt, jwtVerify } from 'jose';` — VERIFIED |
-| No more 503 'Relay auth pending' stub | `grep -n "Relay auth pending" relay/src/server.ts` | 0 hits (only in pre-07-09 stub comment that documents removed behavior) — VERIFIED |
-| Host bootstrap pending-claims path exists | server.ts:251-262 | Captures `_pendingHostBootstrap: true` + `_rawJwt` when role==='host' AND registry.getSession(aud) is undefined — VERIFIED |
-| First-frame JWT signature re-verify | server.ts:455-471 | `await jwtVerify(rawJwt, new Uint8Array(verifySecret), { algorithms: ['HS256'], audience: claims.aud, clockTolerance: '30s' })`; close 4401 'host-bootstrap-signature-fail' on rejection — VERIFIED |
-| Member / host re-register goes through full verifyToken | server.ts:266-286 | `verifyToken(info.req, registry).then(...)` — VERIFIED |
-| Async first-frame handler with pendingFrames queue | server.ts:397-541 + 588-634 | `handleFirstFrame` declared async; subsequent-frame handler buffers up to 64 frames in `pendingFrames` during verify window, drains FIFO after settle. `pendingFrames.length >= 64` closes 4400 'too-many-frames-before-first-settles' — VERIFIED |
-| HI-06 production guard preserved | server.ts:104-108 | startServer throws if `requireAuth: 'test'` AND `NODE_ENV === 'production'` — VERIFIED unchanged |
-| T-07-09 invariant preserved (role from JWT, not connection order) | server.ts:216,251,422 | Role read from `decoded.role` (verifyClient), then from `claims.role` (handleFirstFrame); never from connection ordinal — VERIFIED |
-| HS256 algorithm pin preserved on first-frame verify | server.ts:459 | `algorithms: ['HS256']` literal at jwtVerify call site — VERIFIED |
-| T-07-02 router byte-pass-through preserved | `grep -c '.payload' relay/src/router.ts` | 0 hits — VERIFIED (the new payload reads are all in server.ts at the documented first-frame carve-out) |
-| Logger swap preserved (no console.* in relay/src/) | `grep -rnE '^\s*console\.' relay/src/` | 0 hits — VERIFIED |
-| New auth-fail log events use redact-safe shape | `grep -n "auth-fail" relay/src/server.ts` | server.ts:201,207,217,222,227,235: all emit `{event:'auth-fail', reason:'<discriminator>', ip}` — NO bearer/payload/code/secret keys — VERIFIED |
+The following is the complete data-flow from host share to joiner connected, verified against the actual code:
 
-### New Integration Tests (`relay/test/serverAuthIntegration.test.js`)
-
-| Test | Asserts | Status |
-|---|---|---|
-| 1. Host bootstrap happy path | real HS256 JWT + matching verifySecret → WSS upgrade accepted → session-register processed → `registry.activeSessionCount() === 1` AND `session.hostMemberId === HOST_MEMBER_ID` | PASS |
-| 2. Host bootstrap signature mismatch | JWT signed with secret A + session-register with verifySecret B → ws closes with code 4401 + reason matches `/host-bootstrap-signature-fail/` AND `registry.activeSessionCount() === 0` | PASS |
-| 3. Member auth happy path | After host bootstrap, member JWT signed with same secret → second WSS upgrade accepted → `memberCli.opened === true` | PASS |
-| 4. No Authorization header | `openClient(server.port, null)` → `opened === false`, `closeCode !== null` (1006 abnormal closure) | PASS |
-| 5. Malformed Bearer (random string) | `openClient(server.port, 'not-a-jwt-just-random-bytes')` → `opened === false` | PASS |
-| 6. Bad role shape (`role: 'admin'`) | Signed JWT with role !== host/member → `opened === false` | PASS |
-
-All 6 tests run via `node --test test/serverAuthIntegration.test.js`. They exercise the actual production code path (`requireAuth: true`), not the `requireAuth: 'test'` carve-out — closing the test gap noted in the initial verification ("test gap matching the BLOCKER").
-
-### Re-verified Per-Plan Must-Haves (delta from initial verification)
-
-| Plan | Status (initial) | Status (now) | Delta |
+| Step | Actor | Code Location | Verified By |
 |---|---|---|---|
-| **07-08** Relay skeleton + server.ts | PARTIAL — server.ts had unfixed wire-up gap | VERIFIED | verifyClient now invokes verifyTokenFn (and decodeJwt for bootstrap). 503 stub removed. |
-| **07-09** Relay auth.ts | VERIFIED (in isolation) — but unwired | VERIFIED + WIRED | verifyToken is now called by server.ts:266 for the member / host-re-register path. The module is no longer orphaned. |
-| **07-05b** Host-side cloud wiring | VERIFIED (paper-level) | VERIFIED (paper + integration) | End-to-end host bootstrap now exercised by serverAuthIntegration.test.js test 1 with real HS256 JWTs. |
-| **07-06** JoinPanel cloud branch | PARTIAL — UI works, end-to-end blocked by MD-03 | PARTIAL (unchanged) | MD-03 still deferred per user's explicit instruction. |
-| All other plans | VERIFIED | VERIFIED | No change. |
+| 1. Host mints bootstrap JWT | TokenService.issueBootstrap | src/auth/TokenService.ts:92-100 | bootstrapTokenIssue.test.ts 12 tests; grep: `'15m'`=2, `'bootstrap-'`=2, `setProtectedHeader({ alg: 'HS256' })`=2 |
+| 2. SessionHostFactory mints + attaches to SessionHost | SessionHostFactory.createCloud | src/host/SessionHostFactory.ts:135-139 | hostBootstrapTokenWiring.test.ts 8 tests |
+| 3. WizardPanel picks up token from SessionHost | getBootstrapToken() → state.bootstrapToken | src/ui/WizardPanel.ts (cloud branch) | wizardDeepLinkBootstrap.test.ts 13 tests |
+| 4. Deep-link renders &bt= JWT | wizard.js buildDeepLink 4-arg | src/ui/webview/wizard/wizard.js:21-34 | wizardDeepLinkBootstrap.test.ts; grep: `&bt=`=4 hits in wizard.js |
+| 5. UriHandler parses bt from deep-link | params.get('bt') | src/extension.ts:278 | uriHandlerBootstrapToken.test.ts 11 tests; T-07-20: bt=<redacted> literal present (3 hits), 0 unredacted appendLine sites |
+| 6. JoinPrefill → JoinState → CloudTransport | applyPrefill + constructor | src/ui/JoinPanel.ts:304, 372 | joinPanelBootstrapToken.test.ts 8 tests; N-07-14-C: 0 empty-bearer literals |
+| 7. Bootstrap WSS upgrade accepted by relay | relay verifyToken (role:member path) | relay/src/auth.ts:74-164 | bootstrapJoinerE2E.test.js Test 2 precondition (requireAuth:true) |
+| 8. auth-request byte-pass-routed to host | relay/src/router.ts (T-07-02) | relay/src/router.ts | grep: 0 `.payload` refs; E2E test step exercises live routing |
+| 9. Host issues real per-joiner JWT in auth-response | SessionHost.handleAuthRequest | src/host/SessionHost.ts | serverAuthIntegration.test.js test 3 (existing) |
+| 10. SessionClient triggers swapToken on first auth-response | cloudSwapCompleted guard + cloud.swapToken(msg.token) | src/client/SessionClient.ts:319-335 | sessionClientCloudReconnect.test.ts 5 tests |
+| 11. CloudTransport.swapToken closes bootstrap socket, reconnects with real JWT | swapToken + swapInProgress | src/network/CloudTransport.ts:521-537 | cloudTransportSwapToken.test.ts 9 tests |
+| 12. Second auth-response arrives over real-JWT socket → connection-changed:connected emitted | cloudSwapCompleted=true → legacy path | src/client/SessionClient.ts:352 | sessionClientCloudReconnect.test.ts test 2 |
+| 13. Registry shows real per-joiner sub, NOT bootstrap sub | relay SessionRegistry | relay/src/registry.ts | bootstrapJoinerE2E.test.js Test 1 assertions: memberSubs.includes(REAL_JOINER_ID) AND !memberSubs.includes('bootstrap-'+SESSION_ID) |
 
-### Test Counts (Behavioral Spot-Checks)
+### Required Artifacts
+
+| Artifact | Description | Status | Details |
+|---|---|---|---|
+| `src/auth/TokenService.ts` | issueBootstrap method — 15m role:member JWT minter | VERIFIED | :92-100 — issueBootstrap present; '15m' literal (grep: 2); 'bootstrap-' literal (grep: 2); HS256 header pin (grep: 2) |
+| `src/host/SessionHost.ts` | attachBootstrapToken + getBootstrapToken single-shot setter/getter | VERIFIED | :354-375 — both methods wired |
+| `src/host/SessionHostFactory.ts` | issueBootstrap + attachBootstrapToken call in createCloud | VERIFIED | :135-139 — mint before _testHostJwt, attach to host |
+| `src/ui/WizardPanel.ts` | bootstrapToken WizardState field + cloud-branch pickup | VERIFIED | bootstrapToken in interface + initialState + getBootstrapToken() pickup |
+| `src/ui/webview/wizard/wizard.js` | 4-arg buildDeepLink with &bt= | VERIFIED | :21-34 — 4-arg; 2 call sites pass state.bootstrapToken; LAN regression byte-identical |
+| `src/extension.ts` | UriHandler bt parse + T-07-20 redaction + openPrefilled thread | VERIFIED | :278 params.get('bt'); :324 btLog conditional redaction; :334 bootstrapToken:bt in prefill |
+| `src/ui/JoinPanel.ts` | JoinPrefill + JoinState bootstrapToken + applyPrefill + empty-bearer removed | VERIFIED | :30,59 fields; :171 initial; :304 applyPrefill; :372 CloudTransport with bootstrapToken; 0 empty-bearer literals |
+| `src/network/CloudTransport.ts` | swapToken method + swapInProgress flag | VERIFIED | :521 swapToken; :169 swapInProgress; grep: swapToken=6, swapInProgress=12 |
+| `src/client/SessionClient.ts` | cloudSwapCompleted orchestration + connect/disconnect resets | VERIFIED | :87 field; :319-352 swap branch; :196 connect reset; :707 disconnect reset; 0 'bootstrap-' literals |
+| `relay/test/bootstrapJoinerE2E.test.js` | E2E test against requireAuth:true | VERIFIED | 370 lines, 2 tests, both PASS; Test 1 full round-trip asserts registry composition |
+
+### Key Link Verification
+
+| From | To | Via | Status | Details |
+|---|---|---|---|---|
+| `wizard.js buildDeepLink` | `&bt=` deep-link param | 4-arg call with `state.bootstrapToken` | WIRED | 2 call sites confirmed; encodeURIComponent wraps JWT |
+| `extension.ts UriHandler` | `JoinPanel.openPrefilled` | `bootstrapToken: bt` in prefill literal | WIRED | extension.ts:334; 11 unit tests |
+| `JoinPanel.handleJoinConnect` | `CloudTransport constructor` | `new CloudTransport(relayUrl, sessionId, this.state.bootstrapToken)` | WIRED | JoinPanel.ts:372; zero empty-bearer hits |
+| `CloudTransport` (bootstrap socket) | relay verifyToken | Authorization header with bootstrap JWT | WIRED | bootstrapJoinerE2E.test.js Test 2 precondition: opened===true against requireAuth:true |
+| relay router | host CloudHostTransport | T-07-02 byte-pass-through | WIRED | 0 `.payload` refs in router.ts; E2E test exercises live routing |
+| `SessionClient.handleMessage auth-response` | `CloudTransport.swapToken` | `cloud.swapToken(msg.token)` | WIRED | SessionClient.ts:335; sessionClientCloudReconnect.test.ts test 1 |
+| `CloudTransport.swapToken` | relay verifyToken (real JWT) | close bootstrap (code 1000) + reopen with `this.token = newToken` | WIRED | bootstrapJoinerE2E.test.js Test 1 full round-trip; cloudTransportSwapToken.test.ts test 1 |
+| relay registry | real per-joiner memberId | `session.memberSubs` excludes bootstrap sub | WIRED | bootstrapJoinerE2E.test.js Test 1: `!memberSubs.includes('bootstrap-'+SESSION_ID)` |
+
+### Data-Flow Trace (Level 4)
+
+| Artifact | Data Variable | Source | Produces Real Data | Status |
+|---|---|---|---|---|
+| `WizardPanel.ts` | `state.bootstrapToken` | `host.getBootstrapToken()` from `SessionHostFactory.createCloud` → `tokenService.issueBootstrap()` | Yes — cryptographically signed JWT minted per session | FLOWING |
+| `JoinPanel.ts` | `state.bootstrapToken` | prefill.bootstrapToken from UriHandler → `params.get('bt')` from real deep-link URL | Yes — real JWT from host's deep-link | FLOWING |
+| `CloudTransport.ts` | `this.token` | initial = bootstrapToken from JoinPanel; post-swap = real JWT from `auth-response.token` | Yes — real JWT in both phases; swap is atomic | FLOWING |
+| `SessionClient.ts` | `this.memberId` | post-swap second auth-response `.memberId` field from host's `handleAuthRequest` | Yes — real per-joiner identity; NOT bootstrap sub | FLOWING |
+
+### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |---|---|---|---|
-| Relay test suite runs and passes | `cd relay && npm test` | **77/77 pass in ~1.8s** (was 71/71) | PASS |
-| Extension test suite runs and passes | `npm test` | **996 passing, 66 pending, 0 failing in 17s** (unchanged — extension code not touched) | PASS |
-| Production WSS upgrade succeeds when token is valid | `relay/test/serverAuthIntegration.test.js` test 1 | **PASS** — was the previous test gap; now closed | PASS |
-| Production WSS upgrade rejects forged signatures | `relay/test/serverAuthIntegration.test.js` test 2 | PASS | PASS |
-| Production WSS upgrade rejects empty bearers | implicit in test 4 (no Authorization header → reject) + the new server.ts:206-210 path | PASS (covered) | PASS |
+| Extension test suite: 1061 passing | `npm test` (run directly) | **1061 passing, 66 pending, 0 failing in 16s** | PASS |
+| Relay test suite: 79 passing | `cd relay && npm test` (run directly) | **79 passing, 0 failing in ~2s** | PASS |
+| E2E: bootstrap JWT → real-JWT reconnect; registry correct | `node --test relay/test/bootstrapJoinerE2E.test.js` (run directly) | **2/2 pass in 280ms against requireAuth:true** | PASS |
+| E2E precondition: bootstrap JWT accepted by verifyClient | Test 2 in bootstrapJoinerE2E.test.js | **PASS** — bootstrap JWT shape accepted by relay's existing verifyToken path | PASS |
+| swapToken = 0 calls in SC-3 during normal swap | cloudTransportSwapToken.test.ts test 2 | No `relay-unreachable` state-change fired during swap window (swapInProgress gate) | PASS |
+| Empty-bearer literal removed | `grep -c "new CloudTransport(relayUrl, sessionId, '')" src/ui/JoinPanel.ts` | **0** | PASS |
+| bootstrap- in SessionClient | `grep -c "bootstrap-" src/client/SessionClient.ts` | **0** | PASS |
 
-### Anti-Pattern Re-scan (delta from initial verification)
+### Source-Grep Gate Results (all 13 — verified firsthand)
 
-| File | Pattern (initial) | Pattern (now) | Delta |
-|---|---|---|---|
-| `relay/src/server.ts:173` | BLOCKER — 503 stub `cb(false, 503, 'Relay auth pending (07-09)')` after auth-module successfully resolved | NONE — line 173 is now part of the legitimate WSS server configuration; the stub language was replaced by the real auth gate at server.ts:192-286 | **FIXED by commit 4413071** |
-| `src/ui/JoinPanel.ts:331` | BLOCKER — empty Bearer token | BLOCKER (unchanged) — empty Bearer token still passed; MD-03 deferred | **NOT FIXED — explicitly deferred per user instruction** |
-| `src/network/CloudTransport.ts:444-447` | INFO — markIntentionalClose documented as NOT-on-interface | INFO (unchanged) | No change |
-| `src/network/CloudHostTransport.ts:89-92` | INFO — console.log in production logger seam | INFO (unchanged) | No change |
-| `src/ui/JoinPanel.ts:324-330` | BLOCKER (already counted) — comment acknowledges gap | BLOCKER (unchanged) | No change |
+| # | Gate | Expected | Actual | Status |
+|---|---|---|---|---|
+| T-07-02 | `grep -c '\.payload' relay/src/router.ts` | 0 | **0** | PASS |
+| T-07-05 | `grep -rE 'inviteCode' relay/src/ \| wc -l` | 0 | **0** | PASS |
+| T-07-11 relay | `grep -c "algorithms: \['HS256'\]" relay/src/auth.ts` | ≥1 | **2** | PASS |
+| T-07-11 host | `grep -c "setProtectedHeader({ alg: 'HS256' })" src/auth/TokenService.ts` | 2 | **2** | PASS |
+| bootstrap exp | `grep -c "'15m'" src/auth/TokenService.ts` | ≥1 | **2** | PASS |
+| bootstrap sub | `grep -c "bootstrap-'" src/auth/TokenService.ts` | ≥1 | **2** | PASS |
+| logger discipline | `grep -rE '^\s*console\.' relay/src/ \| wc -l` | 0 | **0** | PASS |
+| HI-06 | `grep -A 3 "requireAuth: 'test'" relay/src/server.ts \| grep -c "NODE_ENV"` | ≥1 | **1** | PASS |
+| T-07-13 redact | `grep -c "bt=<redacted>" src/extension.ts` | ≥1 | **3** | PASS |
+| N-07-14-C | `grep -c "new CloudTransport(relayUrl, sessionId, '')" src/ui/JoinPanel.ts` | 0 | **0** | PASS |
+| N-07-14-B | `grep -c "bootstrap-" src/client/SessionClient.ts` | 0 | **0** | PASS |
+| swapToken | `grep -c "swapToken" src/network/CloudTransport.ts` | ≥1 | **6** | PASS |
+| swapInProgress | `grep -c "swapInProgress" src/network/CloudTransport.ts` | ≥2 | **12** | PASS |
 
-Net anti-pattern delta: 1 BLOCKER removed (server.ts:173), 0 added.
+All 13 gates PASS.
 
-## Gaps Summary
+### Requirements Coverage
 
-The BLOCKER 1 hotfix is **surgical, well-tested, and threat-model-faithful**. It closes the verifyClient wire-up gap that was the larger of the two phase-blocking defects, and it does so in a way that:
+| Requirement | Source Plan | Description | Status | Evidence |
+|---|---|---|---|---|
+| NET-06 | 07-13, 07-14 | Cloud mode works with the same UX as LAN (same protocol, different transport) | SATISFIED | SC-1 (wizard parity), SC-2 (joiner bootstrap flow), SC-3 (status bar states) all VERIFIED; 1140 tests passing; E2E test proves end-to-end round-trip against requireAuth:true relay |
 
-- Adds the host-bootstrap defer-verify-to-first-frame pattern with a clear, documented threat boundary (server.ts:32-52)
-- Pins the HS256 algorithm on the new jwtVerify call site (server.ts:459)
-- Preserves the T-07-02 router byte-pass-through invariant (the new payload reads remain in server.ts)
-- Preserves the T-07-09 invariant (role from JWT, NEVER from connection order)
-- Closes the test-coverage gap with 6 new real-JWT integration tests exercising both happy and failure paths
-- Adds a NEW threat-model defense (forged-JWT-with-attacker-secret attack on host bootstrap, asserted by serverAuthIntegration.test.js test 2)
+### Anti-Patterns Found
 
-**SC-1 is now end-to-end verifiable** against a production-mode relay. The wizard's Cloud path produces a working host session.
+| File | Line | Pattern | Severity | Impact |
+|---|---|---|---|---|
+| (none) | — | No stubs, TODOs, or hardcoded empty values in the SC-2 closure code path | — | — |
 
-**SC-2 remains FAILED** — but the failure mode has shifted in an important way. Before the hotfix, SC-2 was failing for TWO compounding reasons: (a) the relay's 503 stub rejected everything; (b) JoinPanel passes an empty bearer. After the hotfix, only (b) remains. The relay's behavior at the empty-bearer rejection (server.ts:206-210 → 401 'unauthorized') is now CORRECT defensive behavior; the gap has migrated entirely to the joiner side and is a plan-level design question (MD-03):
+The two previously-open BLOCKERs from prior passes are both resolved:
 
-- Option A: Relay `/bootstrap` unauthenticated route that forwards `auth-request` to the host's CloudHostTransport and returns the host's `auth-response` JWT to the joiner; joiner then re-opens WSS with the JWT.
-- Option B: Short-lived `role: 'pending'` JWT encoded in the deep-link by the host's wizard share screen; signed with the same per-session verifySecret; joiner uses it to open WSS and immediately requests promotion to a `role: 'member'` JWT via `auth-request`.
-- Option C: verifyClient carve-out that accepts member sockets with no JWT and forwards their first frame (which MUST be `auth-request`) to the host's `handleAuthRequest`; on host's `auth-response`, the relay closes the unauthenticated socket and asks the joiner to re-open with the new JWT.
+- `relay/src/server.ts:173` 503 stub — FIXED by BLOCKER 1 hotfix (commit 4413071; confirmed pass 2)
+- `src/ui/JoinPanel.ts:331` empty-bearer literal — FIXED by plan 07-14 (commit 933255d; confirmed this pass — grep returns 0)
 
-All three change the cloud join contract end-to-end. None is appropriate as a hotfix; the user has correctly scoped this as a fresh planning task and left BLOCKER 2 deferred for this round.
+No new anti-patterns introduced. 07-14 SUMMARY section "Known Stubs" is empty. Full source scan of the 4 modified source files finds no placeholder strings, no `=[]`/`={}`/`=null` flowing to UI, no TODO markers in the SC-2 code path.
 
-**SC-3 is now PARTIALLY live-verifiable.** The first two states (`connected`, `relay-unreachable`) are reachable end-to-end via a host-only deploy. The third state (`session-not-found`) still requires a joiner reaching the relay, which is gated by SC-2.
+### Human Verification Required
 
-### Recommended Next Steps
+Three items remain for human/live verification. These are NOT code gaps — all code-level evidence confirms the path is wired and tested. These require physical hardware, cloud infrastructure, or visual confirmation.
 
-1. **MANUAL UAT-3a (new, host-only)** — deploy the relay to Fly.io per relay/README.md, then run the wizard from a local VS Code as a host, pick Cloud mode, point at the deployed `wss://*.fly.dev`, and verify the status bar shows `$(cloud) VersionCon — connected`. This is the live counterpart to serverAuthIntegration.test.js test 1 and is the lowest-cost validation of the BLOCKER 1 fix in a real network environment.
+#### 1. MANUAL UAT-1 — Docker build smoke test
 
-2. **Schedule MD-03 design decision** as a Phase 7-followup planning task. The three options (relay /bootstrap route, deep-link pending JWT, member-bootstrap verifyClient carve-out) each have distinct security and contract implications; this is not a hotfix — it needs PLAN.md review.
+**Test:** `cd relay && docker build -t versioncon-relay-test .` followed by `docker run -p 8080:8080 versioncon-relay-test` and `curl http://localhost:8080/healthz`.
+**Expected:** Build exits 0 in <60s; image runs `node dist/server.js` as USER node on port 8080; healthz returns `{ok:true,sessions:0,uptime_s:N}`.
+**Why human:** Requires a running Docker daemon. Docker.app was offline locally during 07-12 execution; paper-verification of Dockerfile passed line-by-line. Unchanged from passes 1-2.
 
-3. **Once MD-03 is implemented**, re-verify SC-2 + run MANUAL UAT-3b (two-machine live cloud session). At that point Phase 7's goal is fully achievable end-to-end.
+#### 2. MANUAL UAT-2 — End-to-end Fly.io deploy quickstart
+
+**Test:** Follow relay/README.md from a clean checkout. Time the steps. Confirm `wss://*.fly.dev/healthz` returns `{ok:true,sessions:0}` within 5 minutes.
+**Expected:** Unfamiliar developer can complete the deploy in under 5 minutes (CONTEXT D-03 phase-gate).
+**Why human:** Requires a Fly.io account, flyctl installation, real cloud deploy, and stopwatch. Cannot be done programmatically.
+
+#### 3. MANUAL UAT-3b — Two-machine live cloud session (SC-1 + SC-2 + SC-3 combined)
+
+**Test:** Full 18-step procedure from 07-14-SUMMARY.md (preserved verbatim in that document). Key verification points:
+
+- Step 5: Deep-link contains `&bt=eyJ...` (JWT-shaped string visible in share screen).
+- Step 11: Status bar transition on joiner is clean — NO flicker through `relay-unreachable` during the bootstrap-swap window. (Proves T-07-21 + swapInProgress mitigation in production.)
+- Step 17: Bob's OutputChannel shows `bt=<redacted>` — JWT NEVER logged in plaintext (T-07-20 HIGH mitigation confirmed in production).
+- Step 18: Relay logs show REAL_JOINER_ID sub, NOT `bootstrap-<sessionId>` sub.
+- Steps 19-21: SC-3 live: stop relay → `relay-unreachable`; restart → `connected`; host ends session → `session-not-found`.
+
+**Expected:** All 18 steps complete without error. Pass criteria per 07-14-SUMMARY. Full SC-1 + SC-2 + SC-3 observable end-to-end in a real cloud network environment.
+**Why human:** Requires two physical machines on different networks, a deployed Fly.io relay, and human eyes on status-bar transitions, presence panel, chat, push/pull, and OutputChannel content. The E2E integration test (bootstrapJoinerE2E.test.js) proves the code path is correct in-process; UAT-3b proves it in the real deploy environment including OS deep-link registration and real TLS routing.
+
+## Conclusion
+
+All three Phase 7 Success Criteria are now code-level verified. The phase goal — "Teams who are not on the same local network can use VersionCon over the internet with the exact same UI and workflow as LAN mode" — is achievable end-to-end with the code as it stands.
+
+**Phase 7 mark-complete is unblocked at the code level.** Proceeding to Phase 8 is appropriate. The three Manual UAT items (UAT-1, UAT-2, UAT-3b) are live verification steps the user runs against a real deploy and are NOT blocking the code verdict.
 
 ---
 
-_Re-verified: 2026-05-19T13:30:00Z_
-_Previous verification: 2026-05-19T09:30:00Z (status: gaps_found, score: 1/3)_
-_Hotfix commit: 4413071 — "fix(07-VERIFICATION): BLOCKER 1 — wire verifyToken into verifyClient with host bootstrap defer"_
-_Verifier: Claude (gsd-verifier, Opus 4.7 1M context)_
+_Re-verified: 2026-05-20T22:30:00Z_
+_Pass 1: 2026-05-19T09:30:00Z — gaps_found 1/3 (BLOCKER 1 + BLOCKER 2)_
+_Pass 2: 2026-05-19T13:30:00Z — gaps_found 2/3 (BLOCKER 1 fixed; BLOCKER 2 deferred)_
+_Pass 3: 2026-05-20T22:30:00Z — human_needed 3/3 (all code-level SCs VERIFIED; Manual UAT pending)_
+_Verifier: Claude (gsd-verifier, Sonnet 4.6)_

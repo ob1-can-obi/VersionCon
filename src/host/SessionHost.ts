@@ -128,6 +128,24 @@ export class SessionHost implements SessionEventEmitter {
   private cloudSessionId: string | null = null;
 
   /**
+   * Phase 7 gap-closure plan 07-13 (MD-03 — Option A bootstrap JWT).
+   *
+   * Short-lived (15-min) role:'member' JWT minted by
+   * SessionHostFactory.createCloud() AFTER attachCloudIssuer. Pickup
+   * by WizardPanel via getBootstrapToken(); embedded in the share-
+   * screen deep-link's `bt` query param. NULL in LAN mode (createCloud
+   * is the ONLY code path that sets this; the LAN constructor path
+   * leaves it null).
+   *
+   * The bootstrap JWT signs against the same per-session verifySecret
+   * as the host self-JWT, so the relay's existing verifyToken path
+   * (relay/src/auth.ts) accepts it verbatim with NO relay-side code
+   * changes. Inheritance proven by serverAuthIntegration.test.js
+   * test 3 (member auth happy path).
+   */
+  private bootstrapToken: string | null = null;
+
+  /**
    * Map of memberId -> tracked file paths. Populated from tracked-paths-update
    * messages and host-side setHostTrackedPaths calls. Drives PUSH-03 file-level
    * affected-member computation.
@@ -322,6 +340,39 @@ export class SessionHost implements SessionEventEmitter {
     }
     this.cloudTokenService = tokenService;
     this.cloudSessionId = sessionId;
+  }
+
+  /**
+   * Phase 7 gap-closure plan 07-13 (MD-03 — Option A bootstrap JWT).
+   *
+   * Called ONCE by SessionHostFactory.createCloud immediately after
+   * attachCloudIssuer to attach the bootstrap JWT. Subsequent calls throw
+   * (single-shot guard mirroring attachCloudIssuer — re-attaching mid-flight
+   * would silently invalidate the deep-link a host has already shared, with
+   * no observable signal).
+   *
+   * The bootstrap JWT itself is minted by tokenService.issueBootstrap in
+   * SessionHostFactory.ts; this setter is the seam that lets the factory
+   * stash the JWT on the constructed host instance so WizardPanel can pick
+   * it up via getBootstrapToken().
+   */
+  attachBootstrapToken(token: string): void {
+    if (this.bootstrapToken !== null) {
+      throw new Error(
+        'attachBootstrapToken: bootstrap token already attached (single-shot guard)',
+      );
+    }
+    this.bootstrapToken = token;
+  }
+
+  /**
+   * Phase 7 gap-closure plan 07-13. WizardPanel pickup — returns the
+   * bootstrap JWT to embed in the share-screen deep-link's `bt` param.
+   * Returns null in LAN mode (no createCloud call → no
+   * attachBootstrapToken call → field stays at its constructor-time null).
+   */
+  getBootstrapToken(): string | null {
+    return this.bootstrapToken;
   }
 
   // ---------------------------------------------------------------------------

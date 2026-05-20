@@ -121,6 +121,23 @@ export async function createCloud(opts: CreateCloudOpts): Promise<SessionHost> {
   const host = new SessionHost(opts.config, opts.hostIdentity, hostTransport);
   host.attachCloudIssuer(tokenService, opts.sessionId);
 
+  // 7. Mint the bootstrap JWT (Phase 7 gap-closure plan 07-13; MD-03 Option A).
+  //    Short-lived (15m hard cap), role:'member', sub='bootstrap-'+sessionId.
+  //    Signed with the SAME per-session verifySecret as the host self-JWT,
+  //    so the relay's existing verifyToken path (relay/src/auth.ts) accepts
+  //    it verbatim — NO relay-side code changes for this gap closure.
+  //    serverAuthIntegration.test.js test 3 already proves this shape works.
+  //
+  //    WizardPanel.handleWizardComplete() (cloud branch) picks it up via
+  //    host.getBootstrapToken() and embeds it in the share-screen deep-link
+  //    as &bt=<URLencoded jwt>. The joiner-side consumer + reconnect flow
+  //    lands in 07-14; this plan only ships the mint + plumbing.
+  const bootstrapToken = await tokenService.issueBootstrap(
+    opts.sessionId,
+    opts.hostIdentity.memberId,
+  );
+  host.attachBootstrapToken(bootstrapToken);
+
   // Expose the host self-JWT via a test-only field for the
   // 'createCloud issues host JWT with claims' assertion. Production code
   // never reads this — the relay validates the JWT during verifyClient.

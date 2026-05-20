@@ -265,6 +265,17 @@ export class VersionConUriHandler implements vscode.UriHandler {
     const relay = params.get('relay');
     const session = params.get('session');
     const code = params.get('code') ?? '';
+    // Phase 7 plan 07-14 (MD-03 Option A closure): parse the bootstrap JWT
+    // from the deep-link's `bt` query param. URL-decoded automatically by
+    // URLSearchParams.get(). Empty string when absent (LAN-mode deep-link OR
+    // legacy pre-07-13 cloud deep-link). NEVER logged in plaintext — the log
+    // line below uses literal `bt=<redacted>` to redact the value.
+    //
+    // T-07-20 mitigation (HIGH severity): the bootstrap JWT, if leaked into
+    // VS Code's session log, would expose a 15-minute window for replay.
+    // Redaction at the log boundary prevents this leak even in
+    // operator-pulled diagnostics.
+    const bt = params.get('bt') ?? '';
 
     if (!relay) {
       channel.appendLine(`[${ts}] Deep-link missing required parameter: relay`);
@@ -304,7 +315,14 @@ export class VersionConUriHandler implements vscode.UriHandler {
     }
 
     // T-07-10b: log relay + session but NEVER the invite code value.
-    channel.appendLine(`[${ts}] Deep-link accepted — opening JoinPanel prefilled (relay=${relay}, session=${session})`);
+    // T-07-20 (plan 07-14, HIGH): when the deep-link carries `bt`, the log
+    // line MUST include the literal `bt=<redacted>` token so operators have
+    // a breadcrumb that a bootstrap JWT was present WITHOUT exposing the
+    // JWT value itself. When `bt` is absent (LAN deep-link OR legacy cloud
+    // deep-link), the literal is omitted entirely — keeps the LAN log
+    // byte-identical to pre-07-14.
+    const btLog = bt.length > 0 ? ', bt=<redacted>' : '';
+    channel.appendLine(`[${ts}] Deep-link accepted — opening JoinPanel prefilled (relay=${relay}, session=${session}${btLog})`);
 
     // T-07-10c: JoinPrefill struct has NO displayName field. The joiner must
     // type their displayName in the panel after it opens, preserving the
@@ -313,7 +331,7 @@ export class VersionConUriHandler implements vscode.UriHandler {
       this.context,
       this.sessionHistory,
       this.onConnected,
-      { mode: 'cloud', relayUrl: relay, sessionId: session, inviteCode: code },
+      { mode: 'cloud', relayUrl: relay, sessionId: session, inviteCode: code, bootstrapToken: bt },
     );
   }
 }

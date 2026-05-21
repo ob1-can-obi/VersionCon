@@ -141,35 +141,26 @@ suite('Phase 8 — E2E: SDK client handshake + tools/list', () => {
     assert.ok(client, 'client constructed');
   });
 
-  test('tools/list reflects Wave-2 baseline (no tools registered yet)', async () => {
+  test('tools/list reflects Wave-3 surface (4 simple-reader tools registered)', async () => {
     // SDK behavior (mcp.js line 56-67): the ListToolsRequestSchema handler
-    // is only installed by registerTool(). When zero tools are registered
-    // (Wave-2 baseline; tools land in 08-06/07/08) the SDK returns a
-    // JSON-RPC "Method not found" error. This is the correct Wave-2 shape.
-    // Once Wave 3 lands at least one tool, listTools() will return that
-    // tool's metadata. The test asserts the current Wave-2 contract.
-    let methodFound = true;
-    let toolsResult: Awaited<ReturnType<typeof client.listTools>> | null = null;
-    try {
-      toolsResult = await client.listTools();
-    } catch (err) {
-      const message = String((err as Error)?.message ?? err);
-      if (/Method not found/i.test(message)) {
-        methodFound = false;
-      } else {
-        throw err;
-      }
-    }
-    if (methodFound) {
-      // Sanity check for Wave 3+: zero tools registered means empty array.
-      assert.deepStrictEqual(
-        toolsResult!.tools,
-        [],
-        `Wave-2 expected empty tool list. Got: ${JSON.stringify(toolsResult!.tools.map((t) => t.name))}`,
+    // is only installed by registerTool(). Wave 3 (plan 08-06) registered
+    // the 4 simple-reader tools through buildServer.ts, so tools/list now
+    // returns a populated list. The test asserts the 4 Wave-3 tool names
+    // are present — additional names from 08-07 (advise_sync, query_deps,
+    // list_dependents) will be appended without breaking this assertion.
+    const toolsResult = await client.listTools();
+    const names = toolsResult.tools.map((t): string => t.name).sort();
+    const expectedWave3 = [
+      'get_branch_status',
+      'get_chat_log',
+      'get_recent_activity',
+      'get_sync_status',
+    ];
+    for (const expected of expectedWave3) {
+      assert.ok(
+        names.includes(expected),
+        `Wave-3 tool '${expected}' missing from tools/list. Got: ${names.join(',')}`,
       );
-    } else {
-      // Wave-2 baseline path — handler not installed, "Method not found".
-      assert.strictEqual(methodFound, false, 'Wave-2 baseline: tools/list returns Method not found');
     }
   });
 });

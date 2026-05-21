@@ -33,6 +33,7 @@ import { registerGetChatLog } from './tools/getChatLog.js';
 import { registerQueryDependencies } from './tools/queryDependencies.js';
 import { registerListDependents } from './tools/listDependents.js';
 import { registerDependencyGraphResource } from './resources/dependencyGraph.js';
+import { registerAdviseSync } from './tools/adviseSync.js';
 
 export interface BuildServerDeps {
   branchReader: BranchReader;
@@ -104,6 +105,17 @@ export function buildServer(deps: BuildServerDeps): McpServer {
   });
   registerDependencyGraphResource(server, {
     depReader: deps.depReader,
+  });
+  // Plan 08-08 — 3rd (final) buildServer amend. advise_sync is the
+  // composite advisory tool that fans into 4 readers (Sync + Presence +
+  // Dependency + Activity) and fuses signals through fusePredictedConflicts
+  // (pure fn). Closes the 7-tool catalog + AI-04 + SC-4. After this
+  // registration, tools/list returns EXACTLY 7 names + 1 resource.
+  registerAdviseSync(server, {
+    syncReader: deps.syncReader,
+    presenceReader: deps.presenceReader,
+    depReader: deps.depReader,
+    activityReader: deps.activityReader,
   });
   // Optional callback retained for tests that want to register additional
   // tools (or override) AFTER the production tools land. Wave-3+ tests can

@@ -271,8 +271,8 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 4. Presence, Chat + File-Level Conflict Notifications | 11/11 | Feature complete (UAT pending) | - |
 | 5. Dependency-Aware Conflict Detection (AST) | 0/TBD | Not started | - |
 | 6. Inline Code Review | 0/TBD | Not started | - |
-| 7. Cloud Mode + Relay Server | 13/13 | All plans complete; awaiting /gsd-code-review 7 + /gsd-verify-work 7 (Waves 1-4 all shipped; 07-12 deploy artifacts landed via commits d7a42b2 + 1e7e006 + 29d812f) | - |
-| 8. AI Agent API (MCP Integration) | 0/9 | Planned (9 plans across 5 waves; planned 2026-05-21) | - |
+| 7. Cloud Mode + Relay Server | 15/15 | Feature complete + gap-closure landed (BLOCKER 2 / MD-03 — joiner JWT bootstrap — closed via 07-13 + 07-14). 1061/1061 extension + 79/79 relay tests passing. /gsd-verify-work 7 verdict: human_needed (UAT-1 docker, UAT-2 Fly.io, UAT-3b two-machine live cloud session). | - |
+| 8. AI Agent API (MCP Integration) | 9/9 | All plans complete; awaiting UAT-8-1..5 (consent modal UX, Claude Code CLI, Copilot Chat, Cursor, two-machine conflict prediction). 1253/1253 extension tests passing, all N-08-01..10 source-grep gates green, /gsd-verify-work 8 verdict: human_needed. Commits cbea9f7..777ffec. | - |
 
 ## Backlog
 

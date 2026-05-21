@@ -26,6 +26,10 @@ import type {
   DependencyReader,
   PresenceReader,
 } from './readers.js';
+import { registerGetBranchStatus } from './tools/getBranchStatus.js';
+import { registerGetSyncStatus } from './tools/getSyncStatus.js';
+import { registerGetRecentActivity } from './tools/getRecentActivity.js';
+import { registerGetChatLog } from './tools/getChatLog.js';
 
 export interface BuildServerDeps {
   branchReader: BranchReader;
@@ -66,11 +70,29 @@ export function buildServer(deps: BuildServerDeps): McpServer {
       },
     },
   );
+  // Plan 08-06 — Wave 3 production tool registrations (the 4 simple readers).
+  // Each goes through registerReadOnlyTool inside its tool file (Layer 2 gate
+  // from 08-03). Plans 08-07 (advise_sync + dep tools) and 08-08 (resources)
+  // will append additional inline calls below this block.
+  registerGetBranchStatus(server, {
+    branchReader: deps.branchReader,
+    syncReader: deps.syncReader,
+  });
+  registerGetSyncStatus(server, {
+    syncReader: deps.syncReader,
+    activityReader: deps.activityReader,
+  });
+  registerGetRecentActivity(server, {
+    activityReader: deps.activityReader,
+  });
+  registerGetChatLog(server, {
+    chatReader: deps.chatReader,
+  });
+  // Optional callback retained for tests that want to register additional
+  // tools (or override) AFTER the production tools land. Wave-3+ tests can
+  // still inject; the production code no longer relies on this seam.
   if (deps.registerTools) {
     deps.registerTools(server, deps);
   }
-  // Plans 08-06 / 08-07 / 08-08 will replace the registerTools callback with
-  // direct imports of register<Tool>(server, deps) calls. The callback path
-  // remains stable for tests.
   return server;
 }

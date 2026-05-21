@@ -24,6 +24,7 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { parse as parseJsonc } from 'jsonc-parser';
 import { upsertMcpConfig, removeMcpConfig } from '../../mcp/mcpConfig.js';
 
 suite('Phase 8 — mcpConfigWriter', () => {
@@ -88,9 +89,10 @@ suite('Phase 8 — mcpConfigWriter', () => {
       `T-08-09 comment-preservation failed. Got:\n${raw}`,
     );
 
-    // Parse with the line-comment-stripped raw text for shape assertions.
-    const stripped = raw.replace(/\/\/.*$/gm, '');
-    const parsed = JSON.parse(stripped);
+    // Parse with jsonc-parser's native JSONC parser (it understands
+    // line comments). A naive `raw.replace(/\/\/.*$/gm, '')` would
+    // truncate URL values mid-string at `//` inside strings.
+    const parsed = parseJsonc(raw);
     assert.deepStrictEqual(
       parsed.servers.postgres,
       {
@@ -254,10 +256,16 @@ suite('Phase 8 — mcpConfig.ts source-grep (T-08-07 + Pitfall 4 by construction
   const REPO_ROOT = process.cwd();
   const MCP_CONFIG_TS = path.join(REPO_ROOT, 'src', 'mcp', 'mcpConfig.ts');
 
-  test('mcpConfig.ts has no JSON.stringify (Pitfall 4 — must use jsonc-parser)', () => {
+  test('mcpConfig.ts has no JSON.stringify in CODE (Pitfall 4 — must use jsonc-parser)', () => {
     const text = fsSync.readFileSync(MCP_CONFIG_TS, 'utf-8');
+    // Strip comments before scanning so a JSDoc reference to the prohibited
+    // API (used to DOCUMENT the rule) does not trip the gate. Only actual
+    // code uses are gated.
+    const stripped = text
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
     assert.doesNotMatch(
-      text,
+      stripped,
       /\bJSON\.stringify\b/,
       'mcpConfig.ts must use jsonc-parser.applyEdits, not JSON.stringify (Pitfall 4: JSON.stringify destroys user comments)',
     );

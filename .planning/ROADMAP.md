@@ -246,7 +246,17 @@ Plans:
   2. An AI agent can read the full dependency graph — which symbols each workspace file uses and who else depends on those symbols — to give conflict-aware advice
   3. AI agents cannot push, create branches, or modify shared state on behalf of users — the API is strictly read-only
   4. An AI agent that has read VersionCon context can correctly identify that a user's local workspace is out of sync and advise them to pull before running
-**Plans**: TBD
+**Plans:** 9 plans (planned 2026-05-21 via /gsd-plan-phase 8)
+Plans:
+- [ ] 08-01-PLAN.md — Wave 0: package.json deps (mcp-sdk@^1.29 + jsonc-parser@^3.3.1 + express@^5 + zod@^3.25 + @types/express) + 3 versioncon.mcp.* settings + FakeReaders fixture
+- [ ] 08-02-PLAN.md — Wave 1: src/mcp/readers.ts (type-only Layer 1 gate) + 6 *ReaderImpl.ts adapters wrapping BranchManager/SyncTracker/PushHistory/ChatLog/SessionHost/AstFactory; N-08-01/03 source-grep tests
+- [ ] 08-03-PLAN.md — Wave 1 (parallel): src/mcp/registry.ts (READ_ONLY_TOOLS frozen Set + registerReadOnlyTool factory; Layer 2 runtime gate); N-08-02 + N-08-10 source-grep tests
+- [ ] 08-04-PLAN.md — Wave 2: src/mcp/server.ts (Express + StreamableHTTPServerTransport on 127.0.0.1; enableDnsRebindingProtection: true + allowedHosts) + buildServer.ts (DI composer) + lifecycle.ts (activate/deactivate orchestrator); N-08-04 + N-08-08 + N-08-09 source-grep
+- [ ] 08-05-PLAN.md — Wave 2 (parallel): src/mcp/mcpConfig.ts (jsonc-parser upsert/remove preserving sibling entries; T-08-07 + T-08-09 mitigations) + src/mcp/consent.ts (first-run modal mirroring Phase 7 T-07-10)
+- [ ] 08-06-PLAN.md — Wave 3: 4 tools — getBranchStatus.ts + getSyncStatus.ts + getRecentActivity.ts + getChatLog.ts; result-size caps (T-08-03); AI-02 surface 4/7
+- [ ] 08-07-PLAN.md — Wave 3 (parallel): 2 tools + 1 resource — queryDependencies.ts + listDependents.ts + resources/dependencyGraph.ts (versioncon-state:// scheme; T-08-10 path-traversal mitigation); AI-03 + SC-2 closure
+- [ ] 08-08-PLAN.md — Wave 4: src/mcp/tools/adviseSync.ts (composite tool; fusePredictedConflicts pure fn; 5 confidence tiers 0.9/0.7/0.6/0.5/0.2 per RESEARCH §I.3); AI-04 + SC-4 closure; 7-tool whitelist locked
+- [ ] 08-09-PLAN.md — Wave 5: src/extension.ts integration (lazy getMcpOutputChannel + startMcpLifecycle fire-and-forget + deactivate cleanup) + src/mcp/index.ts barrel + README ## AI Agents section + SC-1 + SC-3 E2E suites + final consolidated N-08-01..09 sweep
 
 ## Progress
 
@@ -262,7 +272,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 | 5. Dependency-Aware Conflict Detection (AST) | 0/TBD | Not started | - |
 | 6. Inline Code Review | 0/TBD | Not started | - |
 | 7. Cloud Mode + Relay Server | 13/13 | All plans complete; awaiting /gsd-code-review 7 + /gsd-verify-work 7 (Waves 1-4 all shipped; 07-12 deploy artifacts landed via commits d7a42b2 + 1e7e006 + 29d812f) | - |
-| 8. AI Agent API (MCP Integration) | 0/TBD | Not started | - |
+| 8. AI Agent API (MCP Integration) | 0/9 | Planned (9 plans across 5 waves; planned 2026-05-21) | - |
 
 ## Backlog
 

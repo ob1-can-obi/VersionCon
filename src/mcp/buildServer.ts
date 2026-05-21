@@ -30,6 +30,9 @@ import { registerGetBranchStatus } from './tools/getBranchStatus.js';
 import { registerGetSyncStatus } from './tools/getSyncStatus.js';
 import { registerGetRecentActivity } from './tools/getRecentActivity.js';
 import { registerGetChatLog } from './tools/getChatLog.js';
+import { registerQueryDependencies } from './tools/queryDependencies.js';
+import { registerListDependents } from './tools/listDependents.js';
+import { registerDependencyGraphResource } from './resources/dependencyGraph.js';
 
 export interface BuildServerDeps {
   branchReader: BranchReader;
@@ -87,6 +90,20 @@ export function buildServer(deps: BuildServerDeps): McpServer {
   });
   registerGetChatLog(server, {
     chatReader: deps.chatReader,
+  });
+  // Plan 08-07 — AI-03 / SC-2 surface: the two dep-graph query tools plus
+  // the browseable resource form. URI scheme is versioncon-state:// (NOT
+  // Phase 7's versioncon:// UriHandler scheme). T-08-10 path-traversal
+  // mitigated by construction in the resource handler (no fs.read against
+  // the URI capture; it's an in-memory key only).
+  registerQueryDependencies(server, {
+    depReader: deps.depReader,
+  });
+  registerListDependents(server, {
+    depReader: deps.depReader,
+  });
+  registerDependencyGraphResource(server, {
+    depReader: deps.depReader,
   });
   // Optional callback retained for tests that want to register additional
   // tools (or override) AFTER the production tools land. Wave-3+ tests can

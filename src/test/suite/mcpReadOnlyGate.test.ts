@@ -205,20 +205,23 @@ suite('Phase 8 — registerReadOnlyTool factory (call-time gate, defense-in-dept
     assert.ok(captured, 'factory must have called server.registerTool with wrapped handler');
     const handler = (captured as unknown as { handler: (args: unknown, extra: unknown) => Promise<unknown> }).handler;
 
-    // Monkeypatch READ_ONLY_TOOLS.has to return false ONLY for our tool name —
-    // simulates the rare tampering scenario the call-time gate defends against.
-    const origHas = READ_ONLY_TOOLS.has.bind(READ_ONLY_TOOLS);
+    // Simulate tampering by overriding Set.prototype.has for the duration of
+    // this test. Object.freeze on the Set instance prevents reassignment of
+    // own properties (so we can't `(set as any).has = ...`), but the prototype
+    // method is still patchable — exactly the "rare attack where someone
+    // swaps the Set's `.has` method" the registry.ts JSDoc documents as the
+    // belt-and-suspenders rationale.
+    const origHas = Set.prototype.has;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (READ_ONLY_TOOLS as any).has = (n: string): boolean => {
-      if (n === 'get_branch_status') return false;
-      return origHas(n);
+    Set.prototype.has = function (this: Set<unknown>, value: unknown): boolean {
+      if (this === READ_ONLY_TOOLS && value === 'get_branch_status') return false;
+      return origHas.call(this, value);
     };
     let result: { isError?: boolean; content?: Array<{ type: string; text: string }> };
     try {
       result = (await handler({}, {})) as typeof result;
     } finally {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (READ_ONLY_TOOLS as any).has = origHas;
+      Set.prototype.has = origHas;
     }
 
     assert.strictEqual(userHandlerCalled, false,
@@ -298,17 +301,16 @@ suite('Phase 8 — registerReadOnlyTool factory (call-time gate, defense-in-dept
     assert.ok(captured, 'factory must have called server.registerTool');
     const handler = (captured as unknown as { handler: (args: unknown, extra: unknown) => Promise<unknown> }).handler;
 
-    const origHas = READ_ONLY_TOOLS.has.bind(READ_ONLY_TOOLS);
+    const origHas = Set.prototype.has;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (READ_ONLY_TOOLS as any).has = (n: string): boolean => {
-      if (n === 'get_recent_activity') return false;
-      return origHas(n);
+    Set.prototype.has = function (this: Set<unknown>, value: unknown): boolean {
+      if (this === READ_ONLY_TOOLS && value === 'get_recent_activity') return false;
+      return origHas.call(this, value);
     };
     try {
       await handler({}, {});
     } finally {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (READ_ONLY_TOOLS as any).has = origHas;
+      Set.prototype.has = origHas;
     }
 
     assert.ok(

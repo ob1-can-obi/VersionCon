@@ -104,6 +104,43 @@ See [`relay/README.md`](relay/README.md) for per-platform details.
 
 A managed relay service at `versioncon.dev` is on the roadmap for a future phase — no date set.
 
+## AI Agents (MCP integration)
+
+VersionCon ships a local Model Context Protocol (MCP) server that exposes the active session's collab state — branch, sync, recent activity, chat log, and the dependency graph — as **read-only** tools to AI coding agents.
+
+**Supported clients out-of-the-box:**
+
+- **VS Code Copilot** (1.95+) reads `.vscode/mcp.json` automatically.
+- **Claude Code** reads `.mcp.json` at the workspace root.
+- **Cursor / Codex** — copy either file into the per-client config location documented in their docs; same JSON shape.
+
+**Enable:** open a workspace with the extension active. On first activation you'll see *"VersionCon wants to register an MCP server with this workspace so AI agents (Claude Code, Copilot, Cursor) can read your collab state. The server is local-only and read-only. Allow?"*. Click **Allow**. The extension auto-writes both `.vscode/mcp.json` and `.mcp.json` pointing at `http://127.0.0.1:<port>/mcp`. Restart your AI client; it should list `versioncon` in its MCP servers panel.
+
+**Disable** at any time via the `versioncon.mcp.enabled` setting (default `true`).
+
+**Tool catalog (7 tools, all read-only):**
+
+| Tool | Purpose |
+|------|---------|
+| `get_branch_status` | Current branch, ahead/behind vs the team view, dirty files |
+| `get_sync_status` | Last sync time, pending pushes, sync-blocked files |
+| `get_recent_activity` | Recent team pushes (who, when, files) |
+| `get_chat_log` | Recent in-extension chat + system events |
+| `query_dependencies` | What does X depend on? (forward, 1–2 hops) |
+| `list_dependents` | What depends on X? (reverse, 1–2 hops) |
+| `advise_sync` | Composite: state + predicted conflicts with confidence scores |
+
+**Browseable resource:** `versioncon-state://dependency-graph/{symbol_or_file_path}` — drag this URI into chat to @-mention dep info for any symbol or workspace file.
+
+**Security model:**
+
+- **Localhost only** — the MCP server binds `127.0.0.1` exclusively, never `0.0.0.0`. The LAN never sees it.
+- **DNS-rebinding protection** — `enableDnsRebindingProtection: true` plus an explicit `allowedHosts` allow-list mitigate CVE-2025-66414.
+- **Two-layer read-only enforcement** — structural Reader interfaces in `src/mcp/readers.ts` (compile-time) plus a runtime `READ_ONLY_TOOLS.has(name)` gate in every tool dispatch. The MCP server cannot push, create branches, or modify shared state on behalf of users — strictly read.
+- **Local-view only** — each user's MCP server exposes only their local view of the codebase + collab state. No cross-machine federation.
+
+**Manual verification:** see UAT-8-1 through UAT-8-5 in `.planning/phases/08-ai-agent-api-mcp-integration/08-VALIDATION.md` for hands-on test steps with Claude Code, Copilot, and Cursor.
+
 ## Development
 
 - `npm run build` — esbuild bundle for the extension host

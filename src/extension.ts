@@ -40,6 +40,26 @@ import { WorkspaceDiffer } from './services/WorkspaceDiffer.js';
 import { GitBridge } from './services/GitBridge.js';
 import type { PresenceInfo } from './types/chat.js';
 import type { ChatRecord } from './types/chat.js';
+// Phase 8 (Plan 08-09): MCP subsystem barrel — single import surface for the
+// extension-host wiring. Production injection seams (ensureConsent +
+// upsertMcpConfig + removeMcpConfig) come from this module; the 6 Reader
+// adapters are constructed inline inside the workspace IIFE once their
+// live source classes (BranchManager / SyncTracker / PushHistory / ChatLog /
+// SessionHost / AstAnalyzer) are available.
+import {
+  startMcpLifecycle,
+  stopMcpLifecycle,
+  type McpServerHandle,
+  ensureConsent,
+  upsertMcpConfig,
+  removeMcpConfig,
+  BranchReaderImpl,
+  SyncReaderImpl,
+  ActivityReaderImpl,
+  ChatReaderImpl,
+  PresenceReaderImpl,
+  DependencyReaderImpl,
+} from './mcp/index.js';
 
 // Module-level state for deactivation access
 let activeHost: SessionHost | null = null;
@@ -171,6 +191,60 @@ let activeReviewPushIdForController: string | null = null;
  * worker.
  */
 let activeAstAnalyzer: AstAnalyzer | null = null;
+
+// Phase 8 (Plan 08-09): module-level handle for the running MCP server so the
+// extension's deactivate() can call stopMcpLifecycle on it. Set in the
+// startMcpLifecycle().then(...) inside the workspace IIFE once the bind
+// completes (the handle is null until the MCP server has bound a port).
+// Cleared on deactivate(). Mirrors the activeAstAnalyzer null-when-absent
+// pattern above.
+let runningMcpHandle: McpServerHandle | null = null;
+
+// Phase 8 (Plan 08-09): workspace folder path snapshot captured at MCP startup
+// for the deactivate-time removeMcpConfig cleanup. We snapshot HERE (not at
+// deactivate time) because vscode.workspace.workspaceFolders may be cleared
+// during shutdown sequencing; the snapshot guarantees we know which folder
+// to clean up regardless of teardown order.
+let mcpWorkspaceFolderPath: string | null = null;
+
+// Phase 8 (Plan 08-09): module-level singleton OutputChannel for the MCP
+// subsystem. Lazily created via getMcpOutputChannel() on first log line so
+// the channel only exists when MCP startup actually runs. Mirrors the
+// getGitBridgeOutputChannel + getDeepLinkOutputChannel lifecycle (idempotent
+// push to context.subscriptions; channel disposes with the extension).
+let mcpOutputChannel: vscode.OutputChannel | null = null;
+let mcpChannelPushedToSubs = false;
+
+// Phase 8 (Plan 08-09): startup-idempotency guard. The workspace IIFE inside
+// activate() runs once per VS Code window, but the MCP startup block lives
+// AFTER all the session-host/branch/push/chat constructions so it lands
+// reachably even if a session never starts. This flag prevents duplicate
+// startMcpLifecycle calls if the IIFE wiring shape ever changes (e.g. a
+// future refactor moves the block under a session-start callback).
+let mcpStartupAttempted = false;
+
+/**
+ * Phase 8 (Plan 08-09) — lazy singleton MCP OutputChannel factory. Channel
+ * name 'VersionCon: MCP' is the canonical user-visible label (matches plan
+ * artifact). Channel is registered into context.subscriptions on first
+ * construction so it disposes with the extension. Subsequent calls return
+ * the same instance.
+ *
+ * Mirrors getGitBridgeOutputChannel (extension.ts:189) and
+ * getDeepLinkOutputChannel (extension.ts:210) byte-for-byte structure.
+ */
+function getMcpOutputChannel(
+  context: vscode.ExtensionContext,
+): vscode.OutputChannel {
+  if (!mcpOutputChannel) {
+    mcpOutputChannel = vscode.window.createOutputChannel('VersionCon: MCP');
+  }
+  if (!mcpChannelPushedToSubs) {
+    context.subscriptions.push(mcpOutputChannel);
+    mcpChannelPushedToSubs = true;
+  }
+  return mcpOutputChannel;
+}
 
 // Phase 4.3 Wave 4 (Plan 04.3-04): dedicated Output channel for the cloud
 // bridge commands (versioncon.exportToGitRemote / versioncon.importFromGitRemote).
@@ -2077,6 +2151,89 @@ export function activate(context: vscode.ExtensionContext): void {
         activeHost.setBranchDirGetter(() => fsLayer.getBranchDir());
       }
 
+      // --- Phase 8 (Plan 08-09): MCP subsystem startup ---
+      // Fires once per workspace IIFE, gated by mcpStartupAttempted so a
+      // future refactor that re-enters the IIFE (e.g. branch switch loop)
+      // cannot double-start the server. The presence reader is a LAZY shim
+      // that defers to the module-level `activeHost` at call time — this
+      // means MCP starts BEFORE a session begins (single-user case), and
+      // when a session later starts, presence data flows automatically
+      // through the live `activeHost` reference. When no host is active,
+      // the presence reader returns empty collections (read-only viewport
+      // — never throws).
+      //
+      // Activation NEVER awaits this call (mirrors extension.ts:867-869's
+      // ensureVersionconExcluded fire-and-forget pattern). The .catch site
+      // routes errors to the MCP OutputChannel via getMcpOutputChannel —
+      // never console.* (extension.ts:868 console.error is for Phase 4.3's
+      // legacy ensureVersionconExcluded; MCP wiring uses log.appendLine).
+      //
+      // The lifecycle:
+      //   (a) reads versioncon.mcp.enabled — defaults true (package.json)
+      //   (b) awaits ensureConsent (08-05) — first-run prompt; persistent
+      //   (c) starts the server on 127.0.0.1:<auto-port>/mcp (08-04)
+      //   (d) writes BOTH .vscode/mcp.json AND .mcp.json (RESEARCH §B.4)
+      //   (e) returns the McpServerHandle for deactivate-time shutdown
+      //
+      // Deactivate cleanup happens in deactivate() below — calls
+      // stopMcpLifecycle on the captured handle + removes the mcp.json
+      // entries (Pitfall 3 self-healing remains intact for next activation).
+      if (!mcpStartupAttempted) {
+        mcpStartupAttempted = true;
+        const folder = workspaceFolder.uri.fsPath;
+        mcpWorkspaceFolderPath = folder;
+        const mcpLog = (line: string): void =>
+          getMcpOutputChannel(context).appendLine(line);
+
+        // Lazy PresenceReader shim: defers to the module-level `activeHost`
+        // at call time so MCP can start before a session is active. Returns
+        // empty collections when no host is present — matches the read-only
+        // viewport contract (Phase 8 surfaces only what the local user sees;
+        // no host == no presence to surface).
+        const presenceReader = {
+          getPresenceSnapshot(): readonly PresenceInfo[] {
+            if (!activeHost) return [];
+            return new PresenceReaderImpl(activeHost).getPresenceSnapshot();
+          },
+          getMemberTracking(): ReadonlyMap<string, readonly string[]> {
+            if (!activeHost) return new Map();
+            return new PresenceReaderImpl(activeHost).getMemberTracking();
+          },
+        };
+
+        void startMcpLifecycle({
+          context,
+          log: mcpLog,
+          deps: {
+            branchReader: new BranchReaderImpl(branchManager),
+            syncReader: new SyncReaderImpl(syncTracker),
+            activityReader: new ActivityReaderImpl(pushHistory),
+            chatReader: new ChatReaderImpl(activeChatLog),
+            depReader: new DependencyReaderImpl({ workspaceRoot: folder }),
+            presenceReader,
+            log: mcpLog,
+          },
+          ensureConsent,
+          upsertMcpConfig: async (port: number): Promise<void> => {
+            const url = `http://127.0.0.1:${port}/mcp`;
+            await upsertMcpConfig(folder, '.vscode/mcp.json', 'versioncon', url);
+            await upsertMcpConfig(folder, '.mcp.json', 'versioncon', url);
+          },
+          removeMcpConfig: async (): Promise<void> => {
+            await removeMcpConfig(folder, '.vscode/mcp.json', 'versioncon');
+            await removeMcpConfig(folder, '.mcp.json', 'versioncon');
+          },
+        })
+          .then((handle) => {
+            runningMcpHandle = handle;
+          })
+          .catch((err) => {
+            mcpLog(
+              `[mcp] startup failed: ${String((err as Error)?.message ?? err)}`,
+            );
+          });
+      }
+
       // BRANCH-03: all-branches tree (separate from active-branch file tree)
       const branchListProvider = new BranchListProvider(branchManager);
       branchListProvider.setActiveBranchName(activeBranchName);
@@ -3854,5 +4011,31 @@ export async function deactivate(): Promise<void> {
   }
   if (activeClient) {
     activeClient.disconnect();
+  }
+  // Phase 8 (Plan 08-09): release the MCP server port + remove our entries
+  // from both .vscode/mcp.json AND .mcp.json so a stale URL pointing at a
+  // dead port doesn't haunt the user's mcp.json after the extension shuts
+  // down. Best-effort — swallow any error since deactivate MUST NOT throw
+  // (VS Code's extension-host shutdown chains other deactivate hooks
+  // sequentially; throwing here breaks them). Even if close fails, the GC
+  // + process exit free the port.
+  if (runningMcpHandle) {
+    try {
+      await stopMcpLifecycle(runningMcpHandle, {
+        removeMcpConfig: async (): Promise<void> => {
+          const folder = mcpWorkspaceFolderPath;
+          if (!folder) return;
+          await removeMcpConfig(folder, '.vscode/mcp.json', 'versioncon');
+          await removeMcpConfig(folder, '.mcp.json', 'versioncon');
+        },
+        log: (): void => {
+          /* no OutputChannel after deactivate — channel may already be disposed */
+        },
+      });
+    } catch {
+      /* swallow — deactivate must not throw */
+    }
+    runningMcpHandle = null;
+    mcpWorkspaceFolderPath = null;
   }
 }

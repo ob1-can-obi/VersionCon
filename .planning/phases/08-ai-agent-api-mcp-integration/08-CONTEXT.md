@@ -12,7 +12,7 @@ Deliver an MCP (Model Context Protocol) server inside the VersionCon VS Code ext
 **In scope:**
 - MCP server hosted **in-process inside the VS Code extension** (HTTP/SSE on localhost), accessed by AI clients via auto-written config in `.vscode/mcp.json`
 - Tool catalog (granular, callable functions; not a coarse get_context blob): `get_branch_status`, `get_sync_status`, `get_recent_activity`, `get_chat_log`, `query_dependencies`, `list_dependents`, `advise_sync`
-- Resource catalog (browseable state): `versioncon://dependency-graph/{file_or_symbol}` for the dep graph (browseable URI form alongside the query-tool form)
+- Resource catalog (browseable state): `versioncon-state://dependency-graph/{file_or_symbol}` for the dep graph (browseable URI form alongside the query-tool form). **Scheme amended per RESEARCH §G.2 (2026-05-21):** original choice was `versioncon://` but the deep-link UriHandler from Phase 7 already owns that scheme; `versioncon-state://` provides clean namespace separation with zero functional difference for MCP clients
 - Read-only enforcement at TWO layers: (a) the MCP-server module imports ONLY Reader interfaces from `src/state/`, `src/host/`, `src/ast/` — TypeScript types prevent accidentally wiring a writer; (b) the `tools/call` dispatcher asserts the tool name is on a hard-coded READ_ONLY_TOOLS allow-list before invocation. Both gates source-grep-tested (mirror Phase 7's T-07-XX gate discipline)
 - Auto-port allocation + auto-write `.vscode/mcp.json` on extension activation (with one-time user confirmation prompt, mirroring Phase 7's UriHandler T-07-10 confirmation pattern)
 - Sync-advice tool that returns BOTH: (1) static state facts (`behind: 3, ahead: 1, dirty_files: [...]`), AND (2) predicted-conflict array from Phase 5 AST + Phase 4 file-presence cross-reference, with confidence scores
@@ -77,7 +77,7 @@ The MCP server is deliberately a **read-only viewport** onto state that already 
 - A coarse `get_context()` returning everything blows the model's context window and forces the LLM to scan irrelevant data. Granular tools let the LLM read only what it needs
 
 **Resources (in addition to tools):**
-- `versioncon://dependency-graph/{path_or_symbol}` — browseable URI form of `query_dependencies`, so AI clients that prefer the Resources primitive (some IDE-integrated agents) can drag-and-drop or @-mention dep info into the chat. Same underlying data as the tool
+- `versioncon-state://dependency-graph/{path_or_symbol}` — browseable URI form of `query_dependencies`, so AI clients that prefer the Resources primitive (some IDE-integrated agents) can drag-and-drop or @-mention dep info into the chat. Same underlying data as the tool. **Scheme finalized per RESEARCH §G.2:** `versioncon-state://` (NOT `versioncon://` — that scheme is owned by Phase 7's deep-link UriHandler)
 
 ### 3. Read-only enforcement: structural + runtime, both source-grep gated
 **LOCKED.** Two-layer defense, mirroring Phase 7's T-07-XX gate discipline.

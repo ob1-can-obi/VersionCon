@@ -1545,14 +1545,14 @@ src/test/suite/                   # NEW Phase 8 tests (Wave 0):
 | T-08-11 | Console.* leak in src/mcp/ pollutes user's Developer Tools console | I.D. | N-08-04 source-grep gate forbids console.* in src/mcp/. All logs go through OutputChannel | N-08-04 source-grep test |
 | T-08-12 | Stale port in `.vscode/mcp.json` after VS Code crash bypasses deactivate() cleanup | DoS (degraded UX, not security) | On next activation, ALWAYS overwrite the entry. Self-healing | Integration test "second activate with stale entry updates port" |
 
-## Open Questions Remaining
+## Open Questions Remaining (RESOLVED 2026-05-21)
 
-After this research, the following items remain for the planner / user input — all are low-risk, none blocks the planning phase:
+All 4 questions resolved during plan-phase. Recorded for traceability:
 
-1. **VS Code `engines.vscode` bump from `^1.85.0` to `^1.102.0`** — needed only if Phase 8 ships programmatic registration via `lm.registerMcpServerDefinitionProvider`. Recommendation: defer programmatic registration to follow-up plan, ship file-based `.vscode/mcp.json` writer only in v1. **Decision: planner.**
-2. **`versioncon.mcp.consent` scope** (Global vs Workspace) — Recommendation: Global, matching Phase 7's UriHandler consent. **Decision: planner.**
-3. **A1 confirmation** — Verify Claude Code's workspace `.mcp.json` parser accepts the same `{ servers: { name: { type: 'http', url } } }` shape as VS Code's `.vscode/mcp.json`. Confidence is high (search results strongly suggest so) but no live test in this research. Recommended: a "smoke test" task in Phase 8 that boots the extension, writes both config files, and verifies Claude Code CLI lists the server via `claude mcp list`. **Decision: planner / executor.**
-4. **A4 confirmation** — Per-call latency of ad-hoc Phase 5 AstFactory.getAdapter + joinImpact on a single requested file. If >500ms on a representative file, ship a standing index in 8.1. Recommended: add a perf assertion to the `mcpToolsRead.test.ts` for `query_dependencies` (assert <200ms on a 1KB fixture file). **Decision: planner adds the perf test; executor measures and reports.**
+1. **VS Code `engines.vscode` bump from `^1.85.0` to `^1.102.0`** — **RESOLVED: defer. Plans keep `engines.vscode` at `^1.85.0`** (08-01 does NOT bump it). Programmatic registration via `lm.registerMcpServerDefinitionProvider` is deferred to a follow-up phase. Phase 8 ships file-based `.vscode/mcp.json` writer only (covers Copilot + Claude Code + Cursor + Codex via shared shape).
+2. **`versioncon.mcp.consent` scope (Global vs Workspace)** — **RESOLVED: Global**, matching Phase 7's UriHandler consent UX (locked in CONTEXT D-5). Implemented in 08-05 consent.ts.
+3. **A1 confirmation — Claude Code workspace `.mcp.json` parser accepts the same shape as `.vscode/mcp.json`** — **RESOLVED at plan level: 08-05's mcpConfig.ts writes BOTH `.vscode/mcp.json` (Copilot) AND `.mcp.json` (Claude Code) at workspace root with the same shape**. Smoke-test of `claude mcp list` is a manual UAT step deferred to UAT-8-2 in VALIDATION.md.
+4. **A4 confirmation — per-call latency of ad-hoc Phase 5 AstFactory.getAdapter + joinImpact on a single requested file** — **RESOLVED: 08-07 includes a perf assertion** (`query_dependencies` <100ms p95 on fixture file in `mcpDependencyReader.test.ts`). If perf fails, hypothetical Phase 8.1 ships a standing index.
 
 ## Sources
 

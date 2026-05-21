@@ -1,10 +1,11 @@
 ---
 phase: 8
 slug: ai-agent-api-mcp-integration
-status: draft
-nyquist_compliant: false
+status: planner_signed_off
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-05-21
+populated_from_plans: 2026-05-21
 ---
 
 # Phase 8 — Validation Strategy
@@ -37,11 +38,24 @@ created: 2026-05-21
 
 ## Per-Task Verification Map
 
-*Filled out by planner during plan generation; this is the skeleton.*
+*Populated from per-plan `<verify><automated>` blocks (2026-05-21).*
 
-| Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
-|---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| (planner to fill from RESEARCH §A-I + STRIDE table) |  |  |  |  |  |  |  |  | ⬜ pending |
+| Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | Status |
+|---------|------|------|-------------|------------|-----------------|-----------|-------------------|--------|
+| 08-01-T1 | 08-01 | 0 | AI-01 | T-08-06 (supply-chain) | Deps pinned + audit clean | install + audit | `npm install && npm audit --omit=dev` | ⬜ pending |
+| 08-01-T2 | 08-01 | 0 | AI-01 | — | FakeReaders fixture compiles + smoke-tests | unit | `npx tsc --noEmit && npm test -- --grep "mcpFixtures"` | ⬜ pending |
+| 08-02-T1 | 08-02 | 1 | AI-02, AI-03 | T-08-01, T-08-02 | readers.ts type-only, no writers, no auth import | structural + grep | `npx tsc --noEmit && grep -rE 'import.*from.*src/auth' src/mcp/ \| wc -l` == 0 AND `grep -c 'set[A-Z]' src/mcp/readers.ts` near 0 | ⬜ pending |
+| 08-02-T2 | 08-02 | 1 | AI-02, AI-03 | T-08-02 (info disclosure) | 6 adapters delegate to existing classes; defensive copies | unit | `npm test -- --grep "readerAdapters"` | ⬜ pending |
+| 08-03-T1 | 08-03 | 1 | AI-01 | T-08-01 (EoP) | READ_ONLY_TOOLS Set + registerReadOnlyTool factory | unit + grep | `npm test -- --grep "mcpRegistry"` AND `grep -c 'READ_ONLY_TOOLS\.has' src/mcp/` >= 1 | ⬜ pending |
+| 08-04-T1 | 08-04 | 2 | AI-01 | T-08-04, T-08-05 (DNS-rebind) | 127.0.0.1 + enableDnsRebindingProtection + allowedHosts | unit | `npm test -- --grep "mcpServer"` AND `grep -c "enableDnsRebindingProtection: true" src/mcp/server.ts` >= 1 | ⬜ pending |
+| 08-04-T2 | 08-04 | 2 | AI-01 | T-08-04 | lifecycle.ts start/stop + port allocation; sequential idempotent | unit | `npm test -- --grep "mcpLifecycle"` | ⬜ pending |
+| 08-05-T1 | 08-05 | 2 | AI-01 | T-08-07, T-08-09 (sibling-destruction) | jsonc-parser modify preserves comments + sibling entries; no token field | unit | `npm test -- --grep "mcpConfig"` | ⬜ pending |
+| 08-05-T2 | 08-05 | 2 | AI-01 | T-08-CONSENT-bypass | First-run prompt mirrors Phase 7 T-07-10; Global setting persists | unit | `npm test -- --grep "mcpConsent"` | ⬜ pending |
+| 08-06-T1 | 08-06 | 3 | AI-02 | T-08-03 (DoS — result caps) | 4 tools (branch/sync/activity/chat) registered with readOnlyHint + result-size caps | unit + integration | `npm test -- --grep "mcpSimpleReaderTools"` | ⬜ pending |
+| 08-07-T1 | 08-07 | 3 | AI-03 | T-08-03, T-08-10 (path-traversal) | queryDeps + listDeps tools + versioncon-state:// resource; <100ms p95 perf | unit + integration + perf | `npm test -- --grep "mcpDependencyReader"` | ⬜ pending |
+| 08-08-T1 | 08-08 | 4 | AI-04 | T-08-03 | adviseSync composite returns state + predicted_conflicts with 5-tier confidence | unit + heuristic | `npm test -- --grep "mcpAdviseSync"` | ⬜ pending |
+| 08-09-T1 | 08-09 | 5 | AI-01, AI-02, AI-03, AI-04 | All T-08-* | extension.ts activate/deactivate wires startMcpLifecycle; index.ts barrel export | integration | `npm test -- --grep "mcpActivation"` | ⬜ pending |
+| 08-09-T2 | 08-09 | 5 | AI-01, AI-03 | — | 4 E2E test files prove SC-1..SC-4; final N-08-01..09 grep sweep | E2E + grep sweep | `npm test` (full suite >= 1141 passing) AND all N-08-XX gates green | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -113,11 +127,22 @@ created: 2026-05-21
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references (sdk pkg install, jsonc-parser, settings)
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 20s
-- [ ] `nyquist_compliant: true` set in frontmatter once planner finishes
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references (sdk pkg install, jsonc-parser, settings)
+- [x] No watch-mode flags (all commands are one-shot `npm test -- --grep "..."` or `npm test`)
+- [x] Feedback latency < 20s (per-task grep: <1s, per-suite mocha: ~16s)
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending (planner sign-off)
+**Approval:** approved 2026-05-21 (orchestrator-signed after plan-checker BLOCKER 4 resolution)
+
+## E2E Test File Naming — Aligned with Plans (WARNING 6 resolution)
+
+VALIDATION.md SC→test mapping originally referenced canonical names; the actual test files produced by 08-09 use slightly different names. Authoritative table:
+
+| SC | Plan that produces | Actual test file name |
+|---|---|---|
+| SC-1 | 08-09 Task 2 | `src/test/suite/mcpActivation.test.ts` (covers activation + tool surface) |
+| SC-2 | 08-07 Task 1 + 08-09 Task 2 | `src/test/suite/mcpDependencyReader.test.ts` |
+| SC-3 | 08-03 Task 1 + 08-09 Task 2 | `src/test/suite/mcpRegistry.test.ts` (Layer-2 gate) + `src/test/suite/mcpReadOnlyEnforcement.test.ts` (E2E) |
+| SC-4 | 08-08 Task 1 + 08-09 Task 2 | `src/test/suite/mcpAdviseSync.test.ts` |

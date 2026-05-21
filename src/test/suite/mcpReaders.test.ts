@@ -146,3 +146,206 @@ suite('Phase 8 — MCP readers + adapters', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 2 — per-adapter behavior tests.
+//
+// Lightweight stubs of the underlying services (BranchManager / SyncTracker /
+// PushHistory / ChatLog / SessionHost / AstFactory) — deeper integration
+// coverage lands in 08-09 wire-up tests. Here we exercise the adapter shape:
+//   - pass-through of values
+//   - edge cases (negative limit, missing data)
+//   - T-08-02 defensive-copy semantics for PresenceReaderImpl
+//   - DependencyReaderImpl ad-hoc fallback for symbol/missing-file inputs.
+// ---------------------------------------------------------------------------
+import { BranchReaderImpl } from '../../mcp/adapters/BranchReaderImpl.js';
+import { SyncReaderImpl } from '../../mcp/adapters/SyncReaderImpl.js';
+import { ActivityReaderImpl } from '../../mcp/adapters/ActivityReaderImpl.js';
+import { ChatReaderImpl } from '../../mcp/adapters/ChatReaderImpl.js';
+import { PresenceReaderImpl } from '../../mcp/adapters/PresenceReaderImpl.js';
+import { DependencyReaderImpl } from '../../mcp/adapters/DependencyReaderImpl.js';
+
+// --- Stubs for the underlying services (only the methods the adapters call) ---
+function stubBranchManager(
+  branch: string,
+  branches: Array<{ name: string }> = [],
+): import('../../filesystem/BranchManager.js').BranchManager {
+  return {
+    getActiveBranch: async () => branch,
+    listBranches: () => branches,
+  } as unknown as import('../../filesystem/BranchManager.js').BranchManager;
+}
+
+function stubSyncTracker(
+  dirty: string[],
+  lastPushId: string | null,
+): import('../../filesystem/SyncTracker.js').SyncTracker {
+  return {
+    getOutOfSyncPaths: () => dirty,
+    getLatestPushId: () => lastPushId,
+  } as unknown as import('../../filesystem/SyncTracker.js').SyncTracker;
+}
+
+function stubPushHistory(
+  records: Array<{ id: string }>,
+): import('../../filesystem/PushHistory.js').PushHistory {
+  return {
+    getRecords: () => records,
+    getLatestRecord: () => records[0],
+  } as unknown as import('../../filesystem/PushHistory.js').PushHistory;
+}
+
+function stubChatLog(
+  records: Array<{ id: string }>,
+): import('../../filesystem/ChatLog.js').ChatLog {
+  return {
+    // Mirror ChatLog.getRecent(n) (returns the LAST n records).
+    getRecent: (n: number) => records.slice(-n),
+    getRecords: () => records,
+  } as unknown as import('../../filesystem/ChatLog.js').ChatLog;
+}
+
+function stubSessionHost(
+  presence: Array<{ memberId: string }>,
+  tracking: Map<string, string[]>,
+): import('../../host/SessionHost.js').SessionHost {
+  return {
+    getPresenceSnapshot: () => presence,
+    getMemberTracking: () => tracking,
+    getMemberNames: () => new Map(),
+  } as unknown as import('../../host/SessionHost.js').SessionHost;
+}
+
+suite('Phase 8 — BranchReaderImpl', () => {
+  test('getActiveBranch returns the wrapped value', async () => {
+    const r = new BranchReaderImpl(stubBranchManager('main'));
+    assert.strictEqual(await r.getActiveBranch(), 'main');
+  });
+
+  test('listBranches returns the wrapped array (length matches)', () => {
+    const r = new BranchReaderImpl(
+      stubBranchManager('main', [{ name: 'main' }, { name: 'feat-x' }]),
+    );
+    assert.strictEqual(r.listBranches().length, 2);
+  });
+});
+
+suite('Phase 8 — SyncReaderImpl', () => {
+  test('getOutOfSyncPaths returns the wrapped array', () => {
+    const r = new SyncReaderImpl(stubSyncTracker(['a.ts', 'b.ts'], null));
+    assert.deepStrictEqual([...r.getOutOfSyncPaths()], ['a.ts', 'b.ts']);
+  });
+
+  test('getLatestPushId returns the wrapped value', () => {
+    const r = new SyncReaderImpl(stubSyncTracker([], 'push-xyz'));
+    assert.strictEqual(r.getLatestPushId(), 'push-xyz');
+  });
+
+  test('getLatestPushId returns null when no push observed', () => {
+    const r = new SyncReaderImpl(stubSyncTracker([], null));
+    assert.strictEqual(r.getLatestPushId(), null);
+  });
+});
+
+suite('Phase 8 — ActivityReaderImpl', () => {
+  test('getRecentPushes(3) returns up to 3 records newest-first', () => {
+    const r = new ActivityReaderImpl(
+      stubPushHistory([{ id: '1' }, { id: '2' }, { id: '3' }, { id: '4' }]),
+    );
+    const got = r.getRecentPushes(3);
+    assert.strictEqual(got.length, 3);
+    assert.strictEqual(got[0].id, '1');
+  });
+
+  test('getRecentPushes(0) returns []', () => {
+    const r = new ActivityReaderImpl(stubPushHistory([{ id: '1' }]));
+    assert.deepStrictEqual([...r.getRecentPushes(0)], []);
+  });
+
+  test('getRecentPushes(-5) treats as 0 (no throw)', () => {
+    const r = new ActivityReaderImpl(stubPushHistory([{ id: '1' }]));
+    assert.deepStrictEqual([...r.getRecentPushes(-5)], []);
+  });
+});
+
+suite('Phase 8 — ChatReaderImpl', () => {
+  test('getRecent(2) returns up to 2 records from ChatLog', () => {
+    const r = new ChatReaderImpl(
+      stubChatLog([{ id: 'a' }, { id: 'b' }, { id: 'c' }]),
+    );
+    const got = r.getRecent(2);
+    assert.strictEqual(got.length, 2);
+    // ChatLog.getRecent(2) returns slice(-2) -> [{id:'b'}, {id:'c'}]
+    assert.strictEqual(got[0].id, 'b');
+  });
+
+  test('getRecent(0) returns [] (guards against ChatLog.getRecent(0) returning all)', () => {
+    const r = new ChatReaderImpl(stubChatLog([{ id: 'a' }, { id: 'b' }]));
+    assert.deepStrictEqual([...r.getRecent(0)], []);
+  });
+});
+
+suite('Phase 8 — PresenceReaderImpl (T-08-02 defensive copy)', () => {
+  test('getPresenceSnapshot returns a NEW array (mutation does not leak back)', () => {
+    const live: Array<{ memberId: string }> = [{ memberId: 'm1' }];
+    const r = new PresenceReaderImpl(stubSessionHost(live, new Map()));
+    const snap = [...r.getPresenceSnapshot()] as Array<{ memberId: string }>;
+    snap.push({ memberId: 'mutated' });
+    assert.strictEqual(
+      live.length,
+      1,
+      'mutation must NOT leak into the host array',
+    );
+  });
+
+  test('getMemberTracking returns a NEW Map with NEW arrays per entry', () => {
+    const liveTracking = new Map([['m1', ['a.ts']]]);
+    const r = new PresenceReaderImpl(stubSessionHost([], liveTracking));
+    const tracking = r.getMemberTracking();
+    const arr = tracking.get('m1') as readonly string[] | undefined;
+    if (arr) {
+      // Force a mutation on the returned array. The adapter contract says
+      // this MUST NOT leak — its returned value is a fresh copy.
+      (arr as string[]).push('mutated.ts');
+    }
+    assert.deepStrictEqual(
+      liveTracking.get('m1'),
+      ['a.ts'],
+      'mutation must NOT leak into the host map values',
+    );
+  });
+
+  test('getMemberTracking handles empty Map', () => {
+    const r = new PresenceReaderImpl(stubSessionHost([], new Map()));
+    const tracking = r.getMemberTracking();
+    assert.strictEqual(tracking.size, 0);
+  });
+});
+
+suite('Phase 8 — DependencyReaderImpl (ad-hoc; defer standing index to 8.1)', () => {
+  test('forwardDeps on a non-path string returns { symbols:[], files:[] }', async () => {
+    const r = new DependencyReaderImpl({ workspaceRoot: '/tmp' });
+    const got = await r.forwardDeps('not-a-path', 1);
+    assert.deepStrictEqual(got, { symbols: [], files: [] });
+  });
+
+  test('reverseDeps always returns { symbols:[], files:[] } in v1 (deferred to 8.1)', async () => {
+    const r = new DependencyReaderImpl({ workspaceRoot: '/tmp' });
+    const got = await r.reverseDeps('parseToken', 1);
+    assert.deepStrictEqual(got, { symbols: [], files: [] });
+  });
+
+  test('forwardDeps on a missing file returns { symbols:[], files:[] } (no throw)', async () => {
+    const r = new DependencyReaderImpl({ workspaceRoot: '/tmp/__nonexistent__' });
+    const got = await r.forwardDeps('src/zzz-no-such-file.ts', 1);
+    assert.deepStrictEqual(got, { symbols: [], files: [] });
+  });
+
+  test('forwardDeps on path traversal attempt is rejected', async () => {
+    const r = new DependencyReaderImpl({ workspaceRoot: '/tmp/workspace' });
+    // Even if /etc/passwd existed, the traversal must be rejected before
+    // the read attempt. The path-confinement check returns the empty result.
+    const got = await r.forwardDeps('../../../etc/passwd.ts', 1);
+    assert.deepStrictEqual(got, { symbols: [], files: [] });
+  });
+});

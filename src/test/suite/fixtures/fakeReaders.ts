@@ -1,10 +1,6 @@
 // src/test/suite/fixtures/fakeReaders.ts
-// Phase 8 Wave 0 — shared test fixtures. FakeReaders implements all 6
-// Reader interfaces from src/mcp/readers.ts (created in plan 08-02). For
-// Wave 0 we declare the shape inline below as `Fake<X>Reader` interfaces;
-// 08-02 will replace these inline interfaces with imports from
-// '../../../mcp/readers.js' and the class will `implements BranchReader,
-// SyncReader, ...` instead of the Fake* prefixed equivalents.
+// Phase 8 — shared test fixtures. FakeReaders implements all 6 canonical
+// Reader interfaces from src/mcp/readers.ts (landed in plan 08-02).
 //
 // Pattern: PATTERNS.md "fakeReaders.ts" section — mirrors StubCloudTransport
 // from sessionClientCloudReconnect.test.ts:32-86 (public test-inspection
@@ -13,35 +9,24 @@
 // Type imports are PURELY `import type` so the fixture file has zero
 // runtime import surface beyond Node's built-ins. This mirrors the
 // `src/network/Transport.ts` discipline (PATTERNS.md `readers.ts` section).
+//
+// 08-02 migration: the inline `Fake<X>Reader` interfaces shipped by 08-01
+// have been REMOVED. The FakeReaders class now `implements` the canonical
+// BranchReader / SyncReader / ActivityReader / ChatReader / DependencyReader
+// / PresenceReader interfaces directly. The structural shape is byte-
+// identical between the prior Fake* and the canonical interfaces so the
+// 9 Wave-0 fixture-sanity tests in mcpFixtures.test.ts pass without change.
 import type { PushRecord } from '../../../types/push.js';
 import type { ChatRecord, PresenceInfo } from '../../../types/chat.js';
 import type { BranchInfo } from '../../../types/branch.js';
-
-// --- Wave 0 inline Reader shapes (replaced by 08-02's src/mcp/readers.ts) ---
-// Method names must NOT match the writer denylist `set*|push*|update*|delete*|commit*`
-// (N-08-03 gate). Allowed verbs: get*, list*, query*, forward*, reverse*.
-export interface FakeBranchReader {
-  getActiveBranch(): Promise<string>;
-  listBranches(): readonly BranchInfo[];
-}
-export interface FakeSyncReader {
-  getOutOfSyncPaths(): readonly string[];
-  getLatestPushId(): string | null;
-}
-export interface FakeActivityReader {
-  getRecentPushes(limit: number): readonly PushRecord[];
-}
-export interface FakeChatReader {
-  getRecent(limit: number): readonly ChatRecord[];
-}
-export interface FakeDependencyReader {
-  forwardDeps(target: string, hops: 1 | 2): Promise<{ symbols: string[]; files: string[] }>;
-  reverseDeps(target: string, hops: 1 | 2): Promise<{ symbols: string[]; files: string[] }>;
-}
-export interface FakePresenceReader {
-  getPresenceSnapshot(): readonly PresenceInfo[];
-  getMemberTracking(): ReadonlyMap<string, readonly string[]>;
-}
+import type {
+  BranchReader,
+  SyncReader,
+  ActivityReader,
+  ChatReader,
+  DependencyReader,
+  PresenceReader,
+} from '../../../mcp/readers.js';
 
 // --- Deterministic canned data per RESEARCH §H.3 ---
 
@@ -113,23 +98,13 @@ const CANNED_BRANCHES: BranchInfo[] = [
  * methods are non-mutating (read-only) so all mutation goes through the
  * _set* helpers, mirroring StubCloudTransport's _injectMessage pattern.
  *
- * Deviation note (08-02): the `implements Fake*` clauses below are
- * transitional. Plan 08-02 ships src/mcp/readers.ts with the canonical
- * Reader interfaces (BranchReader, SyncReader, etc.) and updates this
- * class to `implements BranchReader, SyncReader, ActivityReader,
- * ChatReader, DependencyReader, PresenceReader`. The structural shape is
- * identical between the Fake* and final interfaces by construction (08-02
- * is a no-op rename from this fixture's perspective).
+ * 08-02 status: implements the CANONICAL Reader interfaces (BranchReader,
+ * SyncReader, ActivityReader, ChatReader, DependencyReader, PresenceReader)
+ * imported from src/mcp/readers.ts. The inline Fake* interface shapes from
+ * 08-01 were removed in 08-02 — the structural shape is byte-identical so
+ * the migration is mechanical.
  */
-export class FakeReaders
-  implements
-    FakeBranchReader,
-    FakeSyncReader,
-    FakeActivityReader,
-    FakeChatReader,
-    FakeDependencyReader,
-    FakePresenceReader
-{
+export class FakeReaders implements BranchReader, SyncReader, ActivityReader, ChatReader, DependencyReader, PresenceReader {
   // Public test-inspection state (mutable by design — see class JSDoc).
   public branch = 'main';
   public ahead = 0;

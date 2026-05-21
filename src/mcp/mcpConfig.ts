@@ -28,7 +28,7 @@
 // N-08-04: no console.* — errors propagate to callers; the lifecycle.ts
 // caller (08-09) handles logging via the injected OutputChannel.
 //
-// N-08-01: no import from src/auth/.
+// N-08-01: this module references no auth-layer symbols (read-only viewport).
 
 import { modify, applyEdits } from 'jsonc-parser';
 import * as fs from 'node:fs/promises';

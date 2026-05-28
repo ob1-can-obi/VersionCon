@@ -222,7 +222,7 @@ suite('Phase 8 — mcpConfigWriter', () => {
     );
   });
 
-  test('Test 8: both config paths (.vscode/mcp.json and .mcp.json) work', async () => {
+  test('Test 8: both config paths use per-consumer schemas (.vscode/mcp.json → servers, .mcp.json → mcpServers)', async () => {
     await upsertMcpConfig(
       tmpDir,
       '.vscode/mcp.json',
@@ -245,10 +245,29 @@ suite('Phase 8 — mcpConfigWriter', () => {
       true,
       '.mcp.json should exist',
     );
-    // Both should have the same shape.
-    const a = JSON.parse(await fs.readFile(path.join(tmpDir, '.vscode', 'mcp.json'), 'utf-8'));
-    const b = JSON.parse(await fs.readFile(path.join(tmpDir, '.mcp.json'), 'utf-8'));
-    assert.deepStrictEqual(a, b, 'both config paths should carry identical entries');
+    // The two files intentionally use DIFFERENT top-level keys per consumer schema.
+    // .vscode/mcp.json — VS Code Copilot Chat expects 'servers'.
+    // .mcp.json       — Claude Code expects 'mcpServers' (rejects 'servers').
+    const vscodeShape = JSON.parse(
+      await fs.readFile(path.join(tmpDir, '.vscode', 'mcp.json'), 'utf-8'),
+    );
+    const mcpShape = JSON.parse(
+      await fs.readFile(path.join(tmpDir, '.mcp.json'), 'utf-8'),
+    );
+    assert.deepStrictEqual(
+      vscodeShape,
+      {
+        servers: { versioncon: { type: 'http', url: 'http://127.0.0.1:5000/mcp' } },
+      },
+      '.vscode/mcp.json must use the VS Code Copilot Chat schema (top-level "servers")',
+    );
+    assert.deepStrictEqual(
+      mcpShape,
+      {
+        mcpServers: { versioncon: { type: 'http', url: 'http://127.0.0.1:5000/mcp' } },
+      },
+      '.mcp.json must use the Claude Code schema (top-level "mcpServers")',
+    );
   });
 });
 

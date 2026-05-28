@@ -20,9 +20,13 @@
 //   - Localhost trust boundary means HTTP entries need ONLY { type, url }
 //
 // SECURITY contract (T-08-09 — by construction):
-//   - jsonc-parser.modify targets the EXACT JSON path ['servers', serverName]
-//   - Sibling entries under 'servers' (postgres, github, ...) are byte-untouched
-//   - Top-level keys other than 'servers' are byte-untouched
+//   - jsonc-parser.modify targets the EXACT JSON path [topLevelKey, serverName]
+//     where topLevelKey is 'mcpServers' for .mcp.json (Claude Code schema) or
+//     'servers' for .vscode/mcp.json (VS Code Copilot Chat schema). The key
+//     is derived deterministically from path.basename(configRelPath) — no
+//     other top-level key can ever be written.
+//   - Sibling entries under the top-level key (postgres, github, ...) are byte-untouched
+//   - Other top-level keys are byte-untouched
 //   - User JSONC comments are preserved (jsonc-parser contract)
 //
 // N-08-04: no console.* — errors propagate to callers; the lifecycle.ts
@@ -77,9 +81,16 @@ export async function upsertMcpConfig(
   // Empty file or whitespace-only → treat as empty doc.
   if (raw.trim().length === 0) raw = '{}';
 
+  // Derive the per-consumer top-level key from the file basename.
+  // .mcp.json        → Claude Code schema (expects 'mcpServers')
+  // .vscode/mcp.json → VS Code Copilot Chat schema (expects 'servers')
+  // Anything else falls back to 'servers' (legacy default — the two
+  // documented callers in lifecycle.ts only ever pass these two paths).
+  const topLevelKey = path.basename(configRelPath) === '.mcp.json' ? 'mcpServers' : 'servers';
+
   const edits = modify(
     raw,
-    ['servers', serverName],
+    [topLevelKey, serverName],
     { type: 'http', url },
     {
       formattingOptions: { tabSize: 2, insertSpaces: true },
@@ -118,8 +129,12 @@ export async function removeMcpConfig(
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw e;
   }
+  // Same per-consumer derivation as upsertMcpConfig — the DELETE edit must
+  // target the same path the insert wrote, otherwise removeMcpConfig becomes
+  // a no-op on .mcp.json (would leave a stale 'mcpServers.versioncon' entry).
+  const topLevelKey = path.basename(configRelPath) === '.mcp.json' ? 'mcpServers' : 'servers';
   // modify with undefined value emits a DELETE edit on the path.
-  const edits = modify(raw, ['servers', serverName], undefined, {});
+  const edits = modify(raw, [topLevelKey, serverName], undefined, {});
   const next = applyEdits(raw, edits);
   await fs.writeFile(fullPath, next, 'utf-8');
 }

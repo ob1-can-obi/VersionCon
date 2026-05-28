@@ -182,11 +182,14 @@ curl https://$APP_NAME.fly.dev/healthz
    > *"VersionCon wants to register an MCP server with this workspace so AI agents (Claude Code, Copilot, Cursor) can read your collab state. The server is local-only and read-only. Allow?"*
    with buttons `[Allow]` and `[Decline]`
 4. Click **Allow**
-5. Verify both files exist:
+5. Verify both files exist with their per-consumer schemas:
    ```bash
-   cat .vscode/mcp.json   # should show { "servers": { "versioncon": { "type": "http", "url": "http://127.0.0.1:NNNNN/mcp" } } }
-   cat .mcp.json          # should show the same shape (different file, same content)
+   # .vscode/mcp.json uses the VS Code Copilot Chat schema (top-level "servers"):
+   cat .vscode/mcp.json   # { "servers": { "versioncon": { "type": "http", "url": "http://127.0.0.1:NNNNN/mcp" } } }
+   # .mcp.json uses the Claude Code schema (top-level "mcpServers" — note the different key):
+   cat .mcp.json          # { "mcpServers": { "versioncon": { "type": "http", "url": "http://127.0.0.1:NNNNN/mcp" } } }
    ```
+   The two files intentionally use **different top-level keys** because their consumers (VS Code Copilot Chat vs Claude Code) require different schemas. VersionCon writes the correct shape for each.
 6. Verify the port is reachable:
    ```bash
    # Extract the port from .vscode/mcp.json, then:

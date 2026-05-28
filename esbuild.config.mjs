@@ -160,6 +160,23 @@ async function copyTreeSitterGrammars() {
   );
 }
 
+// Bug fix (2026-05-28, debug session jsonc-parser-bundle-fail):
+// Force esbuild to prefer the "module" (ESM) entry over "main" (UMD/CJS) when
+// resolving npm packages for the extension bundle. esbuild's `platform: 'node'`
+// default is `mainFields: ['main', 'module']`, which selects packages' UMD
+// build first. jsonc-parser's UMD entry (`lib/umd/main.js`) wraps its body in
+// an IIFE that passes `require` as a function parameter, hiding the inner
+// `require("./impl/format")` (etc.) from esbuild's static module resolver.
+// esbuild then leaves those calls as runtime literals in dist/extension.js;
+// when VS Code's extension host loads the bundle, it resolves "./impl/format"
+// relative to dist/extension.js → ENOENT → "Cannot find module './impl/format'".
+// Switching to `['module', 'main']` makes esbuild pick `lib/esm/main.js`
+// whose static `import` statements ARE traceable, so esbuild inlines the
+// implementation bodies into the bundle and the runtime require disappears.
+// This affects ONLY the extension bundle — chat/review webviews already use
+// platform: 'browser' (default mainFields = ['browser', 'module', 'main']),
+// and the AST worker is left alone because its emscripten/import.meta.url
+// shim is sensitive to resolution order.
 const extCtx = await esbuild.context({
   entryPoints: ['src/extension.ts'],
   bundle: true,
@@ -168,6 +185,7 @@ const extCtx = await esbuild.context({
   format: 'cjs',
   platform: 'node',
   target: 'node18',
+  mainFields: ['module', 'main'],
   sourcemap: true,
   minify: !isWatch,
 });

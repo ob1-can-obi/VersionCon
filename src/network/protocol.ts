@@ -80,6 +80,16 @@ export interface AuthRequest extends BaseMessage {
    * clients omit the field and always get role:'member'.
    */
   hostAuthSecret?: string;
+  /**
+   * Stable per-join client identity. Generated ONCE by the joiner and resent
+   * unchanged across ReconnectManager reconnects so the host can dedupe a
+   * reconnecting client to a single member entry. OMITTED by legacy clients
+   * → host falls back to today's random-UUID-per-auth behavior. Optional +
+   * conditional-spread keeps LAN auth-request frames byte-identical when absent.
+   *
+   * Plan 260530-p3g (Bug 2 fix).
+   */
+  clientId?: string;
 }
 
 export interface KickMemberRequest extends BaseMessage {

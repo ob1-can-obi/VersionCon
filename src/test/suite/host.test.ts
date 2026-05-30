@@ -5,14 +5,17 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import { WebSocket } from 'ws';
 import { SessionHost } from '../../host/SessionHost.js';
+import { SessionClient } from '../../client/SessionClient.js';
 import { ChatLog } from '../../filesystem/ChatLog.js';
 import type { ChatRecord, PresenceInfo } from '../../types/chat.js';
 import type {
   ProtocolMessage,
+  AuthRequest,
   ChatMessage,
   ChatHistory,
   PresenceUpdate,
 } from '../../network/protocol.js';
+import type { ClientTransport } from '../../network/Transport.js';
 import type { HostIdentity, SessionConfig } from '../../types/session.js';
 import type { PushRecord, PushFileEntry } from '../../types/push.js';
 import type { BranchInfo } from '../../types/branch.js';
@@ -2833,5 +2836,115 @@ suite('Presence snapshot on join', () => {
     await new Promise<void>((resolve) => {
       ws.once('close', () => resolve()); ws.close();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 2 wire contract — Task 1 (Plan 260530-p3g)
+//
+// Tests:
+//   E — auth-request with NO clientId is byte-identical to today (no
+//       clientId key appears in the serialized object)
+//   F — SessionClient generates a stable clientId once and sends it on
+//       every auth-request (stable across two onOpen firings = reconnects)
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal stub ClientTransport for SessionClient unit tests.
+ * Captures every sent frame. Allows re-firing onOpen to simulate a reconnect.
+ */
+class StubLanTransportForClientId implements ClientTransport {
+  public readonly sentFrames: ProtocolMessage[] = [];
+  private openHandlers: Array<() => void> = [];
+  private messageHandlers: Array<(raw: Buffer | ArrayBuffer | Buffer[]) => void> = [];
+  private closeHandlers: Array<(code: number, reason: Buffer) => void> = [];
+  private errorHandlers: Array<() => void> = [];
+  private pongHandlers: Array<() => void> = [];
+  private _open = false;
+
+  async connect(): Promise<boolean> {
+    this._open = true;
+    for (const h of this.openHandlers) { try { h(); } catch { /* ignore */ } }
+    return true;
+  }
+  onOpen(h: () => void): void { this.openHandlers.push(h); }
+  onMessage(h: (raw: Buffer | ArrayBuffer | Buffer[]) => void): void { this.messageHandlers.push(h); }
+  onClose(h: (code: number, reason: Buffer) => void): void { this.closeHandlers.push(h); }
+  onError(h: () => void): void { this.errorHandlers.push(h); }
+  onPong(h: () => void): void { this.pongHandlers.push(h); }
+  send(msg: ProtocolMessage): boolean { this.sentFrames.push(msg); return this._open; }
+  ping(): void { /* noop */ }
+  isOpen(): boolean { return this._open; }
+  close(_code?: number, _reason?: string): void { this._open = false; }
+  /** Simulate a reconnect by re-firing all onOpen handlers. */
+  _fireOpen(): void {
+    for (const h of this.openHandlers) { try { h(); } catch { /* ignore */ } }
+  }
+  /** Inject an inbound message. */
+  _injectMessage(payload: ProtocolMessage): void {
+    const bytes = Buffer.from(JSON.stringify(payload), 'utf-8');
+    for (const h of this.messageHandlers) { try { h(bytes); } catch { /* ignore */ } }
+  }
+}
+
+suite('Bug 2 wire contract (Plan 260530-p3g Task 1)', () => {
+  test('Test E: auth-request with NO clientId contains no clientId key in serialized form', () => {
+    // Build a plain AuthRequest without clientId (simulating a legacy client
+    // or any code path that omits the field). Verify JSON has no clientId key.
+    const frame: AuthRequest = {
+      type: 'auth-request',
+      inviteCode: 'ABCDEFGH',
+      displayName: 'Legacy',
+      timestamp: Date.now(),
+    };
+    const serialized = JSON.stringify(frame);
+    const parsed = JSON.parse(serialized) as Record<string, unknown>;
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(parsed, 'clientId'),
+      'auth-request without clientId must NOT serialize a clientId key — LAN byte-shape preserved',
+    );
+  });
+
+  test('Test F: SessionClient generates a stable clientId and sends it on every auth-request (reconnect-stable)', async () => {
+    const transport = new StubLanTransportForClientId();
+    const client = new SessionClient('127.0.0.1', 0, 'ABCDEFGH', 'Alice', transport);
+
+    // First connect — installs handlers and fires onOpen once.
+    void client.connect();
+    // Allow the async connect() and onOpen to run.
+    await new Promise((r) => setImmediate(r));
+
+    // Simulate a reconnect by re-firing onOpen (mirrors ReconnectManager behavior).
+    transport._fireOpen();
+    await new Promise((r) => setImmediate(r));
+
+    // We should have at least 2 auth-request frames (one per onOpen).
+    const authFrames = transport.sentFrames.filter(
+      (f) => f.type === 'auth-request',
+    ) as AuthRequest[];
+    assert.ok(
+      authFrames.length >= 2,
+      `expected at least 2 auth-request frames, got ${authFrames.length}`,
+    );
+
+    // Every auth-request must carry a non-empty clientId.
+    for (const f of authFrames) {
+      assert.ok(
+        typeof f.clientId === 'string' && f.clientId.length > 0,
+        `auth-request must carry a non-empty clientId string, got: ${JSON.stringify(f.clientId)}`,
+      );
+    }
+
+    // All frames carry THE SAME clientId (stable across reconnects).
+    const firstId = authFrames[0].clientId;
+    for (let i = 1; i < authFrames.length; i++) {
+      assert.strictEqual(
+        authFrames[i].clientId,
+        firstId,
+        `clientId must be stable across reconnects: frame[0]=${firstId}, frame[${i}]=${authFrames[i].clientId}`,
+      );
+    }
+
+    client.dispose();
   });
 });

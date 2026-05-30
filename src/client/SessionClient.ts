@@ -1,3 +1,4 @@
+import * as crypto from 'node:crypto';
 import { ConnectionStateMachine } from './ConnectionState.js';
 import { HeartbeatManager, ReconnectManager } from '../network/heartbeat.js';
 import {
@@ -90,6 +91,15 @@ export class SessionClient implements SessionEventEmitter {
   private readonly port: number;
   private readonly inviteCode: string;
   private readonly displayName: string;
+  /**
+   * Plan 260530-p3g (Bug 2 fix): stable per-join client identity. Generated
+   * ONCE at construction via crypto.randomUUID() and readonly so it CANNOT
+   * change across reconnects. Sent in every auth-request via conditional
+   * spread so the host can dedupe a reconnecting client to a single member
+   * entry. The readonly field is stable across all ReconnectManager reconnects
+   * because onOpen re-fires the handler that reads this same value.
+   */
+  private readonly clientId: string = crypto.randomUUID();
 
   /** Typed event listeners. */
   private readonly listeners: Map<
@@ -211,12 +221,17 @@ export class SessionClient implements SessionEventEmitter {
         this.transportHandlersInstalled = true;
 
         this.transport.onOpen(() => {
-          // Send auth-request as the first message
+          // Send auth-request as the first message.
+          // Plan 260530-p3g (Bug 2 fix): conditional-spread clientId so the
+          // key is present when defined (always, for this client) and absent
+          // for hypothetical legacy callers. The readonly field is stable
+          // across all reconnects — onOpen re-fires and reads the same value.
           this.transport.send({
             type: 'auth-request',
             inviteCode: this.inviteCode,
             displayName: this.displayName,
             timestamp: createTimestamp(),
+            ...(this.clientId ? { clientId: this.clientId } : {}),
           });
         });
 

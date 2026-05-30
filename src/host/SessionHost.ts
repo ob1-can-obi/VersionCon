@@ -256,6 +256,20 @@ export class SessionHost implements SessionEventEmitter {
    */
   private presenceMap = new PresenceMap();
 
+  /**
+   * Plan 260530-p3g (Bug 2 fix): clientId → memberId map for deduplication.
+   * When a joiner reconnects with the same stable clientId, the host reuses
+   * the original memberId and rebinds the ws, instead of creating a new entry.
+   * NOT populated for legacy clients (no clientId in auth-request) or the
+   * host-loopback (role==='host' bypasses the dedupe block entirely).
+   */
+  private clientIdToMemberId = new Map<string, string>();
+  /**
+   * Plan 260530-p3g (Bug 2 fix): reverse map memberId → clientId for O(1)
+   * cleanup in removeMember. Avoids O(N) scan of clientIdToMemberId.
+   */
+  private memberIdToClientId = new Map<string, string>();
+
   /** Typed event listeners. */
   private readonly listeners: Map<
     SessionEvent,
@@ -772,7 +786,15 @@ export class SessionHost implements SessionEventEmitter {
     this.transport.onClose(ws, () => {
       clearTimeout(authTimeout);
       if (memberId) {
-        this.removeMember(memberId, 'Connection closed');
+        // Plan 260530-p3g (Bug 2 fix): ws-identity guard. A superseded
+        // socket's late close MUST NOT removeMember the member that was
+        // rebound to a newer ws. Only remove if the member's CURRENT ws is
+        // still THIS ws. If the entry was already rebound to a new ws, the
+        // old ws's close is a no-op (the member stays alive on the new ws).
+        const cm = this.members.get(memberId);
+        if (cm && cm.ws === ws) {
+          this.removeMember(memberId, 'Connection closed');
+        }
       }
     });
 
@@ -906,9 +928,12 @@ export class SessionHost implements SessionEventEmitter {
       return;
     }
 
-    // Assign server-generated member ID (T-01-07)
+    // Assign server-generated member ID (T-01-07) — DEFAULT for new-member path.
     const newMemberId = crypto.randomUUID();
     setMemberId(newMemberId);
+
+    // Plan 260530-p3g (Bug 2 fix): read the inbound clientId once.
+    const incomingClientId = msg.clientId;
 
     // Phase 4.1 (Plan 04.1-02 — Defect B closure): role:'host' is granted ONLY
     // to a connection that proves possession of the pre-allocated
@@ -916,6 +941,12 @@ export class SessionHost implements SessionEventEmitter {
     // send a guess); they always get role:'member' regardless of timing.
     // The loopback host client (plan 04.1-03 wires this in extension.ts)
     // sends the secret in its auth-request and is the only path to host role.
+    //
+    // CRITICAL (Plan 260530-p3g): role MUST be determined BEFORE the dedupe
+    // block below. The host-loopback now carries a stable clientId (Task 1),
+    // so the dedupe is GATED on `role !== 'host'` to prevent a host reconnect
+    // (VS Code reload) from being deduped instead of re-running the role-check
+    // + host-presence seed.
     let role: 'host' | 'member' = 'member';
     const claimedSecret = msg.hostAuthSecret;
     if (
@@ -937,6 +968,107 @@ export class SessionHost implements SessionEventEmitter {
       }
     }
 
+    // Plan 260530-p3g (Bug 2 fix): clientId dedupe for reconnecting members.
+    //
+    // GATED on `role !== 'host'`: the host-loopback carries a stable clientId
+    // (Task 1), but dedupe MUST NOT run for role==='host' or a host VS Code
+    // reload would early-return here and SKIP the role-check + presence seed.
+    //
+    // GATED on non-empty incomingClientId: legacy clients omit the field and
+    // take the exact same new-member path as today (no regression).
+    if (
+      role !== 'host' &&
+      typeof incomingClientId === 'string' &&
+      incomingClientId.length > 0
+    ) {
+      const existingMemberId = this.clientIdToMemberId.get(incomingClientId);
+      if (existingMemberId && this.members.has(existingMemberId)) {
+        // ----------------------------------------------------------------
+        // REBIND path: reuse the existing memberId, rebind ws.
+        // ----------------------------------------------------------------
+        const reuseId = existingMemberId;
+        setMemberId(reuseId);
+
+        const prior = this.members.get(reuseId)!;
+
+        // Rebind the members entry to the NEW ws FIRST (before closing the
+        // old socket) so the old socket's late onClose is a no-op via the
+        // ws-identity guard in handleConnection.
+        this.members.set(reuseId, { ws, member: prior.member, isAlive: true });
+
+        // Close the OLD ws if it's a different socket and still open.
+        if (prior.ws !== ws) {
+          try {
+            this.transport.closeConnection(prior.ws, 1000, 'superseded-by-reconnect');
+          } catch { /* defensive: closeConnection is null-safe across impls */ }
+        }
+
+        // Keep BOTH maps consistent (memberId is unchanged but be explicit).
+        this.clientIdToMemberId.set(incomingClientId, reuseId);
+        this.memberIdToClientId.set(reuseId, incomingClientId);
+
+        // Issue cloud JWT if applicable (member reconnect gets a fresh token).
+        let rebindToken: string | undefined = undefined;
+        if (
+          this.cloudTokenService !== null &&
+          this.cloudSessionId !== null
+        ) {
+          try {
+            rebindToken = await this.cloudTokenService.issue({
+              iss: this.hostMemberId ?? reuseId,
+              sub: reuseId,
+              aud: this.cloudSessionId,
+              role: 'member',
+            });
+          } catch { rebindToken = undefined; }
+        }
+
+        // Send auth-response + state-sync + chat-history + review-state-sync
+        // + presence-snapshot to the rebinding connection so its panels
+        // repopulate. SKIP member-joined broadcast — the member already exists
+        // in every peer's roster.
+        this.transport.send(ws, {
+          type: 'auth-response',
+          accepted: true,
+          memberId: reuseId,
+          sessionInfo: {
+            name: this.config.sessionName,
+            memberCount: this.members.size,
+            hostDisplayName: this.hostDisplayName,
+          },
+          ...(rebindToken !== undefined ? { token: rebindToken } : {}),
+          timestamp: createTimestamp(),
+        });
+        this.transport.send(ws, {
+          type: 'state-sync',
+          sessionName: this.config.sessionName,
+          hostDisplayName: this.hostDisplayName,
+          members: this.getMembersList(),
+          timestamp: createTimestamp(),
+        });
+        if (this.chatLog && this.activeBranch) {
+          void this.sendChatHistoryToMember(reuseId, this.activeBranch);
+        }
+        if (this.reviewStore && this.activeBranch) {
+          void this.sendReviewStateSyncToMember(reuseId, this.activeBranch);
+        }
+        this.sendPresenceSnapshotToMember(ws, reuseId);
+        return;  // dedupe path is self-contained; do NOT fall through
+      } else if (existingMemberId) {
+        // Stale mapping (member already left) — clean BOTH maps, fall through
+        // to the new-member registration path.
+        this.clientIdToMemberId.delete(incomingClientId);
+        const stale = this.memberIdToClientId.get(existingMemberId);
+        if (stale === incomingClientId) {
+          this.memberIdToClientId.delete(existingMemberId);
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // NEW-MEMBER path (host-loopback ALWAYS lands here; members land here on
+    // first join or after stale-mapping fall-through).
+    // -------------------------------------------------------------------------
     const member: Member = {
       id: newMemberId,
       displayName: msg.displayName,
@@ -946,6 +1078,14 @@ export class SessionHost implements SessionEventEmitter {
     };
 
     this.members.set(newMemberId, { ws, member, isAlive: true });
+
+    // Record BOTH clientId maps when incomingClientId is present. This applies
+    // to members AND the host-loopback — the host gets a mapping too, which is
+    // harmless because `role !== 'host'` gates the dedupe above.
+    if (typeof incomingClientId === 'string' && incomingClientId.length > 0) {
+      this.clientIdToMemberId.set(incomingClientId, newMemberId);
+      this.memberIdToClientId.set(newMemberId, incomingClientId);
+    }
 
     // Phase 7 Plan 07-05b — cloud-mode addendum: issue per-joiner JWT.
     //
@@ -2408,6 +2548,14 @@ export class SessionHost implements SessionEventEmitter {
     // Phase 4: clear presence so the departed member disappears from clients'
     // presence panels via the existing member-left broadcast cycle.
     this.presenceMap.removeMember(memberId);
+
+    // Plan 260530-p3g (Bug 2 fix): O(1) reverse-map cleanup via memberIdToClientId.
+    // Avoids an O(N) scan of clientIdToMemberId on every member removal.
+    const cid = this.memberIdToClientId.get(memberId);
+    if (cid !== undefined) {
+      this.clientIdToMemberId.delete(cid);
+      this.memberIdToClientId.delete(memberId);
+    }
 
     // If the host left, clear the host tracking
     if (memberId === this.hostMemberId) {

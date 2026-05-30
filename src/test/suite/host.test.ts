@@ -2948,3 +2948,208 @@ suite('Bug 2 wire contract (Plan 260530-p3g Task 1)', () => {
     client.dispose();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bug 2 host-half — Task 2 (Plan 260530-p3g)
+//
+// Tests:
+//   G — same clientId × 3 → exactly 1 member entry, memberId reused
+//   H — different clientId → 2 distinct member entries
+//   I — no clientId → legacy fresh-UUID behavior (2 legacy auths = 2 members)
+//   J — superseded ws closed, only 1 member-joined broadcast to a peer
+//   K — host-loopback with same clientId is NEVER deduped (role==='host' bypass)
+// ---------------------------------------------------------------------------
+
+/**
+ * Send a raw auth-request frame and wait for the auth-response.
+ * Returns { ws, memberId } on success, throws on timeout or rejection.
+ */
+async function sendAuthRequest(
+  port: number,
+  inviteCode: string,
+  displayName: string,
+  extraFields: Record<string, unknown> = {},
+): Promise<{ ws: WebSocket; memberId: string }> {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  await new Promise<void>((resolve, reject) => {
+    ws.once('open', () => resolve());
+    ws.once('error', reject);
+  });
+  const frame = JSON.stringify({
+    type: 'auth-request',
+    timestamp: Date.now(),
+    inviteCode,
+    displayName,
+    ...extraFields,
+  });
+  ws.send(frame);
+  const authResp = await new Promise<ProtocolMessage>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('auth timeout')), 2000);
+    const handler = (raw: Buffer): void => {
+      const m = JSON.parse(raw.toString()) as ProtocolMessage;
+      if (m.type === 'auth-response') {
+        clearTimeout(timer);
+        ws.off('message', handler);
+        resolve(m);
+      }
+    };
+    ws.on('message', handler);
+  });
+  if (authResp.type !== 'auth-response' || !authResp.accepted || !authResp.memberId) {
+    ws.close();
+    throw new Error('auth rejected');
+  }
+  return { ws, memberId: authResp.memberId };
+}
+
+suite('Bug 2 host-half (Plan 260530-p3g Task 2)', () => {
+  let host: SessionHost;
+  let port: number;
+
+  setup(async () => {
+    const config: SessionConfig = {
+      sessionName: 'DedupeTest',
+      port: 0,
+      networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD,
+      inviteCode: INVITE,
+    };
+    host = new SessionHost(config, makeHostIdentity(HOST_NAME));
+    port = await host.start();
+  });
+
+  teardown(() => {
+    try { host.stop(); } catch { /* best-effort */ }
+  });
+
+  test('Test G: three auth-requests with the same clientId → exactly 1 member, memberId reused', async () => {
+    const cid = 'cid-stable-g';
+    const r1 = await sendAuthRequest(port, INVITE, 'Alice', { clientId: cid });
+    const r2 = await sendAuthRequest(port, INVITE, 'Alice', { clientId: cid });
+    const r3 = await sendAuthRequest(port, INVITE, 'Alice', { clientId: cid });
+
+    // All three responses should yield the same memberId (reused).
+    assert.strictEqual(r2.memberId, r1.memberId, 'second auth reuses first memberId');
+    assert.strictEqual(r3.memberId, r1.memberId, 'third auth reuses first memberId');
+
+    // Host members map should have exactly 1 entry for this client.
+    const members = host.getMembers();
+    const withId = members.filter((m) => m.id === r1.memberId);
+    assert.strictEqual(withId.length, 1, 'exactly one member entry exists for the deduped clientId');
+
+    // Total members must also be exactly 1 (no phantom entries).
+    assert.strictEqual(members.length, 1, 'host.getMembers() has exactly 1 member total');
+
+    r1.ws.close(); r2.ws.close(); r3.ws.close();
+  });
+
+  test('Test H: different clientId → two distinct member entries', async () => {
+    const r1 = await sendAuthRequest(port, INVITE, 'Alice', { clientId: 'cid-h-1' });
+    const r2 = await sendAuthRequest(port, INVITE, 'Bob',   { clientId: 'cid-h-2' });
+
+    assert.notStrictEqual(r1.memberId, r2.memberId, 'different clientIds produce different memberIds');
+    assert.strictEqual(host.getMembers().length, 2, 'host has 2 distinct members');
+
+    r1.ws.close(); r2.ws.close();
+  });
+
+  test('Test I: no clientId → legacy fresh-UUID per auth (two auths = two distinct members)', async () => {
+    // No clientId field — legacy path: each auth mints a new UUID.
+    const r1 = await sendAuthRequest(port, INVITE, 'Alice');
+    const r2 = await sendAuthRequest(port, INVITE, 'Alice');
+
+    assert.notStrictEqual(
+      r1.memberId,
+      r2.memberId,
+      'legacy (no clientId) auth-requests produce distinct memberIds — no accidental dedupe',
+    );
+    assert.strictEqual(host.getMembers().length, 2, 'host has 2 legacy members');
+
+    r1.ws.close(); r2.ws.close();
+  });
+
+  test('Test J: superseded ws is closed and only ONE member-joined broadcast observed by a peer', async () => {
+    // Connect an observer first so they see all member-joined broadcasts.
+    const observer = await connectClient(port, 'Observer');
+    const joinedBroadcasts: ProtocolMessage[] = [];
+    observer.onMessage((m) => { if (m.type === 'member-joined') { joinedBroadcasts.push(m); } });
+
+    const cid = 'cid-j-supersede';
+
+    // First auth with this clientId.
+    const r1 = await sendAuthRequest(port, INVITE, 'Alice', { clientId: cid });
+
+    // Let the host process the first auth fully.
+    await new Promise((r) => setTimeout(r, 100));
+    const joinedAfterFirst = joinedBroadcasts.filter(
+      (m) => m.type === 'member-joined' && (m as { member: { id: string } }).member.id === r1.memberId,
+    ).length;
+    assert.strictEqual(joinedAfterFirst, 1, 'exactly one member-joined for the first auth');
+
+    // Detect when ws1 is closed by the host (superseded).
+    let ws1Closed = false;
+    r1.ws.once('close', () => { ws1Closed = true; });
+
+    // Second auth with the SAME clientId — should rebind, close ws1.
+    const r2 = await sendAuthRequest(port, INVITE, 'Alice', { clientId: cid });
+    assert.strictEqual(r2.memberId, r1.memberId, 'second auth reuses same memberId');
+
+    // Wait for ws1 close.
+    await waitFor(() => ws1Closed, 2000);
+    assert.ok(ws1Closed, 'superseded first ws was closed by the host');
+
+    // No additional member-joined should have been broadcast.
+    await new Promise((r) => setTimeout(r, 100));
+    const totalJoined = joinedBroadcasts.filter(
+      (m) => m.type === 'member-joined' && (m as { member: { id: string } }).member.id === r1.memberId,
+    ).length;
+    assert.strictEqual(totalJoined, 1, 'only ONE member-joined ever broadcast for this clientId');
+
+    r2.ws.close();
+    await observer.close();
+  });
+
+  test('Test K: host-loopback with stable clientId is NEVER deduped — role-check always runs', async () => {
+    const identity = makeHostIdentity('HostUser');
+    const cfg: SessionConfig = {
+      sessionName: 'HostLoopbackDedupe',
+      port: 0,
+      networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD,
+      inviteCode: 'HOSTTEST',
+    };
+    const h2 = new SessionHost(cfg, identity);
+    const p2 = await h2.start();
+
+    const hostCid = 'host-stable-cid-k';
+
+    // First host-role auth (simulating host loopback connect on startup).
+    const r1 = await sendAuthRequest(p2, 'HOSTTEST', 'HostUser', {
+      clientId: hostCid,
+      hostAuthSecret: identity.hostAuthSecret,
+    });
+
+    // Confirm getPresenceSnapshot includes host after first auth (Task 3 seed).
+    // For Task 2 we only check that the host IS in members and memberId is set.
+    const membersAfterFirst = h2.getMembers();
+    assert.ok(
+      membersAfterFirst.some((m) => m.id === r1.memberId && m.role === 'host'),
+      'host is registered as a member after first auth',
+    );
+
+    // Simulate a VS Code reload — second host-role auth with same clientId.
+    const r2 = await sendAuthRequest(p2, 'HOSTTEST', 'HostUser', {
+      clientId: hostCid,
+      hostAuthSecret: identity.hostAuthSecret,
+    });
+
+    // Both auths must produce a host-role member (role-check ran both times).
+    const membersAfterSecond = h2.getMembers();
+    const hostEntry = membersAfterSecond.find((m) => m.id === r2.memberId);
+    assert.ok(hostEntry, 'host registered after second auth');
+    assert.strictEqual(hostEntry.role, 'host', 'host role assigned on second auth (not deduped)');
+
+    r1.ws.close(); r2.ws.close();
+    try { h2.stop(); } catch { /* best-effort */ }
+  });
+});

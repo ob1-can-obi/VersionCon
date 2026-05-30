@@ -298,6 +298,32 @@ suite('Phase 7 — wizard cloud step', () => {
     );
   });
 
+
+  // ---------------------------------------------------------------------------
+  // Bug #3 defensive regression — CSP must allow HTTPS fetch (UAT-3b discovery,
+  // 2026-05-30). The wizard's Test Connection probe calls fetch('https://<relay>/
+  // healthz') from inside the webview. Without an explicit connect-src directive,
+  // `default-src 'none'` silently blocks the fetch, and the wizard surfaces only
+  // a generic "Cannot reach relay" error. This test pins the CSP shape so a
+  // future hardening pass cannot regress the connect-src directive away.
+  // ---------------------------------------------------------------------------
+
+  test('WizardPanel.ts CSP includes connect-src https: (Bug #3 regression)', () => {
+    const src = fsSync.readFileSync(wizardTsPath, 'utf-8');
+    assert.match(
+      src,
+      /connect-src\s+https:/,
+      'CSP string contains connect-src https: directive',
+    );
+    // Defense-in-depth: the CSP string must also still carry default-src 'none'
+    // so we don't accidentally relax to default-src https: (broader than needed).
+    assert.match(
+      src,
+      /default-src\s+'none'/,
+      "CSP retains default-src 'none' baseline",
+    );
+  });
+
   // ---------------------------------------------------------------------------
   // (3) validateRelayUrl unit table
   // ---------------------------------------------------------------------------

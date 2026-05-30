@@ -115,7 +115,18 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
         sessions: registry.activeSessionCount(),
         uptime_s: Math.floor((Date.now() - startedAt) / 1000),
       });
-      res.writeHead(200, { 'content-type': 'application/json' });
+      // Bug #3 fix (UAT-3b discovery): VS Code webviews enforce CORS on fetch().
+      // Without Access-Control-Allow-Origin the wizard's Test Connection probe
+      // (src/ui/webview/wizard/wizard.js — fetch '<relay>/healthz') succeeds at
+      // the network layer but the browser blocks JS from reading the response,
+      // surfacing as a generic 'Cannot reach relay' error. '*' is correct here
+      // because /healthz is a read-only liveness/session-count probe with no
+      // authentication, no cookies, and no sensitive data — and the wizard
+      // must work for any user-supplied relay origin (Fly, AWS, Hetzner, DO).
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'access-control-allow-origin': '*',
+      });
       res.end(body);
       return;
     }

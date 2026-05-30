@@ -296,7 +296,16 @@ export class WizardPanel {
     );
 
     // Content Security Policy: default-src 'none' with nonce for scripts/styles (T-01-13)
-    const csp = `default-src 'none'; style-src ${webview.cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}';`;
+    // Plan 07-05 wizard relay-test seam (Step 2 "Test connection") fetches the
+    // user-supplied https://<relay>/healthz from inside the webview. Without an
+    // explicit connect-src directive, `default-src 'none'` blocks the fetch
+    // silently, so the Test Connection button always reports "Cannot reach relay"
+    // even against a healthy relay. `connect-src https:` allows fetches to any
+    // HTTPS host because users can self-host relays anywhere (Fly, AWS, Hetzner,
+    // DO — see relay/README.md). Webviews can only initiate outbound requests;
+    // they cannot be used as an open redirect, and the destination URL is always
+    // user-supplied via the wizard's Relay URL input.
+    const csp = `default-src 'none'; style-src ${webview.cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}'; connect-src https:;`;
 
     // Read the HTML template and replace placeholders
     const templatePath = path.join(

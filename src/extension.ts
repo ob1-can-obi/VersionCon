@@ -140,6 +140,14 @@ let currentSelfDisplayName = 'You';
 // rendering. Updated by the IIFE on init and by versioncon.switchBranch.
 let currentBranchName: string | null = null;
 
+// Plan 260530-np7: module-level handle for the sendPresenceUpdate function.
+// sendPresenceUpdate is defined inside the workspace IIFE (requires wsRoot).
+// wireHostEvents and wireClientEvents run at activate() scope but call this
+// one-shot on join, so we expose it via this module-level reference that gets
+// assigned when the IIFE creates it. Null when no workspace folder is open
+// (no workspace → no sendPresenceUpdate → no presence broadcasts, acceptable).
+let broadcastSelfPresenceOnJoin: ((editor: vscode.TextEditor | undefined) => void) | null = null;
+
 // Phase 4 (Plan 04-10): client-side chat record cache. Clients don't read
 // chat-log.json directly — the host owns it. The webview gets state-update
 // snapshots from this in-memory array, which is reseeded on chat-history
@@ -1425,6 +1433,13 @@ export function activate(context: vscode.ExtensionContext): void {
     // every panel renders rows with name="You".
     currentSelfDisplayName = hostIdentity.displayName;
     presenceTreeProvider?.setSelfMemberId(currentSelfMemberId);
+    // Plan 260530-np7: one-shot self-presence broadcast on host session start.
+    // Seeds the host's own presence slot so any joiner's snapshot includes the
+    // host even when the host has no active editor (activeFilePath null).
+    // broadcastSelfPresenceOnJoin is assigned in the workspace IIFE when
+    // sendPresenceUpdate is created; null when no workspace folder is open.
+    // Not a heartbeat — fires once on join only.
+    broadcastSelfPresenceOnJoin?.(vscode.window.activeTextEditor);
     void vscode.commands.executeCommand(
       'setContext', 'versioncon.connected', true,
     );
@@ -1609,6 +1624,12 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }
     presenceTreeProvider?.setSelfMemberId(currentSelfMemberId);
+    // Plan 260530-np7: one-shot self-presence broadcast on member join.
+    // Seeds the joiner's own presence slot on the host's map so the NEXT
+    // joiner's snapshot includes this idle member. Also seeds the joiner's
+    // own tree row. broadcastSelfPresenceOnJoin is assigned in the workspace
+    // IIFE; null when no workspace folder is open. Not a heartbeat — fires once.
+    broadcastSelfPresenceOnJoin?.(vscode.window.activeTextEditor);
     void vscode.commands.executeCommand(
       'setContext', 'versioncon.connected', true,
     );
@@ -2338,6 +2359,13 @@ export function activate(context: vscode.ExtensionContext): void {
           updatePresenceContext();
         }
       };
+
+      // Plan 260530-np7: expose sendPresenceUpdate at module scope so
+      // wireHostEvents / wireClientEvents can call a one-shot self-presence
+      // broadcast on join (from activate() scope, which cannot reach into the
+      // workspace IIFE's const directly). Assigned once here; null when no
+      // workspace folder is open.
+      broadcastSelfPresenceOnJoin = sendPresenceUpdate;
 
       let presenceDebounceTimer: ReturnType<typeof setTimeout> | null = null;
       context.subscriptions.push(

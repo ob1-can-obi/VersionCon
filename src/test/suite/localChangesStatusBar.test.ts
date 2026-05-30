@@ -107,10 +107,15 @@ suite('Phase 4.3 Wave 3 — LocalChangesStatusBar (SC-5)', () => {
 //
 // -----------------------------------------------------------------------------
 
-const EXTENSION_TS_PATH = path.resolve(process.cwd(), 'src/extension.ts');
-const EXTENSION_SOURCE = fsSync.readFileSync(EXTENSION_TS_PATH, 'utf-8');
-
 suite('Phase 4.3 Wave 3 — extension wiring (SC-5)', () => {
+  // Lazy-load at suiteSetup time: process.cwd() resolves correctly inside the
+  // VS Code extension host (project root), but NOT at module-load time
+  // (where cwd may be the VS Code application directory).
+  let EXTENSION_SOURCE: string;
+  suiteSetup(() => {
+    const EXTENSION_TS_PATH = path.resolve(process.cwd(), 'src/extension.ts');
+    EXTENSION_SOURCE = fsSync.readFileSync(EXTENSION_TS_PATH, 'utf-8');
+  });
   test('extension.ts imports LocalChangesStatusBar from ./ui/', () => {
     assert.match(
       EXTENSION_SOURCE,
@@ -210,10 +215,21 @@ suite('Phase 4.3 Wave 3 — extension wiring (SC-5)', () => {
 //
 // -----------------------------------------------------------------------------
 
-const ALIASES_TS_PATH = path.resolve(process.cwd(), 'src/commands/aliases.ts');
-const ALIASES_SOURCE = fsSync.readFileSync(ALIASES_TS_PATH, 'utf-8');
-
 suite('Phase 4.3 Wave 3 — versioncon.diff QuickPick (SC-5)', () => {
+  // Lazy-load both sources at suiteSetup time (same rationale as first suite).
+  // EXTENSION_SOURCE is re-read here because the module-level EXTENSION_SOURCE
+  // is now scoped inside the first suite's suiteSetup.
+  let EXTENSION_SOURCE: string;
+  let ALIASES_SOURCE: string;
+  suiteSetup(() => {
+    EXTENSION_SOURCE = fsSync.readFileSync(
+      path.resolve(process.cwd(), 'src/extension.ts'), 'utf-8',
+    );
+    ALIASES_SOURCE = fsSync.readFileSync(
+      path.resolve(process.cwd(), 'src/commands/aliases.ts'), 'utf-8',
+    );
+  });
+
   test('versioncon.diff command is registered (distinct from versioncon.previewDiff)', () => {
     assert.match(
       EXTENSION_SOURCE,

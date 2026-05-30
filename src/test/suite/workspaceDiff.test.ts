@@ -246,10 +246,16 @@ suite('Phase 4.3 Wave 2 — WorkspaceDiffer', () => {
 
 import * as fsSync from 'fs';
 
-const EXTENSION_TS_PATH = path.resolve(process.cwd(), 'src/extension.ts');
-const EXTENSION_SOURCE = fsSync.readFileSync(EXTENSION_TS_PATH, 'utf-8');
-
 suite('Phase 4.3 Wave 2 — vc push auto-stage fallback (SC-3)', () => {
+  // Lazy-load source at suiteSetup time so process.cwd() is resolved inside
+  // the VS Code extension host (where cwd is the project root) rather than
+  // at module-load time (where cwd may be the VS Code application directory).
+  let EXTENSION_SOURCE: string;
+  suiteSetup(() => {
+    const EXTENSION_TS_PATH = path.resolve(process.cwd(), 'src/extension.ts');
+    EXTENSION_SOURCE = fsSync.readFileSync(EXTENSION_TS_PATH, 'utf-8');
+  });
+
   test('extension.ts imports WorkspaceDiffer from the services barrel', () => {
     assert.match(
       EXTENSION_SOURCE,
@@ -305,38 +311,49 @@ suite('Phase 4.3 Wave 2 — vc push auto-stage fallback (SC-3)', () => {
 // and the cmd.pull alias retarget in src/commands/aliases.ts.
 // -----------------------------------------------------------------------------
 
-const ALIASES_TS_PATH = path.resolve(process.cwd(), 'src/commands/aliases.ts');
-const ALIASES_SOURCE = fsSync.readFileSync(ALIASES_TS_PATH, 'utf-8');
-
-/**
- * Returns the byte range of the versioncon.pull handler block in
- * extension.ts — from the registerCommand opener to the matching `}),`.
- * Used so tests can scope assertions to the pull handler ONLY (the file
- * also contains the existing versioncon.sync handler with similar shape,
- * so naive substring matches would conflict).
- */
-function pullHandlerBlock(): string {
-  const startMarker = "registerCommand('versioncon.pull'";
-  const startIdx = EXTENSION_SOURCE.indexOf(startMarker);
-  assert.ok(startIdx >= 0, 'expected registerCommand("versioncon.pull") in extension.ts');
-  // Conservative end-of-block sentinel: the closing "}),\n      );" that
-  // closes the subscriptions.push wrapper. There is exactly one such
-  // sequence following the pull handler's body before the next comment.
-  const endIdx = EXTENSION_SOURCE.indexOf('}),\n      );', startIdx);
-  assert.ok(endIdx > startIdx, 'expected `}),\\n      );` closer for the versioncon.pull handler');
-  return EXTENSION_SOURCE.slice(startIdx, endIdx + 14);
-}
-
 suite('Phase 4.3 Wave 2 — vc pull (SC-4)', () => {
+  // Lazy-load source files at suiteSetup time (same rationale as SC-3 suite:
+  // process.cwd() is the project root inside the VS Code extension host, not
+  // at module-load time where cwd may be the VS Code application directory).
+  let EXTENSION_SOURCE_PULL: string;
+  let ALIASES_SOURCE: string;
+  suiteSetup(() => {
+    EXTENSION_SOURCE_PULL = fsSync.readFileSync(
+      path.resolve(process.cwd(), 'src/extension.ts'), 'utf-8',
+    );
+    ALIASES_SOURCE = fsSync.readFileSync(
+      path.resolve(process.cwd(), 'src/commands/aliases.ts'), 'utf-8',
+    );
+  });
+
+  /**
+   * Returns the byte range of the versioncon.pull handler block in
+   * extension.ts — from the registerCommand opener to the matching `}),`.
+   * Used so tests can scope assertions to the pull handler ONLY (the file
+   * also contains the existing versioncon.sync handler with similar shape,
+   * so naive substring matches would conflict).
+   */
+  function pullHandlerBlock(): string {
+    const startMarker = "registerCommand('versioncon.pull'";
+    const startIdx = EXTENSION_SOURCE_PULL.indexOf(startMarker);
+    assert.ok(startIdx >= 0, 'expected registerCommand("versioncon.pull") in extension.ts');
+    // Conservative end-of-block sentinel: the closing "}),\n      );" that
+    // closes the subscriptions.push wrapper. There is exactly one such
+    // sequence following the pull handler's body before the next comment.
+    const endIdx = EXTENSION_SOURCE_PULL.indexOf('}),\n      );', startIdx);
+    assert.ok(endIdx > startIdx, 'expected `}),\\n      );` closer for the versioncon.pull handler');
+    return EXTENSION_SOURCE_PULL.slice(startIdx, endIdx + 14);
+  }
+
   test('extension.ts registers versioncon.pull as a dedicated command', () => {
     assert.match(
-      EXTENSION_SOURCE,
+      EXTENSION_SOURCE_PULL,
       /registerCommand\(\s*'versioncon\.pull'\s*,\s*async\s*\(\s*\)\s*=>/,
       'expected registerCommand("versioncon.pull", async () => ...) in extension.ts',
     );
     // versioncon.sync MUST still exist — pull and sync are separate commands.
     assert.match(
-      EXTENSION_SOURCE,
+      EXTENSION_SOURCE_PULL,
       /registerCommand\(\s*'versioncon\.sync'\s*,/,
       'versioncon.sync handler must still exist alongside the new versioncon.pull',
     );

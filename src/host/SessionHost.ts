@@ -1024,6 +1024,13 @@ export class SessionHost implements SessionEventEmitter {
       void this.sendReviewStateSyncToMember(newMemberId, this.activeBranch);
     }
 
+    // Plan 260530-np7: replay full presence snapshot to the joiner so their
+    // Presence panel is immediately populated with every OTHER known member
+    // (including idle members whose activeFilePath is null). Fired synchronously
+    // AFTER chat-history / review-state-sync and BEFORE member-joined broadcast.
+    // Reuses the existing presence-update frame — no new protocol type.
+    this.sendPresenceSnapshotToMember(ws, newMemberId);
+
     // Broadcast member-joined to all OTHER members
     this.broadcast(
       {
@@ -2112,6 +2119,37 @@ export class SessionHost implements SessionEventEmitter {
   /** Returns a defensive copy of all known presence entries (Plan 04-08). */
   getPresenceSnapshot(): PresenceInfo[] {
     return this.presenceMap.getSnapshot();
+  }
+
+  /**
+   * Replay the host's current presence map to a single joining member as
+   * individual presence-update frames (one per known member, skipping the
+   * joiner's own entry). Synchronous — no disk I/O. Reuses the existing
+   * presence-update wire frame so no new protocol type is needed and LAN
+   * bytes are unchanged.
+   *
+   * Called from handleAuthRequest after chat-history / review-state-sync
+   * replay and before the member-joined broadcast so the joiner's panel
+   * is fully populated before peers see the join notification.
+   */
+  private sendPresenceSnapshotToMember(ws: TransportConnection, joiningMemberId: string): void {
+    for (const entry of this.getPresenceSnapshot()) {
+      if (entry.memberId === joiningMemberId) {
+        continue; // joiner already knows themselves
+      }
+      try {
+        this.transport.send(ws, {
+          type: 'presence-update',
+          timestamp: createTimestamp(),
+          memberId: entry.memberId,
+          displayName: entry.displayName,
+          branch: entry.branch,
+          activeFilePath: entry.activeFilePath,
+        });
+      } catch (err) {
+        console.error('[SessionHost] sendPresenceSnapshotToMember failed', err);
+      }
+    }
   }
 
   /**

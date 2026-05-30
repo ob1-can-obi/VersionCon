@@ -2600,3 +2600,238 @@ suite('Phase 4 UAT 2026-05-11 — peer presence propagation + displayName closur
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Presence snapshot on join (Plan 260530-np7)
+//
+// Every connected member must appear in the Presence panel immediately on join,
+// even when no one has changed editors. The host replays its full presence map
+// to a new joiner as individual presence-update frames (reusing the existing
+// frame — no new protocol type). The host AND each joining member each broadcast
+// their own presence once on join to seed their slot in every peer's map.
+//
+// Tests A-D mirror the 'Phase 4 host relay' integration suite shape:
+//   A — snapshot replay: a previously-known member appears in the joiner inbox
+//   B — idle member (activeFilePath null) delivered without crash
+//   C — host self in snapshot: upsertHostPresence populates the snapshot;
+//       a subsequent joiner receives a presence-update for the host id
+//   D — LAN byte-shape: replayed frame has EXACTLY the canonical key set
+//
+// Reuses connectClient / waitFor module-scope helpers.
+// ---------------------------------------------------------------------------
+
+suite('Presence snapshot on join', () => {
+  let host: SessionHost;
+  let chatLog: ChatLog;
+  let tmpDir: string;
+  let port: number;
+
+  setup(async () => {
+    tmpDir = path.join(
+      os.tmpdir(),
+      `vc-presence-snapshot-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    const branchDir = path.join(tmpDir, 'branch');
+    await fs.mkdir(branchDir, { recursive: true });
+    chatLog = new ChatLog(branchDir);
+    await chatLog.load();
+
+    const config: SessionConfig = {
+      sessionName: 'PresenceSnapshotTest',
+      port: 0,
+      networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD,
+      inviteCode: INVITE,
+    };
+    host = new SessionHost(config, makeHostIdentity(HOST_NAME));
+    host.setChatLog(chatLog, 'main');
+    port = await host.start();
+  });
+
+  teardown(async () => {
+    try { host.stop(); } catch { /* best-effort */ }
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  test('Test A: joining client receives presence-update for prior member in snapshot', async () => {
+    // Seed the host presence map with a known-prior member.
+    host.upsertHostPresence({
+      memberId: 'm-existing',
+      displayName: 'Existing',
+      branch: 'main',
+      activeFilePath: 'src/a.ts',
+      lastUpdated: Date.now(),
+    });
+
+    // Use the raw-ws pattern (mirrors sendChatHistoryToMember test) so we
+    // collect ALL messages including those that arrive during the auth burst,
+    // before a helper's auth-response await would return.
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const inbox: ProtocolMessage[] = [];
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+    ws.on('message', (raw: Buffer) => {
+      try { inbox.push(JSON.parse(raw.toString()) as ProtocolMessage); } catch {}
+    });
+
+    ws.send(JSON.stringify({
+      type: 'auth-request',
+      timestamp: Date.now(),
+      inviteCode: INVITE,
+      displayName: 'JoinerA',
+    }));
+
+    await waitFor(() => inbox.some((m) => m.type === 'presence-update'), 3000);
+
+    const frame = inbox.find((m) => m.type === 'presence-update') as PresenceUpdate;
+    assert.ok(frame, 'presence-update was sent as snapshot replay');
+    assert.strictEqual(frame.memberId, 'm-existing', 'snapshot delivers prior member id');
+    assert.strictEqual(frame.branch, 'main');
+    assert.strictEqual(frame.activeFilePath, 'src/a.ts');
+
+    await new Promise<void>((resolve) => {
+      ws.once('close', () => resolve()); ws.close();
+    });
+  });
+
+  test('Test B: joining client receives presence-update for idle member (activeFilePath null)', async () => {
+    // Seed an idle member — activeFilePath null simulates someone on the
+    // Welcome tab with no open editor.
+    host.upsertHostPresence({
+      memberId: 'm-idle',
+      displayName: 'Idle',
+      branch: 'main',
+      activeFilePath: null,
+      lastUpdated: Date.now(),
+    });
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const inbox: ProtocolMessage[] = [];
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+    ws.on('message', (raw: Buffer) => {
+      try { inbox.push(JSON.parse(raw.toString()) as ProtocolMessage); } catch {}
+    });
+
+    ws.send(JSON.stringify({
+      type: 'auth-request',
+      timestamp: Date.now(),
+      inviteCode: INVITE,
+      displayName: 'JoinerB',
+    }));
+
+    await waitFor(() => inbox.some((m) => m.type === 'presence-update'), 3000);
+
+    const frame = inbox.find((m) => m.type === 'presence-update') as PresenceUpdate;
+    assert.ok(frame, 'presence-update delivered for idle member');
+    assert.strictEqual(frame.memberId, 'm-idle');
+    assert.strictEqual(frame.activeFilePath, null, 'null activeFilePath delivered without crash');
+
+    await new Promise<void>((resolve) => {
+      ws.once('close', () => resolve()); ws.close();
+    });
+  });
+
+  test('Test C: host self in snapshot — joiner receives presence-update for host id', async () => {
+    // Simulate the host seeding its own presence (as wireHostEvents would do).
+    const hostSelfId = 'host-self-id';
+    host.upsertHostPresence({
+      memberId: hostSelfId,
+      displayName: HOST_NAME,
+      branch: 'main',
+      activeFilePath: null,
+      lastUpdated: Date.now(),
+    });
+
+    // Confirm the host's own id is in the snapshot before the joiner connects.
+    const snapshot = host.getPresenceSnapshot();
+    const hostEntry = snapshot.find((p) => p.memberId === hostSelfId);
+    assert.ok(hostEntry, 'host self entry in snapshot');
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const inbox: ProtocolMessage[] = [];
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+    ws.on('message', (raw: Buffer) => {
+      try { inbox.push(JSON.parse(raw.toString()) as ProtocolMessage); } catch {}
+    });
+
+    ws.send(JSON.stringify({
+      type: 'auth-request',
+      timestamp: Date.now(),
+      inviteCode: INVITE,
+      displayName: 'JoinerC',
+    }));
+
+    await waitFor(() => inbox.some(
+      (m) => m.type === 'presence-update' && (m as PresenceUpdate).memberId === hostSelfId,
+    ), 3000);
+
+    const hostFrame = inbox.find(
+      (m) => m.type === 'presence-update' && (m as PresenceUpdate).memberId === hostSelfId,
+    ) as PresenceUpdate;
+    assert.ok(hostFrame, 'joiner received presence-update for host id');
+
+    await new Promise<void>((resolve) => {
+      ws.once('close', () => resolve()); ws.close();
+    });
+  });
+
+  test('Test D: LAN byte-shape — replayed presence-update frame has exactly the canonical key set', async () => {
+    // Seed one entry so the snapshot is non-empty.
+    host.upsertHostPresence({
+      memberId: 'm-shape-check',
+      displayName: 'ShapeUser',
+      branch: 'feature',
+      activeFilePath: 'src/index.ts',
+      lastUpdated: Date.now(),
+    });
+
+    // Use raw WebSocket to capture exact JSON bytes from the wire.
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const rawFrames: string[] = [];
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+    ws.on('message', (raw: Buffer) => {
+      rawFrames.push(raw.toString());
+    });
+
+    ws.send(JSON.stringify({
+      type: 'auth-request',
+      timestamp: Date.now(),
+      inviteCode: INVITE,
+      displayName: 'JoinerD',
+    }));
+
+    // Wait until a presence-update appears in rawFrames.
+    await waitFor(() => rawFrames.some((r) => {
+      try { const m = JSON.parse(r); return m.type === 'presence-update'; } catch { return false; }
+    }), 3000);
+
+    // Find the raw JSON for the first presence-update frame.
+    const rawPresenceFrame = rawFrames
+      .map((r) => { try { return JSON.parse(r); } catch { return null; } })
+      .find((m) => m && m.type === 'presence-update');
+    assert.ok(rawPresenceFrame, 'found raw presence-update frame');
+
+    const actualKeys = Object.keys(rawPresenceFrame).sort();
+    const canonicalKeys = ['activeFilePath', 'branch', 'displayName', 'memberId', 'timestamp', 'type'];
+    assert.deepStrictEqual(
+      actualKeys,
+      canonicalKeys,
+      `key set must be exactly ${JSON.stringify(canonicalKeys)} — no new fields added (LAN bytes unchanged)`,
+    );
+
+    await new Promise<void>((resolve) => {
+      ws.once('close', () => resolve()); ws.close();
+    });
+  });
+});

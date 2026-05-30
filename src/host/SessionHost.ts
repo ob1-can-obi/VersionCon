@@ -965,6 +965,33 @@ export class SessionHost implements SessionEventEmitter {
         // connection's id. The pre-allocated value from the constructor was
         // a placeholder until this moment.
         this.hostMemberId = newMemberId;
+
+        // Plan 260530-p3g (Bug 1 fix): deterministic host self-presence seed.
+        //
+        // Seeded HERE — inside the secret-verified block, AFTER
+        // this.hostMemberId is set, and BEFORE this.members.set below
+        // (the new-member path). Seeding before this.members.set is
+        // load-bearing: on the host-loopback (the first authenticated
+        // connection) this.members is still EMPTY at this point, so
+        // upsertHostPresence's broadcast reaches NO members and does NOT
+        // double-broadcast. This is the "broadcast is a no-op" safety
+        // invariant — placement before this.members.set is NOT cosmetic.
+        //
+        // activeFilePath null = host is idle on the Welcome tab (no open
+        // editor). branch uses this.activeBranch ?? 'main' so an idle host
+        // gets a valid branch string. lastUpdated is REQUIRED by PresenceInfo.
+        //
+        // Extension.ts broadcastSelfPresenceOnJoin will upsert the host's
+        // REAL activeFilePath later when onDidChangeActiveTextEditor fires;
+        // that is a last-write-wins upsert on the same memberId — no
+        // duplicate row. Event-driven; no heartbeat introduced.
+        this.upsertHostPresence({
+          memberId: this.hostMemberId,
+          displayName: this.hostDisplayName,
+          branch: this.activeBranch ?? 'main',
+          activeFilePath: null,
+          lastUpdated: createTimestamp(),
+        });
       }
     }
 

@@ -3153,3 +3153,117 @@ suite('Bug 2 host-half (Plan 260530-p3g Task 2)', () => {
     try { h2.stop(); } catch { /* best-effort */ }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bug 1 fix — Task 3 (Plan 260530-p3g)
+//
+// Tests:
+//   L — host appears in getPresenceSnapshot() immediately after host self-auth
+//       with NO file open (activeFilePath === null)
+//   M — a joiner connecting AFTER host self-auth receives a presence-update
+//       frame for the host id (activeFilePath null = idle host renders)
+// ---------------------------------------------------------------------------
+
+suite('Bug 1 host self-presence seed (Plan 260530-p3g Task 3)', () => {
+  test('Test L: host in getPresenceSnapshot() immediately after host self-auth with NO file open', async () => {
+    const identity = makeHostIdentity('HostSeed');
+    const cfg: SessionConfig = {
+      sessionName: 'HostSeedTest',
+      port: 0,
+      networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD,
+      inviteCode: 'SEEDTEST',
+    };
+    const h = new SessionHost(cfg, identity);
+    const p = await h.start();
+
+    // Drive the host-role auth-request (the loopback path).
+    // NO presence-update has ever fired (no editor activity).
+    const r = await sendAuthRequest(p, 'SEEDTEST', 'HostSeed', {
+      hostAuthSecret: identity.hostAuthSecret,
+    });
+
+    // The host's own memberId must appear in the snapshot immediately.
+    const snapshot = h.getPresenceSnapshot();
+    const hostEntry = snapshot.find((e) => e.memberId === r.memberId);
+    assert.ok(
+      hostEntry,
+      `host id ${r.memberId} must be in getPresenceSnapshot() after self-auth (no editor activity)`,
+    );
+    assert.strictEqual(
+      hostEntry.activeFilePath,
+      null,
+      'host seeded with activeFilePath null (idle/no open editor)',
+    );
+    assert.ok(
+      typeof hostEntry.branch === 'string' && hostEntry.branch.length > 0,
+      'host seeded with a non-empty branch string',
+    );
+
+    r.ws.close();
+    try { h.stop(); } catch { /* best-effort */ }
+  });
+
+  test('Test M: joiner connecting after host self-auth receives presence-update for the host id', async () => {
+    const identity = makeHostIdentity('HostSeedM');
+    const cfg: SessionConfig = {
+      sessionName: 'HostSeedMTest',
+      port: 0,
+      networkInterface: '127.0.0.1',
+      maxPayloadBytes: MAX_PAYLOAD,
+      inviteCode: 'SEEDMTST',
+    };
+    const h = new SessionHost(cfg, identity);
+    const p = await h.start();
+
+    // Host self-authenticates (no file open).
+    const hostR = await sendAuthRequest(p, 'SEEDMTST', 'HostSeedM', {
+      hostAuthSecret: identity.hostAuthSecret,
+    });
+    const hostMemberId = hostR.memberId;
+
+    // Now a joiner connects — they should receive a presence-update for the
+    // host id in their snapshot replay (from sendPresenceSnapshotToMember).
+    const ws = new WebSocket(`ws://127.0.0.1:${p}`);
+    const inbox: ProtocolMessage[] = [];
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+    ws.on('message', (raw: Buffer) => {
+      try { inbox.push(JSON.parse(raw.toString()) as ProtocolMessage); } catch {}
+    });
+    ws.send(JSON.stringify({
+      type: 'auth-request',
+      timestamp: Date.now(),
+      inviteCode: 'SEEDMTST',
+      displayName: 'Joiner',
+    }));
+
+    // Wait until the joiner receives the presence-update for the host id.
+    await waitFor(
+      () => inbox.some(
+        (m) => m.type === 'presence-update' && (m as PresenceUpdate).memberId === hostMemberId,
+      ),
+      3000,
+    );
+
+    const hostPresenceFrame = inbox.find(
+      (m) => m.type === 'presence-update' && (m as PresenceUpdate).memberId === hostMemberId,
+    ) as PresenceUpdate | undefined;
+
+    assert.ok(
+      hostPresenceFrame,
+      `joiner must receive a presence-update for host id ${hostMemberId}`,
+    );
+    assert.strictEqual(
+      hostPresenceFrame.activeFilePath,
+      null,
+      'host presence-update carries activeFilePath null (idle host)',
+    );
+
+    await new Promise<void>((resolve) => { ws.once('close', () => resolve()); ws.close(); });
+    hostR.ws.close();
+    try { h.stop(); } catch { /* best-effort */ }
+  });
+});

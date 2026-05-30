@@ -439,4 +439,184 @@ suite('Phase 7 — host cloud wiring', () => {
       'SessionHost.ts must not contain "handleCloudInboundFrame" — 07-05b merge eliminated the stub',
     );
   });
+
+  // ---------------------------------------------------------------------------
+  // Regression: bootstrap-swap-presence-leak (UAT-3b, 2026-05-30)
+  //
+  // Before the fix, an auth-request arriving on a virtConn whose memberId
+  // started with 'bootstrap-' caused handleAuthRequest to register a member
+  // entry, broadcast member-joined, and send state-sync — exactly as if the
+  // bootstrap WSS were a real joiner. The post-swap connection then arrived
+  // with a distinct memberId, ran handleAuthRequest AGAIN, and registered a
+  // SECOND member entry for the same logical joiner. Both entries eventually
+  // disappeared via heartbeat-timeout (cloud-mode ping is a no-op so
+  // cm.isAlive was never refreshed), leaving the joiner invisible in the
+  // host's MEMBERS panel despite a live WSS at the relay.
+  //
+  // The fix gates handleAuthRequest on the bootstrap detection: the bootstrap
+  // path mints + sends the per-joiner JWT (so the joiner can swapToken) but
+  // does NOT register a member, does NOT broadcast member-joined, and does
+  // NOT send state-sync/chat-history/review-state-sync.
+  // ---------------------------------------------------------------------------
+
+  test('regression: bootstrap virtConn does NOT register a member or broadcast member-joined', async () => {
+    const fake = new FakeClientTransport();
+    const sessionId = 'vc-abc234';
+    const host = await createCloud({
+      config: makeConfig(),
+      hostIdentity: makeHostIdentity(),
+      relayUrl: 'wss://relay.test',
+      sessionId,
+      _testClientTransport: fake,
+    });
+    try {
+      await host.start();
+
+      // Capture host-emitted 'member-joined' events. SessionHost extends
+      // EventEmitter; the type is opaque from outside so we cast through
+      // unknown. The bootstrap path MUST NOT emit this event, the post-swap
+      // path MUST emit it exactly once.
+      const memberJoinedEventNames: string[] = [];
+      (host as unknown as {
+        on: (event: string, fn: (data: unknown) => void) => void;
+      }).on('member-joined', (data: unknown) => {
+        const d = data as { member?: { displayName?: string } };
+        memberJoinedEventNames.push(d?.member?.displayName ?? '?');
+      });
+
+      // Reach into the host for member-count introspection. getMembers()
+      // returns ONLY the joined members (the host itself is tracked
+      // separately via hostMemberId, so this count starts at 0 here because
+      // there is no loopback host-client wired in this test).
+      const getJoinedCount = (): number =>
+        (host as unknown as { getMembers: () => unknown[] }).getMembers().length;
+
+      assert.strictEqual(getJoinedCount(), 0, 'precondition: no joined members yet');
+
+      const sentBeforeBootstrap = fake.sentFrames.length;
+
+      // Simulate the joiner's BOOTSTRAP auth-request. payload.memberId is
+      // 'bootstrap-' + sessionId — matches the sub claim minted by
+      // TokenService.issueBootstrap. The relay annotates payload.memberId
+      // from claims.sub on every member->host frame, so this is the
+      // production wire shape for the bootstrap socket.
+      fake._simulateEnvelope(sessionId, {
+        type: 'auth-request',
+        inviteCode: 'ABC234',
+        displayName: 'Joiner-Bob',
+        timestamp: Date.now(),
+        memberId: 'bootstrap-' + sessionId,
+      });
+      // Two microtask drains: one for CloudHostTransport.handleInbound's
+      // queueMicrotask first-dispatch + one for handleAuthRequest's await on
+      // TokenService.issue (HMAC sign is in-process so a single tick suffices,
+      // but two drains is defense in depth across Node minor versions).
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      // Assertion 1: auth-response WAS sent (joiner needs token for swap).
+      const bootstrapAuthResponses = fake.sentFrames
+        .slice(sentBeforeBootstrap)
+        .filter((f) => f.type === 'auth-response') as Array<ProtocolMessage & {
+          type: 'auth-response';
+          accepted: boolean;
+          token?: string;
+        }>;
+      assert.strictEqual(
+        bootstrapAuthResponses.length,
+        1,
+        'bootstrap path emits exactly one auth-response (with token for swap)',
+      );
+      assert.strictEqual(bootstrapAuthResponses[0].accepted, true, 'bootstrap auth accepted');
+      assert.ok(
+        typeof bootstrapAuthResponses[0].token === 'string' &&
+          bootstrapAuthResponses[0].token.length > 0,
+        'bootstrap auth-response carries the per-joiner JWT for swapToken',
+      );
+
+      // Assertion 2: NO state-sync frame sent on the bootstrap path. The
+      // post-swap connection will send the authoritative state-sync.
+      const bootstrapStateSyncs = fake.sentFrames
+        .slice(sentBeforeBootstrap)
+        .filter((f) => f.type === 'state-sync');
+      assert.strictEqual(
+        bootstrapStateSyncs.length,
+        0,
+        'bootstrap path MUST NOT send state-sync (post-swap is authoritative)',
+      );
+
+      // Assertion 3: NO 'member-joined' EventEmitter event fired. This is
+      // the load-bearing assertion — before the fix, this would be 1
+      // (causing the UAT-3b symptom: a phantom member entry registered by
+      // the bootstrap socket, eventually removed via heartbeat-timeout when
+      // cm.isAlive was never refreshed in cloud mode).
+      assert.strictEqual(
+        memberJoinedEventNames.length,
+        0,
+        'bootstrap path MUST NOT emit "member-joined" event (the bug: it did)',
+      );
+
+      // Assertion 4: members count did NOT increment. The bootstrap virtConn
+      // is auth-only and must be invisible to the presence layer.
+      assert.strictEqual(
+        getJoinedCount(),
+        0,
+        'bootstrap path MUST NOT add to this.members (the bug: it added one)',
+      );
+
+      // ---------------------------------------------------------------------
+      // Now simulate the POST-SWAP auth-request with a normal (non-bootstrap)
+      // memberId — this MUST behave like a real joiner: members.set fires,
+      // state-sync is sent, the 'member-joined' event emits. The post-swap
+      // memberId mirrors what the relay would annotate from claims.sub of
+      // the per-joiner JWT (a fresh UUID minted by handleAuthRequest's
+      // bootstrap path above).
+      // ---------------------------------------------------------------------
+
+      const sentBeforeSwap = fake.sentFrames.length;
+      fake._simulateEnvelope(sessionId, {
+        type: 'auth-request',
+        inviteCode: 'ABC234',
+        displayName: 'Joiner-Bob',
+        timestamp: Date.now(),
+        memberId: 'post-swap-uuid-for-test',
+      });
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      // Assertion 5: state-sync IS sent on the post-swap path (joiner gets
+      // the authoritative member list).
+      const postSwapStateSyncs = fake.sentFrames
+        .slice(sentBeforeSwap)
+        .filter((f) => f.type === 'state-sync');
+      assert.strictEqual(
+        postSwapStateSyncs.length,
+        1,
+        'post-swap path DOES send state-sync (normal joiner flow)',
+      );
+
+      // Assertion 6: 'member-joined' EventEmitter event fires exactly once.
+      assert.strictEqual(
+        memberJoinedEventNames.length,
+        1,
+        'post-swap path emits "member-joined" event exactly once',
+      );
+      assert.strictEqual(
+        memberJoinedEventNames[0],
+        'Joiner-Bob',
+        'emitted member-joined carries the joiner displayName',
+      );
+
+      // Assertion 7: members count IS exactly 1 after the post-swap auth.
+      // Net result across both legs of the swap: ONE member entry (the bug
+      // would produce TWO — one from bootstrap, one from post-swap).
+      assert.strictEqual(
+        getJoinedCount(),
+        1,
+        'after bootstrap + post-swap, exactly ONE member is registered (the bug: TWO)',
+      );
+    } finally {
+      host.stop();
+    }
+  });
 });

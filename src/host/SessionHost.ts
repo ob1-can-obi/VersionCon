@@ -526,9 +526,35 @@ export class SessionHost implements SessionEventEmitter {
         }
 
         if (msg.type === 'auth-request') {
-          await this.handleAuthRequest(ws, msg, clientIp, authTimeout, (id) => {
-            memberId = id;
-          });
+          // Phase 7 UAT fix (bootstrap-swap-presence-leak): detect whether
+          // this connection is the joiner's bootstrap WSS. The bootstrap JWT
+          // (TokenService.issueBootstrap) carries sub='bootstrap-'+sessionId;
+          // the relay annotates payload.memberId from claims.sub on every
+          // member->host frame; CloudHostTransport allocates a virtConn keyed
+          // by that memberId and exposes it via the synthetic IncomingMessage
+          // header 'x-cloud-virtual-memberid' (CloudHostTransport.ts:465).
+          // LAN connections set no such header, so the check is cloud-only
+          // by construction. The bootstrap virtConn carries exactly ONE
+          // auth-request/auth-response round-trip (the joiner then calls
+          // CloudTransport.swapToken and re-opens with the per-joiner JWT);
+          // the host MUST NOT register a member or broadcast member-joined
+          // for it — the post-swap virtConn arrives with a fresh memberId
+          // and runs handleAuthRequest again with isBootstrapConnection=false
+          // to do the real registration.
+          const virtualMemberIdHdr = req.headers['x-cloud-virtual-memberid'];
+          const isBootstrapConnection =
+            typeof virtualMemberIdHdr === 'string' &&
+            virtualMemberIdHdr.startsWith('bootstrap-');
+          await this.handleAuthRequest(
+            ws,
+            msg,
+            clientIp,
+            authTimeout,
+            (id) => {
+              memberId = id;
+            },
+            isBootstrapConnection,
+          );
         } else if (!memberId) {
           // No other message type is valid before authentication
           return;
@@ -765,6 +791,11 @@ export class SessionHost implements SessionEventEmitter {
     clientIp: string,
     authTimeout: ReturnType<typeof setTimeout>,
     setMemberId: (id: string) => void,
+    // Phase 7 UAT fix (bootstrap-swap-presence-leak): true when the inbound
+    // connection is the joiner's bootstrap WSS (sub='bootstrap-'+sessionId).
+    // Defaulted so handleAuthRequestForTest and any future callers stay
+    // signature-compatible.
+    isBootstrapConnection: boolean = false,
   ): Promise<void> {
     // Check rate limit first
     const rateCheck = this.authHandler.checkRateLimit(clientIp);
@@ -794,6 +825,86 @@ export class SessionHost implements SessionEventEmitter {
 
     // Auth succeeded -- cancel timeout
     clearTimeout(authTimeout);
+
+    // Phase 7 UAT fix (bootstrap-swap-presence-leak): the bootstrap WSS
+    // exists solely to carry one auth-request/auth-response round-trip so
+    // the joiner can mint a per-joiner JWT and re-open the WSS via
+    // CloudTransport.swapToken (CloudTransport.ts:521). The bootstrap
+    // connection MUST NOT register a member in this.members, broadcast
+    // member-joined, or send state-sync/chat-history/review-state-sync —
+    // the post-swap connection arrives as a fresh virtConn with a distinct
+    // memberId and runs this method again with isBootstrapConnection=false
+    // to perform the real registration. Without this gate, every joiner
+    // produced TWO member entries (bootstrap UUID + post-swap UUID) which
+    // both eventually disappeared via heartbeat-timeout (cloud-mode ping
+    // is a no-op so cm.isAlive is never refreshed), leaving the joiner
+    // invisible in the host's MEMBERS panel despite a live WSS at the
+    // relay. Discovered 2026-05-30 during UAT-3b on session vc-66ba2eb83191.
+    if (isBootstrapConnection) {
+      // Mint the per-joiner JWT (the joiner reads auth-response.token and
+      // immediately calls swapToken with it). Cloud-mode preconditions
+      // (cloudTokenService + cloudSessionId both non-null) are guaranteed
+      // here because isBootstrapConnection only becomes true when a virtConn
+      // with the 'bootstrap-' memberId prefix arrives — that prefix only
+      // exists in cloud mode (SessionHostFactory.createCloud mints the
+      // bootstrap JWT via TokenService.issueBootstrap). Role is always
+      // 'member' on this path; the loopback host does not use the bootstrap
+      // JWT (it constructs SessionHost directly via the LAN-transport seam).
+      const tentativeMemberId = crypto.randomUUID();
+      let bootstrapJoinerToken: string | undefined = undefined;
+      if (this.cloudTokenService !== null && this.cloudSessionId !== null) {
+        try {
+          bootstrapJoinerToken = await this.cloudTokenService.issue({
+            iss: this.hostMemberId ?? tentativeMemberId,
+            sub: tentativeMemberId,
+            aud: this.cloudSessionId,
+            role: 'member',
+          });
+        } catch {
+          // HMAC sign failure is operationally rare (in-memory only); degrade
+          // gracefully so the joiner sees a meaningful connect-error rather
+          // than a hang.
+          bootstrapJoinerToken = undefined;
+        }
+      }
+
+      // Send the auth-response with the token. Spread `token` only when it
+      // is defined so a sign failure produces a no-token response (joiner
+      // surfaces as auth-failed via the existing 07-06 status mapping).
+      // NOTE: do NOT call setMemberId — the per-connection closure stays
+      // unauthenticated, so handleConnection's onClose handler will NOT
+      // invoke removeMember when this virtConn eventually evicts.
+      this.transport.send(ws, {
+        type: 'auth-response',
+        accepted: true,
+        memberId: tentativeMemberId,
+        sessionInfo: {
+          name: this.config.sessionName,
+          memberCount: this.members.size,
+          hostDisplayName: this.hostDisplayName,
+        },
+        ...(bootstrapJoinerToken !== undefined ? { token: bootstrapJoinerToken } : {}),
+        timestamp: createTimestamp(),
+      });
+
+      // Evict the bootstrap virtConn from the demultiplexer Map so it does
+      // not accumulate on the host across joiners. The wire socket is closed
+      // by the joiner immediately after swapToken (CloudTransport.ts:528 —
+      // code 1000, reason 'bootstrap-swap'), so this call is internal
+      // bookkeeping only; no wire-level frame is sent (CloudHostTransport's
+      // closeConnection only fires the in-process onClose handlers and
+      // deletes the demux entry). closeConnection invokes the onClose
+      // handler registered above, which finds memberId=null in its closure
+      // and skips removeMember — the intended no-op.
+      try {
+        this.transport.closeConnection(ws, 1000, 'bootstrap-handoff');
+      } catch {
+        // Defensive: closeConnection is internally null-safe across both
+        // current HostTransport implementations; this catch protects against
+        // future transports that adopt throw semantics.
+      }
+      return;
+    }
 
     // Assign server-generated member ID (T-01-07)
     const newMemberId = crypto.randomUUID();

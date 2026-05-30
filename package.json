@@ -339,7 +339,7 @@
       },
       {
         "view": "versioncon.presence",
-        "contents": "You're the only one here.\nShare your session to invite teammates.",
+        "contents": "No one else is here yet.\nShare your invite to bring your team into this session.",
         "when": "versioncon.connected && versioncon.presence.alone"
       }
     ],

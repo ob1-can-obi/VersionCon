@@ -71,6 +71,16 @@ export class JoinPanel {
   private readonly secretStore: SecretStore;
   private readonly disposables: vscode.Disposable[] = [];
 
+  // Phase 7 UAT-3b fix (2026-05-30): deep-link prefill race-condition guard.
+  // When openPrefilled creates a NEW panel, the webview HTML loads async —
+  // postMessage from a synchronous applyPrefill() races the webview JS's
+  // window.addEventListener('message', ...) registration and is silently
+  // dropped on Windows. We queue the prefill here and apply it once the
+  // webview posts 'webview-ready'. The reveal path (JoinPanel.currentPanel
+  // already open) bypasses this — its webview is already listening.
+  private pendingPrefill: JoinPrefill | null = null;
+  private webviewReady: boolean = false;
+
   static async createOrShow(
     context: vscode.ExtensionContext,
     sessionHistory: SessionHistory,
@@ -134,7 +144,11 @@ export class JoinPanel {
     );
 
     const instance = new JoinPanel(panel, context, sessionHistory, onConnected);
-    instance.applyPrefill(prefill);
+    // UAT-3b fix (2026-05-30): defer prefill until the webview signals it has
+    // registered its message listener. handleMessage('webview-ready') consumes
+    // pendingPrefill. Calling applyPrefill synchronously here races the
+    // webview JS load on Windows and the postMessage is silently dropped.
+    instance.pendingPrefill = prefill;
   }
 
   private constructor(
@@ -258,7 +272,19 @@ export class JoinPanel {
 
     switch (type) {
       case 'webview-ready':
-        this.sendStateUpdate();
+        // UAT-3b fix (2026-05-30): mark the webview as listening, then either
+        // consume the queued deep-link prefill (openPrefilled new-panel path)
+        // or fall through to the standard initial state-update (createOrShow
+        // path). applyPrefill already calls sendStateUpdate internally so we
+        // don't double-send.
+        this.webviewReady = true;
+        if (this.pendingPrefill) {
+          const queued = this.pendingPrefill;
+          this.pendingPrefill = null;
+          this.applyPrefill(queued);
+        } else {
+          this.sendStateUpdate();
+        }
         break;
       case 'join-connect':
         void this.handleJoinConnect(message.payload as Record<string, unknown>);
@@ -294,6 +320,14 @@ export class JoinPanel {
    * the deep-link URI into the user's identity (T-07-10c mitigation).
    */
   private applyPrefill(prefill: JoinPrefill): void {
+    // UAT-3b fix safety net (2026-05-30): if the webview hasn't signalled
+    // readiness yet (edge case — e.g. reveal path invoked before its initial
+    // 'webview-ready' fires, or any future caller racing the webview load),
+    // queue and bail. handleMessage('webview-ready') will consume.
+    if (!this.webviewReady) {
+      this.pendingPrefill = prefill;
+      return;
+    }
     this.state.mode = prefill.mode;
     this.state.relayUrl = prefill.relayUrl;
     this.state.sessionId = prefill.sessionId;

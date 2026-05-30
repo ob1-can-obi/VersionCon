@@ -93,6 +93,11 @@ const startedAt = Date.now();
 // limits.getIdleReapInterval() (default 30 min).
 const REAPER_TICK_MS = 60_000;
 
+// ws.WebSocket.OPEN === 1; inlined to avoid a runtime import of the ws value.
+// Mirrors the constant in router.ts — used by the close-handler's member-left
+// emit path to guard against sending to a half-closed host socket.
+const WS_OPEN = 1;
+
 export async function startServer(opts: StartServerOptions = {}): Promise<RunningServer> {
   const requestedPort = opts.port ?? parseInt(process.env.PORT ?? '8080', 10);
   const requireAuth = opts.requireAuth ?? (process.env.RELAY_REQUIRE_AUTH !== 'false');
@@ -652,6 +657,99 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Runnin
         reason: reason.toString().slice(0, 64),
       });
       if (attachedSessionId) {
+        // Bug #7 fix (UAT-3b cloud-presence-zombies): notify the host that
+        // this member's WSS has closed so the host can immediately remove
+        // the member entry from its `members` Map (no more 30s
+        // heartbeat-timeout wait, no more zombie entries that accumulate
+        // across Bob re-join attempts).
+        //
+        // The relay synthesizes a `member-left` system frame addressed to
+        // the host's WSS. CloudHostTransport's inbound demultiplexer already
+        // handles inbound `member-left` frames (src/network/CloudHostTransport.ts
+        // ~line 402) — it fires onClose on the matching VirtualConnection,
+        // which triggers SessionHost's per-connection onClose handler
+        // (src/host/SessionHost.ts ~line 772) which calls removeMember()
+        // and broadcasts member-left to remaining members. The whole
+        // pipeline is wired; the missing link was the relay-side emit.
+        //
+        // SECURITY (T-07-spoof-member-left): the memberId in this frame
+        // comes from `session.memberSocketIds.get(ws)` — i.e. the value the
+        // relay itself stored at attachMember time from the JWT-verified
+        // `claims.sub`. It is NEVER taken from client input on this code
+        // path. Members therefore CANNOT cause a member-left to be emitted
+        // for another member's memberId:
+        //   - A member's `ws.on('close')` event fires once when THEIR OWN
+        //     socket closes; `memberSocketIds.get(ws)` returns THEIR OWN
+        //     sub, not a peer's.
+        //   - A member sending a forged `member-left` frame over the wire
+        //     is independently blocked by the HI-01 member→host annotation
+        //     (annotateMemberFrame overwrites payload.memberId to the
+        //     sender's own claims.sub) — and that frame would route to the
+        //     host via the normal byte-pass-through path, not via this
+        //     relay-authored emit.
+        //   - Host close path is excluded by construction: the close-handler
+        //     only emits member-left when the closing socket has an entry
+        //     in `memberSocketIds` (which the host never does).
+        //
+        // The lookup MUST happen BEFORE `registry.detach(...)`, because
+        // detach removes the socket from `memberSocketIds`.
+        const session = registry.getSession(attachedSessionId);
+        if (session) {
+          const departingMemberId = session.memberSocketIds.get(ws);
+          const hostSocket = session.hostSocket;
+          // Only emit when:
+          //   (a) the closing socket was an attached MEMBER (not the host —
+          //       host has no entry in memberSocketIds; host-drop goes
+          //       through 07-10's grace-timer path);
+          //   (b) the host socket is still attached and OPEN (during host
+          //       grace window, hostSocket is null — no point sending);
+          //   (c) departingMemberId is non-empty (defensive — should always
+          //       be true for an attached member, but a Map.get() returns
+          //       undefined for unattached sockets).
+          if (
+            departingMemberId !== undefined &&
+            departingMemberId.length > 0 &&
+            hostSocket !== null &&
+            hostSocket.readyState === WS_OPEN
+          ) {
+            // Envelope shape mirrors src/network/CloudEnvelope.ts wrap():
+            //   {v:1, sessionId, encrypted:false, payload:{...}}
+            // The host's CloudTransport.onMessage (src/network/CloudTransport.ts
+            // ~line 279) parses via deserialize(), re-serializes env.payload,
+            // and fans out payload-only bytes to CloudHostTransport.
+            // CloudHostTransport.handleInbound (line 365) treats that as a
+            // ProtocolMessage and matches `payload.type === 'member-left'`
+            // to fire onClose on the matching virtConn.
+            //
+            // payload.timestamp uses Date.now() to mirror the createTimestamp()
+            // helper used by SessionHost — chosen for consistency, not used
+            // for any liveness logic on either end.
+            const frame = {
+              v: 1,
+              sessionId: attachedSessionId,
+              encrypted: false,
+              payload: {
+                type: 'member-left',
+                memberId: departingMemberId,
+                reason: 'relay-detected-close',
+                timestamp: Date.now(),
+              },
+            };
+            try {
+              hostSocket.send(Buffer.from(JSON.stringify(frame), 'utf-8'));
+              logger.info({
+                event: 'member-left-emit',
+                sessionId: attachedSessionId,
+                memberId: departingMemberId,
+                code,
+              });
+            } catch {
+              // Host dropped mid-send. Its own ws.on('close') will run
+              // shortly and 07-10's grace timer will take over; no further
+              // action needed here.
+            }
+          }
+        }
         registry.detach(attachedSessionId, ws);
       }
     });

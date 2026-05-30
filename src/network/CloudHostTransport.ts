@@ -60,6 +60,7 @@ import type {
   TransportConnection,
 } from './Transport.js';
 import type { ProtocolMessage } from './protocol.js';
+import { createTimestamp } from './protocol.js';
 // Review MD-01: dead-import cleanup. handleInbound treats the inbound stream
 // as already-unwrapped payload bytes (see comment at the call site), so it
 // calls plain JSON.parse and the EnvelopeShapeError / EnvelopeEncryptedNotSupportedError
@@ -240,14 +241,41 @@ export class CloudHostTransport implements HostTransport {
   }
 
   /**
-   * Heartbeat ping is a no-op on the virtConn level — the underlying
-   * CloudTransport's WSS ping/pong covers end-to-end liveness (relay sits
-   * in the middle and proxies). The HostTransport interface still requires
-   * this method exist; SessionHost's heartbeat loop calls it per-member.
+   * Cloud-mode heartbeat ping. SessionHost.startHeartbeat() calls this every
+   * 15s for each member after flipping `cm.isAlive = false`. The contract is:
+   * if the member is alive, the host receives some response that flips
+   * `cm.isAlive = true` before the NEXT pass; if the member is dead, the
+   * flag stays false and the member is reaped on the next pass.
+   *
+   * In LAN mode the underlying `ws.ping()` round-trip drives `transport.onPong`
+   * which SessionHost wires to `cm.isAlive = true`. In cloud mode the relay
+   * sits in the middle: a raw WS-level ping only reaches the relay's per-leg
+   * socket, not the joiner end-to-end. So we synthesize an application-level
+   * `heartbeat-ping` frame and send it unicast (target=memberId) to the
+   * specific joiner. The joiner's SessionClient.handleMessage already replies
+   * with `heartbeat-pong` (src/client/SessionClient.ts ~line 431); the relay
+   * annotates `payload.memberId = claims.sub` on the member→host frame so
+   * the host's CloudHostTransport demux routes the pong back to the same
+   * virtConn; SessionHost's onFrame switch case `heartbeat-pong`
+   * (src/host/SessionHost.ts ~line 579) flips `cm.isAlive = true`. Round trip
+   * complete.
+   *
+   * Bug fix: cloud-heartbeat-noop. Prior to this fix, this method was a no-op
+   * which caused alive cloud members to be reaped every ~30s because
+   * `cm.isAlive` never got refreshed. Symptom: Bob joins on Windows, appears
+   * on Mac host's MEMBERS panel, then vanishes ~30-60s later while Bob's UI
+   * still shows "Cloud session live / Connected". The relay→host member-left
+   * fix (commit 28dcb1e) only handled REAL disconnects; this fix handles the
+   * heartbeat liveness signal for ALIVE members.
    */
-  ping(_conn: TransportConnection): void {
-    void _conn;
-    // no-op
+  ping(conn: TransportConnection): void {
+    if (!(conn instanceof VirtualConnection)) return;
+    const state = this.virtConns.get(conn.memberId);
+    if (!state || !state.open) return;
+    this.cloudTransport.send(
+      { type: 'heartbeat-ping', timestamp: createTimestamp() },
+      conn.memberId,
+    );
   }
 
   onPong(conn: TransportConnection, handler: () => void): void {

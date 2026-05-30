@@ -235,6 +235,74 @@ suite('Phase 7 — cloud host demux', () => {
     assert.strictEqual(actual, expected, '07-02 byte-shape snapshot preserved (broadcast)');
   });
 
+  // ---------------------------------------------------------------------------
+  // Bug fix: cloud-heartbeat-noop. CloudHostTransport.ping was previously a
+  // no-op which caused alive cloud members to be reaped every ~30s because
+  // SessionHost.startHeartbeat could never refresh cm.isAlive (the host fires
+  // transport.ping(cm.ws) each pass; LAN sends a real WS ping that drives
+  // onPong; cloud was silent so cm.isAlive stayed false → next pass reaped
+  // the alive member). The fix: synthesize an application-level heartbeat-ping
+  // frame unicast (target=memberId) to the joiner; joiner's SessionClient
+  // already replies with heartbeat-pong (src/client/SessionClient.ts ~line 431)
+  // and the relay annotates payload.memberId so the host's demux routes it
+  // back to the right virtConn; SessionHost's onFrame case 'heartbeat-pong'
+  // (~line 579) flips cm.isAlive = true. These tests pin the outbound side
+  // of that contract.
+  // ---------------------------------------------------------------------------
+
+  test('ping(virtConn) emits heartbeat-ping frame with target=memberId', async () => {
+    const fake = new FakeClientTransport();
+    const t = new CloudHostTransport(fake, 'vc-x');
+    let virtConn: unknown = null;
+    t.onConnection((conn) => { virtConn = conn; });
+    fake._simulateEnvelope('vc-x', {
+      type: 'heartbeat-ping',
+      timestamp: 0,
+      memberId: 'mem-alive',
+    });
+    await flushMicrotasks();
+    assert.ok(virtConn !== null, 'virtConn was created');
+
+    const sentCountBefore = fake.sentFrames.length;
+    t.ping(virtConn);
+
+    assert.strictEqual(
+      fake.sentFrames.length,
+      sentCountBefore + 1,
+      'ping() emits exactly one outbound frame (not a no-op)',
+    );
+    const lastFrame = fake.sentFrames[fake.sentFrames.length - 1];
+    assert.strictEqual(
+      lastFrame.type,
+      'heartbeat-ping',
+      'outbound frame is heartbeat-ping (application-level liveness probe)',
+    );
+    assert.strictEqual(
+      typeof (lastFrame as { timestamp?: unknown }).timestamp,
+      'number',
+      'heartbeat-ping carries a numeric timestamp (createTimestamp())',
+    );
+    assert.strictEqual(
+      fake.sentTargets[fake.sentTargets.length - 1],
+      'mem-alive',
+      'envelope.target = virtConn.memberId (unicast to the specific joiner)',
+    );
+  });
+
+  test('ping(virtConn) is a no-op for unknown / closed virtConn', () => {
+    const fake = new FakeClientTransport();
+    const t = new CloudHostTransport(fake, 'vc-x');
+    const sentCountBefore = fake.sentFrames.length;
+
+    // Pass a non-VirtualConnection value — must be ignored without throw.
+    t.ping({} as unknown as Parameters<typeof t.ping>[0]);
+    assert.strictEqual(
+      fake.sentFrames.length,
+      sentCountBefore,
+      'ping() on a non-VirtualConnection emits nothing',
+    );
+  });
+
   test('member-disconnect frame fires onClose and removes virtConn', async () => {
     const fake = new FakeClientTransport();
     const t = new CloudHostTransport(fake, 'vc-x');

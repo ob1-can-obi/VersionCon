@@ -619,4 +619,113 @@ suite('Phase 7 — host cloud wiring', () => {
       host.stop();
     }
   });
+  // ---------------------------------------------------------------------------
+  // Regression: presence-asymmetric-host-blind (UAT-8-5, 2026-05-30)
+  //
+  // Before the fix, the post-swap joiner connection registered the joiner under
+  // a FRESH crypto.randomUUID() in this.members. The relay binds the joiner WSS
+  // to the JWT sub (a UUID minted by the bootstrap branch of handleAuthRequest).
+  // The auth-response carried the host-minted (fresh) memberId back to the
+  // joiner, so SessionClient.memberId held an id that DIFFERED from the relay's
+  // claims.sub binding. Every subsequent presence-update frame (which carries
+  // payload.memberId per protocol.ts PresenceUpdate) tripped the relay's
+  // annotateMemberFrame spoof check (server.ts ~line 392) -- existing !== memberSub
+  // -- and closed the WSS with 4400 'malformed-or-spoofed-member-frame'. The
+  // joiner's CloudTransport then auto-reconnected, masking the symptom on the
+  // MEMBERS panel (which sustained 'online' through the rapid reconnect cycle)
+  // while PRESENCE joiner->host stayed silently broken (heartbeat-pong has no
+  // memberId field so it passed annotateMemberFrame, sustaining the alive flag).
+  //
+  // The fix reuses the JWT-bound memberId (carried in the synthetic
+  // IncomingMessage header 'x-cloud-virtual-memberid' that CloudHostTransport
+  // sets when it allocates the virtConn) as the host-tracked memberId for
+  // cloud-mode post-swap connections. LAN connections (no header) keep the
+  // pre-fix crypto.randomUUID() path.
+  // ---------------------------------------------------------------------------
+
+  test('regression: cloud post-swap auth-response.memberId == relay-bound JWT sub (no spoof close)', async () => {
+    const fake = new FakeClientTransport();
+    const sessionId = 'vc-presence-asym';
+    const host = await createCloud({
+      config: makeConfig(),
+      hostIdentity: makeHostIdentity(),
+      relayUrl: 'wss://relay.test',
+      sessionId,
+      _testClientTransport: fake,
+    });
+    try {
+      await host.start();
+
+      const sentBeforeSwap = fake.sentFrames.length;
+
+      // Simulate the production-shape POST-SWAP first frame. The relay annotates
+      // payload.memberId from claims.sub on every member->host envelope; for a
+      // post-swap connection that sub is the UUID minted by the bootstrap branch
+      // of handleAuthRequest. Use a UUID-shaped value here to exercise the
+      // production cloudPreboundMemberId path (NOT a 'bootstrap-' prefix, which
+      // would route to the bootstrap suppression branch).
+      const relayBoundMemberId = '11111111-2222-3333-4444-555566667777';
+      fake._simulateEnvelope(sessionId, {
+        type: 'auth-request',
+        inviteCode: 'ABC234',
+        displayName: 'Joiner-Bob',
+        timestamp: Date.now(),
+        memberId: relayBoundMemberId,
+      });
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      // Locate the auth-response that came back over the post-swap virtConn.
+      const responses = fake.sentFrames
+        .slice(sentBeforeSwap)
+        .filter((f) => f.type === 'auth-response') as Array<ProtocolMessage & {
+          type: 'auth-response';
+          accepted: boolean;
+          memberId?: string;
+          token?: string;
+        }>;
+      assert.strictEqual(responses.length, 1, 'exactly one auth-response on the post-swap path');
+      assert.strictEqual(responses[0].accepted, true, 'post-swap auth accepted');
+
+      // CORE INVARIANT -- the fix: auth-response.memberId MUST equal the
+      // relay-bound JWT sub (which the synthetic req header carries verbatim).
+      // Before the fix, this would be a fresh crypto.randomUUID() that the
+      // host minted in handleAuthRequest's new-member path -- different from
+      // claims.sub -- causing the relay's downstream annotateMemberFrame spoof
+      // check to close 4400 on every joiner->host presence-update.
+      assert.strictEqual(
+        responses[0].memberId,
+        relayBoundMemberId,
+        'auth-response.memberId MUST equal claims.sub (relay-bound id) so ' +
+          'joiner-emitted payload.memberId on presence-update passes the ' +
+          'annotateMemberFrame spoof check at the relay',
+      );
+
+      // The host-side this.members entry MUST be keyed by the same id so
+      // PresenceMap upserts and broadcast iteration target the right key.
+      const members = (host as unknown as { getMembers: () => Array<{ id: string }> }).getMembers();
+      assert.strictEqual(members.length, 1, 'exactly one member registered on the host');
+      assert.strictEqual(
+        members[0].id,
+        relayBoundMemberId,
+        'this.members is keyed by the relay-bound id, not by a fresh UUID',
+      );
+
+      // Defensive: confirm the per-joiner JWT issued for the post-swap leg
+      // also carries the SAME sub (so a future reconnect with this token
+      // binds to the same id). The token is in the legacy post-swap path
+      // (joiner-cap path mints role:'member' tokens with sub=newMemberId).
+      if (typeof responses[0].token === 'string') {
+        const claims = decodeJwt(responses[0].token);
+        assert.strictEqual(
+          claims.sub,
+          relayBoundMemberId,
+          'post-swap joiner JWT.sub = relay-bound id (closes the reconnect loop)',
+        );
+      }
+    } finally {
+      host.stop();
+    }
+  });
+
 });

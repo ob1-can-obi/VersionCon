@@ -559,6 +559,27 @@ export class SessionHost implements SessionEventEmitter {
           const isBootstrapConnection =
             typeof virtualMemberIdHdr === 'string' &&
             virtualMemberIdHdr.startsWith('bootstrap-');
+          // Phase 7 UAT fix (presence-asymmetric-host-blind, 2026-05-30):
+          // For the POST-SWAP cloud connection, the JWT carries sub=<UUID> minted
+          // by the bootstrap branch. The relay binds Bob's WSS to that UUID and
+          // REJECTS (close 4400 'malformed-or-spoofed-member-frame') any outbound
+          // payload whose `memberId` field differs from claims.sub. If
+          // handleAuthRequest mints a fresh `newMemberId` here, Bob's auth-response
+          // carries the fresh id, Bob stores it in SessionClient.memberId, and
+          // every subsequent presence-update frame (which carries memberId in the
+          // payload — see protocol.ts PresenceUpdate) gets rejected by the relay's
+          // annotateMemberFrame spoof check. Heartbeat-pong has no memberId field
+          // so it survives — masking the bug from MEMBERS panel observers. The fix
+          // is to REUSE the JWT-bound id (carried in the synthetic IncomingMessage
+          // header x-cloud-virtual-memberid) as the host-tracked memberId for the
+          // post-swap connection, so the host's wire-emitted memberId === claims.sub.
+          // For LAN connections, virtualMemberIdHdr is undefined; the new-member
+          // path mints a fresh UUID as before.
+          const cloudPreboundMemberId =
+            !isBootstrapConnection && typeof virtualMemberIdHdr === 'string' &&
+            virtualMemberIdHdr.length > 0
+              ? virtualMemberIdHdr
+              : undefined;
           await this.handleAuthRequest(
             ws,
             msg,
@@ -568,6 +589,7 @@ export class SessionHost implements SessionEventEmitter {
               memberId = id;
             },
             isBootstrapConnection,
+            cloudPreboundMemberId,
           );
         } else if (!memberId) {
           // No other message type is valid before authentication
@@ -818,6 +840,14 @@ export class SessionHost implements SessionEventEmitter {
     // Defaulted so handleAuthRequestForTest and any future callers stay
     // signature-compatible.
     isBootstrapConnection: boolean = false,
+    // Phase 7 UAT fix (presence-asymmetric-host-blind, 2026-05-30): for cloud-mode
+    // post-swap connections, the relay binds the WSS to the JWT sub (a UUID
+    // minted by the bootstrap branch). The host MUST reuse that id as the
+    // member's tracked memberId so the host-bound id matches claims.sub. If
+    // the host mints a fresh UUID here, every outbound presence-update frame
+    // (which carries `memberId` in the payload) is rejected by the relay's
+    // annotateMemberFrame spoof check with close 4400. Undefined for LAN.
+    cloudPreboundMemberId: string | undefined = undefined,
   ): Promise<void> {
     // Check rate limit first
     const rateCheck = this.authHandler.checkRateLimit(clientIp);
@@ -929,7 +959,12 @@ export class SessionHost implements SessionEventEmitter {
     }
 
     // Assign server-generated member ID (T-01-07) — DEFAULT for new-member path.
-    const newMemberId = crypto.randomUUID();
+    // Phase 7 UAT fix (presence-asymmetric-host-blind, 2026-05-30): for cloud-mode
+    // post-swap connections, reuse the JWT-bound memberId from the bootstrap
+    // branch instead of minting a fresh one. See cloudPreboundMemberId comment
+    // on the signature for the full rationale (relay-side annotateMemberFrame
+    // spoof check would close 4400 on the memberId mismatch otherwise).
+    const newMemberId = cloudPreboundMemberId ?? crypto.randomUUID();
     setMemberId(newMemberId);
 
     // Plan 260530-p3g (Bug 2 fix): read the inbound clientId once.
